@@ -34,7 +34,7 @@ jobs:
       - name: Download pinned FFmpeg resource
         shell: pwsh
         run: |
-          $url = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-29-13-36/ffmpeg-master-latest-win64-gpl-shared.zip'
+          $url = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip'
           $sha256 = '9211f801f2ee31f30cc343df7791ffee866a4053a5145b07191b280d2fb48f46'
           $archive = Join-Path $env:RUNNER_TEMP 'ffmpeg.zip'
           Invoke-WebRequest -Uri $url -OutFile $archive
