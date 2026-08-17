@@ -38,7 +38,9 @@ jobs:
           $sha256 = '9211f801f2ee31f30cc343df7791ffee866a4053a5145b07191b280d2fb48f46'
           $archive = Join-Path $env:RUNNER_TEMP 'ffmpeg.zip'
           Invoke-WebRequest -Uri $url -OutFile $archive
-          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $sha256) { throw 'FFmpeg checksum verification failed.' }
+          $actualSha256 = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "Downloaded FFmpeg SHA-256: $actualSha256"
+          if ($actualSha256 -ne $sha256) { throw "FFmpeg checksum verification failed. Expected $sha256, received $actualSha256." }
           $destination = 'src-tauri/resources/ffmpeg'
           New-Item -ItemType Directory -Force -Path $destination | Out-Null
           Expand-Archive -Path $archive -DestinationPath $env:RUNNER_TEMP -Force
