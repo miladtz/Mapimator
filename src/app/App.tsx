@@ -19,6 +19,7 @@ import {
 import { t } from '../core/i18n';
 import { compileViews, evaluateProjectAtTime } from '../core/viewCompiler';
 import { autoReframe } from '../core/layout';
+import { invoke } from '@tauri-apps/api/core';
 
 const layerTypes: LayerType[] = ['pin', 'route', 'text', 'image', 'shape', 'region', 'arrow', 'geo-effect'];
 const icons: Record<LayerType, string> = {
@@ -235,6 +236,16 @@ export function App() {
     setCamera(autoReframe(project.layers, camera, layout));
     setNotice('Auto Reframe applied');
   };
+  const exportProof = async () => {
+    const outputPath = window.prompt('MP4 output path');
+    if (!outputPath) return;
+    try {
+      await invoke('render_test_mp4', { outputPath });
+      setNotice('10-second MP4 export completed');
+    } catch (error) {
+      setNotice(`Export failed: ${String(error)}`);
+    }
+  };
   return (
     <main className="studio" dir={language === 'fa' ? 'rtl' : 'ltr'}>
       <header className="topbar">
@@ -263,7 +274,7 @@ export function App() {
           <button className="primary" onClick={save}>
             {words.save}
           </button>
-          <button className="export" disabled>
+          <button className="export" onClick={exportProof}>
             {words.export}
           </button>
           <button className="lang" onClick={() => setLanguage((l) => (l === 'en' ? 'fa' : 'en'))}>
