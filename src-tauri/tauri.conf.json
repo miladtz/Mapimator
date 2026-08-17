@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MapMotion Studio",
+  "version": "0.1.0",
+  "identifier": "com.mapmotion.studio",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [{ "title": "MapMotion Studio", "width": 1440, "height": 900, "minWidth": 1080, "minHeight": 700, "resizable": true }],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "windows": { "nsis": { "installMode": "currentUser" } }
+  }
+}

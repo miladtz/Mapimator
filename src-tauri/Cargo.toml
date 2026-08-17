@@ -1,0 +1,16 @@
+[package]
+name = "mapmotion-studio"
+version = "0.1.0"
+description = "Offline geopolitical map animation studio"
+authors = ["MapMotion Studio"]
+edition = "2021"
+
+[lib]
+name = "mapmotion_studio_lib"
+crate-type = ["cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
