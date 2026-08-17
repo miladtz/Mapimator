@@ -6,16 +6,16 @@
 
 ## Environment inspection (2026-08-17)
 
-| Check | Result |
-| --- | --- |
-| OS | Windows 10 Enterprise, version 2009 |
-| Node / npm / pnpm | 24.17.0 / 11.13.0 / 11.19.0 |
-| Rust / Cargo | Not installed |
-| Tauri CLI / C++ build tools | Not found |
-| FFmpeg | Not installed |
-| GPU / NVENC / RAM | Cannot be queried in this managed environment; `nvidia-smi` and CIM hardware access are unavailable |
-| Disk | Drive free-space counters are unavailable in the sandbox |
-| Git | Empty repository on `master`; no commits |
+| Check                       | Result                                                                                              |
+| --------------------------- | --------------------------------------------------------------------------------------------------- |
+| OS                          | Windows 10 Enterprise, version 2009                                                                 |
+| Node / npm / pnpm           | 24.17.0 / 11.13.0 / 11.19.0                                                                         |
+| Rust / Cargo                | Not installed                                                                                       |
+| Tauri CLI / C++ build tools | Not found                                                                                           |
+| FFmpeg                      | Not installed                                                                                       |
+| GPU / NVENC / RAM           | Cannot be queried in this managed environment; `nvidia-smi` and CIM hardware access are unavailable |
+| Disk                        | Drive free-space counters are unavailable in the sandbox                                            |
+| Git                         | Empty repository on `master`; no commits                                                            |
 
 The missing Rust and Windows build prerequisites block packaging a Tauri binary in this environment. Phase 1 therefore ships and verifies the platform-independent React application; the supplied adapters preserve a clean future Tauri integration point.
 

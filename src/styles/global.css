@@ -289,6 +289,27 @@ button:disabled {
   border-radius: 2px;
   font-size: 9px;
 }
+.layout-controls {
+  display: flex;
+  gap: 5px;
+  margin-left: auto;
+}
+.layout-controls select,
+.layout-controls button {
+  background: #182231;
+  color: #c8d3df;
+  border: 1px solid #334155;
+  padding: 5px;
+  font-size: 10px;
+}
+.safe-area-guide {
+  fill: none;
+  stroke: #f3b43f;
+  stroke-width: 1;
+  stroke-dasharray: 6 5;
+  opacity: 0.65;
+  pointer-events: none;
+}
 .preview-bar {
   height: 45px;
   display: flex;

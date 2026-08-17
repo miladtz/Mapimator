@@ -3,6 +3,7 @@ import { OfflineMap } from '../components/OfflineMap';
 import { browserFileSystemAdapter } from '../core/adapters';
 import {
   MAP_STYLES,
+  CANVAS_LAYOUTS,
   createLayer,
   createProject,
   createView,
@@ -17,6 +18,7 @@ import {
 } from '../core/project';
 import { t } from '../core/i18n';
 import { compileViews, evaluateProjectAtTime } from '../core/viewCompiler';
+import { autoReframe } from '../core/layout';
 
 const layerTypes: LayerType[] = ['pin', 'route', 'text', 'image', 'shape', 'region', 'arrow', 'geo-effect'];
 const icons: Record<LayerType, string> = {
@@ -205,6 +207,34 @@ export function App() {
       views: p.views.map((v) => (v.id === activeViewId ? { ...v, ...patch } : v)),
     }));
   };
+  const setCanvasLayout = (layoutId: Project['canvas']['layoutId']) => {
+    if (layoutId === 'custom') {
+      const width = Number(window.prompt('Canvas width', String(project.canvas.width)));
+      const height = Number(window.prompt('Canvas height', String(project.canvas.height)));
+      if (width > 0 && height > 0)
+        updateProject((p) => ({ ...p, canvas: { ...p.canvas, layoutId, width, height } }));
+      return;
+    }
+    const layout = CANVAS_LAYOUTS.find((item) => item.id === layoutId);
+    if (!layout) return;
+    updateProject((p) => ({
+      ...p,
+      canvas: {
+        ...p.canvas,
+        layoutId,
+        width: layout.width,
+        height: layout.height,
+        safeArea: layout.safeArea,
+      },
+    }));
+    setNotice(`${layout.name} selected`);
+  };
+  const reframe = () => {
+    const layout = CANVAS_LAYOUTS.find((item) => item.id === project.canvas.layoutId);
+    if (!layout) return;
+    setCamera(autoReframe(project.layers, camera, layout));
+    setNotice('Auto Reframe applied');
+  };
   return (
     <main className="studio" dir={language === 'fa' ? 'rtl' : 'ltr'}>
       <header className="topbar">
@@ -343,6 +373,32 @@ export function App() {
                 {words.light}
               </button>
             </div>
+            <div className="layout-controls">
+              <select
+                aria-label="Canvas layout"
+                value={project.canvas.layoutId}
+                onChange={(e) => setCanvasLayout(e.target.value as Project['canvas']['layoutId'])}
+              >
+                {CANVAS_LAYOUTS.map((layout) => (
+                  <option key={layout.id} value={layout.id}>
+                    {layout.name}
+                  </option>
+                ))}
+                <option value="custom">Custom…</option>
+              </select>
+              <button onClick={reframe}>Auto Reframe</button>
+              <label>
+                <input
+                  aria-label="Show safe area"
+                  type="checkbox"
+                  checked={project.canvas.showSafeArea}
+                  onChange={(e) =>
+                    updateProject((p) => ({ ...p, canvas: { ...p.canvas, showSafeArea: e.target.checked } }))
+                  }
+                />{' '}
+                Safe
+              </label>
+            </div>
           </div>
           <div className="map-frame">
             <OfflineMap
@@ -354,6 +410,8 @@ export function App() {
               selectedId={selectedId}
               onSelect={setSelectedId}
               onMoveLayer={(id, x, y) => updateLayer(id, { x, y })}
+              safeArea={project.canvas.safeArea}
+              showSafeArea={project.canvas.showSafeArea}
             />
             <div className="add-toolbar">
               {layerTypes.map((type) => (

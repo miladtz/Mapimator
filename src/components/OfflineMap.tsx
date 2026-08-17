@@ -12,6 +12,8 @@ interface Props {
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onMoveLayer: (id: string, x: number, y: number) => void;
+  safeArea: number;
+  showSafeArea: boolean;
 }
 export function OfflineMap({
   style,
@@ -22,6 +24,8 @@ export function OfflineMap({
   selectedId,
   onSelect,
   onMoveLayer,
+  safeArea,
+  showSafeArea,
 }: Props) {
   const drag = useRef<{ x: number; y: number } | null>(null);
   const moving = useRef<string | null>(null);
@@ -88,6 +92,15 @@ export function OfflineMap({
         </marker>
       </defs>
       <rect width="1000" height="560" fill="url(#grid)" onClick={() => onSelect(null)} />
+      {showSafeArea && (
+        <rect
+          className="safe-area-guide"
+          x={safeArea / 2}
+          y={safeArea / 2}
+          width={1000 - safeArea}
+          height={560 - safeArea}
+        />
+      )}
       <g transform={transform}>
         {COUNTRIES.map((c) => (
           <path
