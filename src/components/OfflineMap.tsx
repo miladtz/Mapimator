@@ -1,16 +1,16 @@
-import { useMemo, useRef, useState, type PointerEvent, type WheelEvent } from 'react';
-import type { Layer, MapStylePreset, Project } from '../core/project';
+import { useMemo, useRef, type PointerEvent, type WheelEvent } from 'react';
+import type { CameraState, Layer, MapStylePreset, Project } from '../core/project';
 import { formatNumbers, resolveTextDirection, resolveTextLanguage } from '../core/text';
 import { COUNTRIES, PERSIAN_COUNTRY_NAMES } from '../data/countries';
 
-interface Props { style: MapStylePreset; layers: Layer[]; labelLanguage: Project['mapSettings']['labelLanguage']; selectedId: string | null; onSelect: (id: string | null) => void; onMoveLayer: (id: string, x: number, y: number) => void; }
-export function OfflineMap({ style, layers, labelLanguage, selectedId, onSelect, onMoveLayer }: Props) {
-  const [camera, setCamera] = useState({ x: 0, y: 0, zoom: 1 }); const drag = useRef<{ x: number; y: number } | null>(null); const moving = useRef<string | null>(null);
+interface Props { style: MapStylePreset; layers: Layer[]; camera: CameraState; onCameraChange: (camera: CameraState) => void; labelLanguage: Project['mapSettings']['labelLanguage']; selectedId: string | null; onSelect: (id: string | null) => void; onMoveLayer: (id: string, x: number, y: number) => void; }
+export function OfflineMap({ style, layers, camera, onCameraChange, labelLanguage, selectedId, onSelect, onMoveLayer }: Props) {
+  const drag = useRef<{ x: number; y: number } | null>(null); const moving = useRef<string | null>(null);
   const transform = useMemo(() => `translate(${camera.x} ${camera.y}) scale(${camera.zoom})`, [camera]);
   const onPointerDown = (event: PointerEvent<SVGSVGElement>) => { if (moving.current) return; drag.current = { x: event.clientX - camera.x, y: event.clientY - camera.y }; event.currentTarget.setPointerCapture(event.pointerId); };
-  const onPointerMove = (event: PointerEvent<SVGSVGElement>) => { if (moving.current) { const rect = event.currentTarget.getBoundingClientRect(); onMoveLayer(moving.current, (event.clientX - rect.left) / rect.width * 1000, (event.clientY - rect.top) / rect.height * 560); } else if (drag.current) setCamera(c => ({ ...c, x: event.clientX - drag.current!.x, y: event.clientY - drag.current!.y })); };
+  const onPointerMove = (event: PointerEvent<SVGSVGElement>) => { if (moving.current) { const rect = event.currentTarget.getBoundingClientRect(); onMoveLayer(moving.current, (event.clientX - rect.left) / rect.width * 1000, (event.clientY - rect.top) / rect.height * 560); } else if (drag.current) onCameraChange({ ...camera, x: event.clientX - drag.current.x, y: event.clientY - drag.current.y }); };
   const end = () => { drag.current = null; moving.current = null; };
-  const onWheel = (event: WheelEvent<SVGSVGElement>) => { event.preventDefault(); setCamera(c => ({ ...c, zoom: Math.max(.72, Math.min(3.4, c.zoom * (event.deltaY > 0 ? .89 : 1.12))) })); };
+  const onWheel = (event: WheelEvent<SVGSVGElement>) => { event.preventDefault(); onCameraChange({ ...camera, zoom: Math.max(.72, Math.min(3.4, camera.zoom * (event.deltaY > 0 ? .89 : 1.12))) }); };
   const beginLayerMove = (event: PointerEvent<SVGGElement>, layer: Layer) => { if (layer.locked) return; event.stopPropagation(); moving.current = layer.id; onSelect(layer.id); event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId); };
   return <svg className="offline-map" viewBox="0 0 1000 560" role="img" aria-label="Offline political map" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={end} onPointerLeave={end} onWheel={onWheel} style={{ background: style.waterColor }}>
     <defs><pattern id="grid" width="70" height="70" patternUnits="userSpaceOnUse"><path d="M 70 0 L 0 0 0 70" fill="none" stroke={style.countryBorderColor} strokeOpacity=".12" strokeWidth=".6" /></pattern><marker id="arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8Z" fill="context-stroke" /></marker></defs>

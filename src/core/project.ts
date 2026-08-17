@@ -11,11 +11,13 @@ export interface Layer {
   x: number; y: number; x2?: number; y2?: number; text?: string; countryId?: string; width?: number; height?: number;
   textLanguage?: TextLanguage; textDirection?: TextDirection; numberStyle?: NumberStyle; fontSize?: number;
 }
+export interface CameraState { x: number; y: number; zoom: number; }
+export interface View { id: string; name: string; holdDuration: number; transitionDuration: number; transitionPreset: 'smooth' | 'cinematic' | 'linear'; camera: CameraState; layers: Layer[]; thumbnailColor: string; }
 export interface Project {
   version: 1; metadata: { name: string; createdAt: string; updatedAt: string };
   canvas: { width: number; height: number; fps: 24 | 25 | 30 | 50 | 60 };
   mapSettings: { styleId: MapStyleId; labelLanguage: 'en' | 'fa' | 'both' | 'none' };
-  layers: Layer[]; views: unknown[]; assets: unknown[]; animation: Record<string, never>; exportSettings: Record<string, never>;
+  layers: Layer[]; views: View[]; assets: unknown[]; animation: Record<string, never>; exportSettings: Record<string, never>;
 }
 
 export const MAP_STYLES: MapStylePreset[] = [
@@ -34,3 +36,4 @@ export const createLayer = (type: LayerType, offset = 0): Layer => {
   return { id, type, visible: true, locked: false, opacity: 1, color: '#ffffff', x, y, ...defaults[type] } as Layer;
 };
 export const createProject = (name = 'Untitled map'): Project => { const now = new Date().toISOString(); return { version: 1, metadata: { name, createdAt: now, updatedAt: now }, canvas: { width: 1920, height: 1080, fps: 30 }, mapSettings: { styleId: 'documentary-dark', labelLanguage: 'en' }, layers: [], views: [], assets: [], animation: {}, exportSettings: {} }; };
+export const createView = (name: string, layers: Layer[], camera: CameraState): View => ({ id: `view-${crypto.randomUUID()}`, name, holdDuration: 3, transitionDuration: 2.5, transitionPreset: 'smooth', camera: { ...camera }, layers: structuredClone(layers), thumbnailColor: '#28415a' });

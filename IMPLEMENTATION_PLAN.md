@@ -118,4 +118,30 @@ Avoid duplicated geometry and full-resolution buffers. Keep preview and exporter
 
 Local development uses the current user's Windows environment and does not require elevation. Production Windows packaging uses a GitHub Actions `windows-latest` runner through `.github/workflows/build-windows.yml`. The workflow builds the actual Tauri NSIS `currentUser` bundle, verifies both executable outputs, and uploads `MapMotion-Windows`. Lack of local administrator access does not block release packaging.
 
-The packaging gate remains incomplete until an Actions run succeeds, its artifact is downloaded, and that artifact is launched successfully on the target laptop without a development server.
+**Packaging gate: complete.** GitHub Actions run `32009851437` successfully produced the `MapMotion-Windows` artifact. The artifact was downloaded and user-verified on the target laptop: the Tauri desktop application launched without an administrator prompt or development server, and the offline map loaded successfully. Future UI polish can proceed independently of the validated packaging pipeline.
+
+## Phase 4 completion report
+
+# PHASE 4 COMPLETE
+
+**Implemented:** serializable View model; scene capture of layer state and camera state; Add View; static View cards; active View preview; Update View; duplicate, rename, and delete controls; clear in-editor distinction between updating a View and saving a Project.
+
+**Tests:** `npm run build` completes successfully.
+
+**Manual verification:** created a View, added a Layer, updated the active View, and confirmed no browser console errors.
+
+**Known limitations:** View thumbnails are compact generated placeholders; hold duration is stored at the default 3 seconds but not yet edited in the UI; transitions, interpolation, and preview playback remain intentionally deferred to Phase 5.
+
+**Next proposed phase:** Phase 5 — ViewCompiler, layer diffing, automatic camera/layer transitions, and preview.
+
+## Phase 5 completion report
+
+# PHASE 5 COMPLETE
+
+**Implemented:** platform-independent `ViewCompiler`; explicit ENTER/EXIT/UPDATE/HOLD layer diff classification; automatic camera, position, opacity, visibility, and route-endpoint interpolation between consecutive Views; per-View hold, transition duration, and easing controls; and editor preview playback using the same evaluator intended for later export work.
+
+**Tests:** `npm run build` completes successfully. Interactive verification created two Views, enabled Preview, entered playback, and reported no browser console errors.
+
+**Known limitations:** this phase previews the compiled sequence only; deterministic export rendering remains reserved for Phase 8. View thumbnails remain intentionally lightweight.
+
+**Next proposed phase:** Phase 6 — editorial effects and controls.
