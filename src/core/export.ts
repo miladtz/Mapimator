@@ -16,6 +16,12 @@ export interface RenderFrame {
 export interface VideoRenderer {
   exportVideo(project: Project, options: ExportOptions): Promise<void>;
 }
+export interface ExportProgress {
+  currentFrame: number;
+  totalFrames: number;
+  percentage: number;
+  cancelled: boolean;
+}
 
 export const defaultExportOptions = (project: Project): ExportOptions => ({
   width: project.canvas.width,
@@ -31,6 +37,16 @@ export function* deterministicFrames(project: Project, options: ExportOptions): 
     yield { index, time, state: evaluateProjectAtTime(project, time) };
   }
 }
+export const exportProgress = (
+  currentFrame: number,
+  totalFrames: number,
+  cancelled = false,
+): ExportProgress => ({
+  currentFrame,
+  totalFrames,
+  percentage: totalFrames ? Math.floor((currentFrame / totalFrames) * 100) : 0,
+  cancelled,
+});
 export const unavailableVideoRenderer: VideoRenderer = {
   async exportVideo() {
     throw new Error(
