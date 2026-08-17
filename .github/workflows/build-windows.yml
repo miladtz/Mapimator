@@ -45,6 +45,14 @@ jobs:
           $bin = Get-ChildItem $env:RUNNER_TEMP -Recurse -Directory -Filter bin | Select-Object -First 1
           Copy-Item (Join-Path $bin.FullName '*') $destination -Force
 
+      - name: Validate bundled FFmpeg encoder
+        shell: pwsh
+        run: |
+          $ffmpeg = 'src-tauri/resources/ffmpeg/ffmpeg.exe'
+          if (-not (Test-Path $ffmpeg)) { throw 'Bundled ffmpeg.exe was not extracted.' }
+          $hasX264 = (& $ffmpeg -hide_banner -encoders | Select-String 'libx264' -Quiet)
+          if ($LASTEXITCODE -ne 0 -or -not $hasX264) { throw 'Bundled FFmpeg does not provide the required libx264 encoder.' }
+
       - name: Build Tauri Windows bundle
         uses: tauri-apps/tauri-action@v0
         env:
