@@ -145,3 +145,23 @@ Local development uses the current user's Windows environment and does not requi
 **Known limitations:** this phase previews the compiled sequence only; deterministic export rendering remains reserved for Phase 8. View thumbnails remain intentionally lightweight.
 
 **Next proposed phase:** Phase 6 — editorial effects and controls.
+
+## Phase 6 progress report — core effects group 1
+
+**Implemented:** a serializable `Geo Effect` Layer and offline SVG renderers for Impact Pulse, Strike Marker, Smoke Plume, and Missile Arc. Effects support color, opacity, size, duration, repeat state, and capture correctly with View layer state. Existing Arrow Layers continue to cover Advance and Retreat primitives.
+
+**Tests:** `npm run build` completes successfully. Manual local verification added an Impact Pulse through the editor, confirmed its synchronized Project Layers entry and rendered SVG effect, and found no browser-console errors.
+
+**Phase status:** in progress. The remaining conflict, control, movement, and boundary effect groups must be delivered and verified before Phase 6 is marked complete.
+
+## Phase 6 completion report
+
+# PHASE 6 COMPLETE
+
+**Implemented:** offline, symbolic editorial Geo Effect Layers for Impact Pulse, Strike Marker, Smoke Plume, Missile Arc, Advance/Retreat Arrow primitives, Front Line, Territory Expansion, Hotspot, Control Zone, Refugee Flow, Blockade Line, Disputed Border, and Influence Zone. All effects are serializable layer data, selectable on the canvas, View-capturable, and evaluated by the existing shared preview path.
+
+**Tests:** `npm run build` completes successfully. Interactive verification added all twelve Geo Effect presets in a clean editor session and confirmed twelve rendered effects, twelve synchronized Layer rows, and no browser-console errors.
+
+**Known limitations:** the current effect tool cycles through the compact starter preset library; dedicated per-effect inspector controls, richer multi-point paths, and advanced per-effect timing controls are follow-up refinement work rather than separate rendering systems.
+
+**Next proposed phase:** Phase 7 — canvas layouts, safe areas, and Auto Reframe.

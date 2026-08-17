@@ -1,6 +1,7 @@
 export type AppLanguage = 'en' | 'fa';
 export type MapStyleId = 'documentary-dark' | 'documentary-light';
-export type LayerType = 'region' | 'pin' | 'text' | 'shape' | 'arrow' | 'image' | 'route';
+export type LayerType = 'region' | 'pin' | 'text' | 'shape' | 'arrow' | 'image' | 'route' | 'geo-effect';
+export type GeoEffectType = 'impact-pulse' | 'strike-marker' | 'smoke-plume' | 'missile-arc' | 'front-line' | 'territory-expansion' | 'hotspot' | 'control-zone' | 'refugee-flow' | 'blockade-line' | 'disputed-border' | 'influence-zone';
 export type TextLanguage = 'auto' | 'persian' | 'english';
 export type TextDirection = 'auto' | 'rtl' | 'ltr';
 export type NumberStyle = 'persian' | 'english';
@@ -9,7 +10,7 @@ export interface MapStylePreset { id: MapStyleId; name: string; landColor: strin
 export interface Layer {
   id: string; type: LayerType; name: string; visible: boolean; locked: boolean; opacity: number; color: string;
   x: number; y: number; x2?: number; y2?: number; text?: string; countryId?: string; width?: number; height?: number;
-  textLanguage?: TextLanguage; textDirection?: TextDirection; numberStyle?: NumberStyle; fontSize?: number;
+  textLanguage?: TextLanguage; textDirection?: TextDirection; numberStyle?: NumberStyle; fontSize?: number; geoEffectType?: GeoEffectType; effectSize?: number; effectDuration?: number; effectRepeat?: boolean;
 }
 export interface CameraState { x: number; y: number; zoom: number; }
 export interface View { id: string; name: string; holdDuration: number; transitionDuration: number; transitionPreset: 'smooth' | 'cinematic' | 'linear'; camera: CameraState; layers: Layer[]; thumbnailColor: string; }
@@ -24,14 +25,15 @@ export const MAP_STYLES: MapStylePreset[] = [
   { id: 'documentary-dark', name: 'Documentary Dark', landColor: '#27364b', waterColor: '#0b1322', countryBorderColor: '#87a4c3', countryBorderWidth: 1.2, countryLabelColor: '#e7eff9', backgroundColor: '#101a2a' },
   { id: 'documentary-light', name: 'Documentary Light', landColor: '#dfe8ec', waterColor: '#b7d6df', countryBorderColor: '#537282', countryBorderWidth: 1.1, countryLabelColor: '#183246', backgroundColor: '#edf3f5' }
 ];
-export const layerLabel: Record<LayerType, string> = { region: 'Region', pin: 'Pin', text: 'Text', shape: 'Shape', arrow: 'Arrow', image: 'Image', route: 'Route' };
+export const layerLabel: Record<LayerType, string> = { region: 'Region', pin: 'Pin', text: 'Text', shape: 'Shape', arrow: 'Arrow', image: 'Image', route: 'Route', 'geo-effect': 'Geo Effect' };
 export const createLayer = (type: LayerType, offset = 0): Layer => {
   const id = `${type}-${crypto.randomUUID()}`; const x = 540 + offset * 18; const y = 260 + offset * 15;
   const defaults: Record<LayerType, Partial<Layer>> = {
     region: { name: 'Iran highlight', color: '#e8533e', countryId: 'iran', x: 650, y: 292 }, pin: { name: 'Capital pin', color: '#f3b43f', text: 'Tehran' },
     text: { name: 'Map headline', color: '#ffffff', text: 'A NEW CHAPTER', x: 500, y: 110, textLanguage: 'auto', textDirection: 'auto', numberStyle: 'english', fontSize: 19 }, shape: { name: 'Callout shape', color: '#61c4e8', width: 100, height: 55 },
     arrow: { name: 'Advance arrow', color: '#ef694f', x: 560, y: 300, x2: 700, y2: 270 }, image: { name: 'Image placeholder', color: '#7d9bbb', width: 118, height: 72 },
-    route: { name: 'Route', color: '#64d5ba', x: 485, y: 275, x2: 675, y2: 325 }
+    route: { name: 'Route', color: '#64d5ba', x: 485, y: 275, x2: 675, y2: 325 },
+    'geo-effect': { name: 'Impact pulse', color: '#ff7159', x: 650, y: 292, geoEffectType: 'impact-pulse', effectSize: 44, effectDuration: 1.4, effectRepeat: true }
   };
   return { id, type, visible: true, locked: false, opacity: 1, color: '#ffffff', x, y, ...defaults[type] } as Layer;
 };

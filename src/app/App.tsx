@@ -1,19 +1,20 @@
 import { useEffect, useMemo, useState } from 'react';
 import { OfflineMap } from '../components/OfflineMap';
 import { browserFileSystemAdapter } from '../core/adapters';
-import { MAP_STYLES, createLayer, createProject, createView, layerLabel, type AppLanguage, type CameraState, type Layer, type LayerType, type Project, type View } from '../core/project';
+import { MAP_STYLES, createLayer, createProject, createView, layerLabel, type AppLanguage, type CameraState, type GeoEffectType, type Layer, type LayerType, type Project, type View } from '../core/project';
 import { t } from '../core/i18n';
 import { compileViews, evaluateProjectAtTime } from '../core/viewCompiler';
 
-const layerTypes: LayerType[] = ['pin', 'route', 'text', 'image', 'shape', 'region', 'arrow'];
-const icons: Record<LayerType, string> = { region: '▰', pin: '●', text: 'T', shape: '◇', arrow: '➜', image: '▧', route: '⌁' };
+const layerTypes: LayerType[] = ['pin', 'route', 'text', 'image', 'shape', 'region', 'arrow', 'geo-effect'];
+const icons: Record<LayerType, string> = { region: '▰', pin: '●', text: 'T', shape: '◇', arrow: '➜', image: '▧', route: '⌁', 'geo-effect': '✦' };
+const geoEffectCycle: { type: GeoEffectType; name: string }[] = [{ type: 'impact-pulse', name: 'Impact pulse' }, { type: 'strike-marker', name: 'Strike marker' }, { type: 'smoke-plume', name: 'Smoke plume' }, { type: 'missile-arc', name: 'Missile arc' }, { type: 'front-line', name: 'Front line' }, { type: 'territory-expansion', name: 'Territory expansion' }, { type: 'hotspot', name: 'Hotspot' }, { type: 'control-zone', name: 'Control zone' }, { type: 'refugee-flow', name: 'Refugee flow' }, { type: 'blockade-line', name: 'Blockade line' }, { type: 'disputed-border', name: 'Disputed border' }, { type: 'influence-zone', name: 'Influence zone' }];
 export function App() {
   const [project, setProject] = useState<Project>(() => createProject('Untitled documentary')); const [language, setLanguage] = useState<AppLanguage>('en'); const [notice, setNotice] = useState('Offline map data loaded'); const [selectedId, setSelectedId] = useState<string | null>(null); const [search, setSearch] = useState(''); const [camera, setCamera] = useState<CameraState>({ x: 0, y: 0, zoom: 1 }); const [activeViewId, setActiveViewId] = useState<string | null>(null); const [previewTime, setPreviewTime] = useState<number | null>(null);
   const words = t(language); const style = MAP_STYLES.find(item => item.id === project.mapSettings.styleId)!; const selected = project.layers.find(l => l.id === selectedId) ?? null;
   const visibleLayers = useMemo(() => project.layers.filter(l => l.name.toLowerCase().includes(search.toLowerCase())), [project.layers, search]); const sequence = useMemo(() => compileViews(project.views), [project.views]); const previewState = previewTime === null ? null : evaluateProjectAtTime(project, previewTime);
   useEffect(() => { if (previewTime === null) return; const startedAt = performance.now() - previewTime * 1000; let frame = 0; const tick = () => { const next = (performance.now() - startedAt) / 1000; if (next >= sequence.duration) { setPreviewTime(null); return; } setPreviewTime(next); frame = requestAnimationFrame(tick); }; frame = requestAnimationFrame(tick); return () => cancelAnimationFrame(frame); }, [previewTime === null, sequence.duration]);
   const updateProject = (fn: (p: Project) => Project) => setProject(fn); const updateLayer = (id: string, patch: Partial<Layer>) => updateProject(p => ({ ...p, layers: p.layers.map(l => l.id === id ? { ...l, ...patch } : l) }));
-  const addLayer = (type: LayerType) => { const layer = createLayer(type, project.layers.length); updateProject(p => ({ ...p, layers: [...p.layers, layer] })); setSelectedId(layer.id); setNotice(`${layerLabel[type]} added`); };
+  const addLayer = (type: LayerType) => { const layer = createLayer(type, project.layers.length); if (type === 'geo-effect') { const effect = geoEffectCycle[project.layers.filter(l => l.type === 'geo-effect').length % geoEffectCycle.length]; layer.geoEffectType = effect.type; layer.name = effect.name; } updateProject(p => ({ ...p, layers: [...p.layers, layer] })); setSelectedId(layer.id); setNotice(`${layer.name} added`); };
   const save = async () => { const next = { ...project, metadata: { ...project.metadata, updatedAt: new Date().toISOString() } }; await browserFileSystemAdapter.saveProject(next); setProject(next); setNotice(words.saved); };
   const open = async () => { const saved = await browserFileSystemAdapter.openProject(); if (saved) { setProject(saved); setSelectedId(null); setNotice(words.opened); } else setNotice('No saved local project yet'); };
   const duplicate = () => { if (!selected) return; const layer = { ...selected, id: `${selected.type}-${crypto.randomUUID()}`, name: `${selected.name} copy`, x: selected.x + 22, y: selected.y + 18 }; updateProject(p => ({ ...p, layers: [...p.layers, layer] })); setSelectedId(layer.id); };
