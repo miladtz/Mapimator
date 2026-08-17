@@ -31,6 +31,20 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
+      - name: Download pinned FFmpeg resource
+        shell: pwsh
+        run: |
+          $url = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-29-13-36/ffmpeg-master-latest-win64-gpl-shared.zip'
+          $sha256 = '9211f801f2ee31f30cc343df7791ffee866a4053a5145b07191b280d2fb48f46'
+          $archive = Join-Path $env:RUNNER_TEMP 'ffmpeg.zip'
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $sha256) { throw 'FFmpeg checksum verification failed.' }
+          $destination = 'src-tauri/resources/ffmpeg'
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          Expand-Archive -Path $archive -DestinationPath $env:RUNNER_TEMP -Force
+          $bin = Get-ChildItem $env:RUNNER_TEMP -Recurse -Directory -Filter bin | Select-Object -First 1
+          Copy-Item (Join-Path $bin.FullName '*') $destination -Force
+
       - name: Build Tauri Windows bundle
         uses: tauri-apps/tauri-action@v0
         env:

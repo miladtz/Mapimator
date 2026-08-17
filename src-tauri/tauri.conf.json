@@ -16,6 +16,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "resources": ["resources/ffmpeg/*"],
     "windows": { "nsis": { "installMode": "currentUser" } }
   }
 }
