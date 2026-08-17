@@ -24,6 +24,6 @@ fn render_test_mp4(app: tauri::AppHandle, output_path: String) -> Result<(), Str
 #[tauri::command]
 fn ffmpeg_resource_path(app: tauri::AppHandle) -> Result<String, String> {
   let resource_dir = app.path().resource_dir().map_err(|error| error.to_string())?;
-  let candidates = [resource_dir.join("ffmpeg").join("ffmpeg.exe"), resource_dir.join("resources").join("ffmpeg").join("ffmpeg.exe")];
+  let candidates = [resource_dir.join("ffmpeg").join("ffmpeg.exe"), resource_dir.join("resources").join("ffmpeg").join("ffmpeg.exe"), resource_dir.join("resources").join("resources").join("ffmpeg").join("ffmpeg.exe")];
   candidates.iter().find(|path| path.is_file()).map(|path| path.to_string_lossy().into_owned()).ok_or_else(|| format!("Bundled FFmpeg executable is missing. Checked: {}", candidates.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join("; ")))
 }

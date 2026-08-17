@@ -79,4 +79,5 @@ jobs:
           path: |
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/mapmotion-studio.exe
+            src-tauri/target/release/resources/**
             src-tauri/tauri.conf.json
