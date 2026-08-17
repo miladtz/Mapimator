@@ -165,3 +165,13 @@ Local development uses the current user's Windows environment and does not requi
 **Known limitations:** the current effect tool cycles through the compact starter preset library; dedicated per-effect inspector controls, richer multi-point paths, and advanced per-effect timing controls are follow-up refinement work rather than separate rendering systems.
 
 **Next proposed phase:** Phase 7 — canvas layouts, safe areas, and Auto Reframe.
+
+## Phase 7 completion report
+
+# PHASE 7 COMPLETE
+
+**Implemented:** selectable 16:9, 9:16, 1:1, 4:5, 4:3, and custom canvas layouts; persisted canvas settings; editor-only safe-area guide with toggle; and Auto Reframe for visible Layers.
+
+**Tests:** `npm run format` and `npm run build` pass. Interactive verification switched to Portrait, toggled safe-area guides off/on, applied Auto Reframe, added a Text Layer, and created a View with no console errors.
+
+**Next proposed phase:** Phase 8 — deterministic video export.
