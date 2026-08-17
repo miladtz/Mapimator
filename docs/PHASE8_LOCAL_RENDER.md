@@ -11,6 +11,8 @@ Use the admin-capable Windows laptop for the native renderer development loop. G
 ## Commands
 
 ```powershell
+npm ci
+.\scripts\prepare-ffmpeg.ps1
 npm run dev
 npm run tauri -- build --bundles nsis
 ```
