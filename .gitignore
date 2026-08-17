@@ -1,6 +1,8 @@
 node_modules/
 dist/
+dist-portable/
 *.tsbuildinfo
 .vite/
 src-tauri/target/
+src-tauri/resources/ffmpeg/
 .pnpm-store/
