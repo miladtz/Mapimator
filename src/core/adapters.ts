@@ -8,9 +8,11 @@ export interface FileSystemAdapter {
 const STORAGE_KEY = 'mapmotion-phase-1-project';
 
 export const browserFileSystemAdapter: FileSystemAdapter = {
-  async saveProject(project) { localStorage.setItem(STORAGE_KEY, JSON.stringify(project)); },
+  async saveProject(project) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(project));
+  },
   async openProject() {
     const saved = localStorage.getItem(STORAGE_KEY);
-    return saved ? JSON.parse(saved) as Project : null;
-  }
+    return saved ? (JSON.parse(saved) as Project) : null;
+  },
 };

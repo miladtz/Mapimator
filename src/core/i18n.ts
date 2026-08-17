@@ -1,8 +1,48 @@
 import type { AppLanguage } from './project';
 
 const messages = {
-  en: { project: 'PROJECT', layers: 'LAYERS', search: 'Search layers...', properties: 'PROPERTIES', inspector: 'Select an item to customize it', map: 'MAP CANVAS', panZoom: 'Offline political map · drag to pan · scroll to zoom', views: 'VIEWS', noViews: 'Views arrive in Phase 4', save: 'Save', open: 'Open', new: 'New', export: 'Export', preview: 'Preview', dark: 'Dark', light: 'Light', saved: 'Project saved locally', opened: 'Project reopened', newProject: 'New project created' },
-  fa: { project: 'پروژه', layers: 'لایه‌ها', search: 'جست‌وجوی لایه‌ها...', properties: 'ویژگی‌ها', inspector: 'برای شخصی‌سازی، یک مورد را انتخاب کنید', map: 'بوم نقشه', panZoom: 'نقشه سیاسی آفلاین · برای جابه‌جایی بکشید · برای بزرگ‌نمایی اسکرول کنید', views: 'نماها', noViews: 'نماها در فاز ۴ اضافه می‌شوند', save: 'ذخیره', open: 'باز کردن', new: 'جدید', export: 'خروجی', preview: 'پیش‌نمایش', dark: 'تیره', light: 'روشن', saved: 'پروژه به‌صورت محلی ذخیره شد', opened: 'پروژه دوباره باز شد', newProject: 'پروژه جدید ساخته شد' }
+  en: {
+    project: 'PROJECT',
+    layers: 'LAYERS',
+    search: 'Search layers...',
+    properties: 'PROPERTIES',
+    inspector: 'Select an item to customize it',
+    map: 'MAP CANVAS',
+    panZoom: 'Offline political map · drag to pan · scroll to zoom',
+    views: 'VIEWS',
+    noViews: 'Views arrive in Phase 4',
+    save: 'Save',
+    open: 'Open',
+    new: 'New',
+    export: 'Export',
+    preview: 'Preview',
+    dark: 'Dark',
+    light: 'Light',
+    saved: 'Project saved locally',
+    opened: 'Project reopened',
+    newProject: 'New project created',
+  },
+  fa: {
+    project: 'پروژه',
+    layers: 'لایه‌ها',
+    search: 'جست‌وجوی لایه‌ها...',
+    properties: 'ویژگی‌ها',
+    inspector: 'برای شخصی‌سازی، یک مورد را انتخاب کنید',
+    map: 'بوم نقشه',
+    panZoom: 'نقشه سیاسی آفلاین · برای جابه‌جایی بکشید · برای بزرگ‌نمایی اسکرول کنید',
+    views: 'نماها',
+    noViews: 'نماها در فاز ۴ اضافه می‌شوند',
+    save: 'ذخیره',
+    open: 'باز کردن',
+    new: 'جدید',
+    export: 'خروجی',
+    preview: 'پیش‌نمایش',
+    dark: 'تیره',
+    light: 'روشن',
+    saved: 'پروژه به‌صورت محلی ذخیره شد',
+    opened: 'پروژه دوباره باز شد',
+    newProject: 'پروژه جدید ساخته شد',
+  },
 } as const;
 
 export const t = (language: AppLanguage) => messages[language];
