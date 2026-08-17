@@ -1,41 +1,44 @@
-# Building MapMotion Studio on Windows without administrator access
+# GitHub Actions Windows Build
 
-## Current packaging status
+## Official production packaging method
 
-The project is a Tauri 2 application: the frontend is built with Vite, and `src-tauri/` contains the Rust application and per-user NSIS configuration. The installer mode is `currentUser`.
+MapMotion's production Windows installer is built by GitHub Actions, not by the original developer laptop. This removes the need for local administrator access, a local Windows SDK, or local MSVC Build Tools.
 
-## User-space prerequisites
+The workflow is [`.github/workflows/build-windows.yml`](../.github/workflows/build-windows.yml). It runs on GitHub-hosted `windows-latest`, installs Node dependencies from `package-lock.json`, configures stable Rust for `x86_64-pc-windows-msvc`, and invokes the official Tauri action to create the NSIS bundle.
 
-Install or unpack each item beneath a user-writable directory, such as `%LOCALAPPDATA%\MapMotion\toolchain` or a project `tools/` folder. Do not use Program Files or system-wide installation.
+## Trigger a build
 
-- Node.js and npm (already user-installed for this workspace)
-- Rust stable under `%USERPROFILE%\.cargo` and `%USERPROFILE%\.rustup`
-- A **portable Windows SDK + linker toolchain**. It must provide `link.exe` or a compatible linker plus Windows import libraries including `kernel32.lib`, `userenv.lib`, `ws2_32.lib`, and `dbghelp.lib`. A portable LLVM/Windows-SDK or MinGW toolchain is suitable; Rust's bundled `rust-lld` alone is not sufficient because it does not include those libraries.
+1. Push to `main`, or open **GitHub → Actions → Build MapMotion Windows → Run workflow**.
+2. Wait for the `Build current-user Windows installer` job to finish.
+3. Download the **MapMotion-Windows** artifact from that workflow run.
 
-Bundled app fonts are emitted with the frontend build. Future FFmpeg binaries must be copied into a project-controlled Tauri resource folder; they must not be installed globally.
+The artifact contains the standalone executable, NSIS installer, and build configuration. The workflow fails if either executable is missing; it does not treat the Vite build alone as a release build.
 
-## Commands
+## Artifact locations in the Windows runner
 
-From the project root, with user-space Node, Rust, linker, and SDK paths prepended to the current process `PATH`:
+- Standalone executable: `src-tauri/target/release/mapmotion-studio.exe`
+- Per-user NSIS installer: `src-tauri/target/release/bundle/nsis/*.exe`
 
-```powershell
-npm install
-npm run build
-npm run tauri:build
-```
+Tauri is configured with `installMode: currentUser`, so installation does not require elevation and should not use Program Files.
 
-The `tauri:build` command runs the production frontend build, then compiles the Rust desktop application and generates an NSIS per-user installer. It never uses `npm run dev`, localhost, or Vite at runtime.
+## Test the downloaded artifact
 
-## Expected artifacts
+1. Stop local Vite and Node development servers.
+2. Extract the GitHub artifact to a user-writable folder.
+3. Run the installer or standalone executable.
+4. Confirm the editor launches without localhost, a dev server, VS Code, or Codex.
+5. Confirm the offline map loads, pan/zoom works, current Layers work, Persian/English text renders, and local Save/Open works.
 
-After a successful build:
+## Local development
 
-- Frontend: `dist/`
-- Executable: `src-tauri/target/release/mapmotion-studio.exe`
-- NSIS installer: `src-tauri/target/release/bundle/nsis/`
+Local development continues to use `npm install` and `npm run dev`. A local native package build is optional and requires a complete Windows MSVC + SDK environment. It is not the release pipeline.
 
-## Troubleshooting
+## Bundled resources
 
-- `link.exe not found`: add the portable toolchain's `bin` directory to `PATH` for the build process.
-- `kernel32.lib not found`: add the portable Windows SDK library directories through the toolchain environment; do not point Rust at `rust-lld` alone.
-- Never substitute a machine-level Build Tools install. Keep toolchains in a user directory and configure their paths only in the build shell or an untracked local environment file.
+Application fonts are emitted into the frontend bundle. Future FFmpeg binaries must be added as Tauri resources under source control or downloaded during CI from a verified source, subject to licensing; they must never be installed system-wide.
+
+## Common failures
+
+- **`npm ci` fails:** update and commit `package-lock.json` alongside dependency changes.
+- **Tauri bundle fails:** inspect the Windows Actions log; the job intentionally fails before artifact upload.
+- **No artifact appears:** the explicit artifact check requires both the NSIS installer and standalone EXE.

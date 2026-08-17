@@ -114,10 +114,8 @@ Avoid duplicated geometry and full-resolution buffers. Keep preview and exporter
 
 **Next proposed phase:** Phase 4 — View model and static scene-state operations, without transitions or timeline work.
 
-## Native packaging verification (in progress)
+## Native packaging verification (GitHub Actions)
 
-Tauri packaging configuration has been added under `src-tauri/`, including a Windows per-user NSIS target and `npm run tauri:build`. The frontend production build succeeds. The native build correctly reached Rust compilation, where it reported the missing Microsoft MSVC linker (`link.exe`). Rust is installed and working; the Visual Studio 2022 Build Tools C++ workload installer was started to supply that linker. No `.exe` or installer artifact exists yet, so Phase 4 must not begin until the installer completes and the native build is rerun successfully.
+Local development uses the current user's Windows environment and does not require elevation. Production Windows packaging uses a GitHub Actions `windows-latest` runner through `.github/workflows/build-windows.yml`. The workflow builds the actual Tauri NSIS `currentUser` bundle, verifies both executable outputs, and uploads `MapMotion-Windows`. Lack of local administrator access does not block release packaging.
 
-## User-space development policy
-
-This project must build, test, and package without administrator access. The NSIS installer remains `currentUser` only. Development dependencies, build toolchains, caches, generated artifacts, bundled fonts, and future FFmpeg binaries must stay within user-writable locations. The project must not install fonts system-wide, add services/drivers, write into Program Files, or require elevation. The attempted machine-level Visual Studio Build Tools route is discontinued; native packaging will use a portable user-space linker/toolchain alternative.
+The packaging gate remains incomplete until an Actions run succeeds, its artifact is downloaded, and that artifact is launched successfully on the target laptop without a development server.
