@@ -13,3 +13,4 @@ fn ffmpeg_resource_path(app: tauri::AppHandle) -> Result<String, String> {
   if !executable.is_file() { return Err("Bundled FFmpeg executable is missing from application resources.".into()); }
   Ok(executable.to_string_lossy().into_owned())
 }
+use tauri::Manager;
