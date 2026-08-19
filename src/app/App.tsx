@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { save as saveFile } from '@tauri-apps/plugin-dialog';
 import { OfflineMap } from '../components/OfflineMap';
 import { browserFileSystemAdapter } from '../core/adapters';
 import {
@@ -19,7 +20,11 @@ import {
 import { t } from '../core/i18n';
 import { compileViews, evaluateProjectAtTime } from '../core/viewCompiler';
 import { autoReframe } from '../core/layout';
-import { exportProjectVideo } from '../core/videoExporter';
+import {
+  cancelProjectVideoExport,
+  exportProjectVideo,
+  type ExportProgressState,
+} from '../core/videoExporter';
 
 const layerTypes: LayerType[] = ['pin', 'route', 'text', 'image', 'shape', 'region', 'arrow', 'geo-effect'];
 const icons: Record<LayerType, string> = {
@@ -55,6 +60,13 @@ export function App() {
   const [camera, setCamera] = useState<CameraState>({ x: 0, y: 0, zoom: 1 });
   const [activeViewId, setActiveViewId] = useState<string | null>(null);
   const [previewTime, setPreviewTime] = useState<number | null>(null);
+  const [exportState, setExportState] = useState<ExportProgressState & { message?: string }>({
+    status: 'idle',
+    currentFrame: 0,
+    totalFrames: 0,
+    percentage: 0,
+  });
+  const exportAbort = useRef<AbortController | null>(null);
   const words = t(language);
   const style = MAP_STYLES.find((item) => item.id === project.mapSettings.styleId)!;
   const selected = project.layers.find((l) => l.id === selectedId) ?? null;
@@ -237,15 +249,48 @@ export function App() {
     setNotice('Auto Reframe applied');
   };
   const exportProof = async () => {
-    const outputPath = window.prompt('MP4 output path');
-    if (!outputPath) return;
+    if (exportAbort.current) return;
+    const controller = new AbortController();
+    exportAbort.current = controller;
+    setExportState({ status: 'preparing', currentFrame: 0, totalFrames: 0, percentage: 0 });
     try {
-      const result = await exportProjectVideo(project, outputPath);
-      setNotice(`${result.totalFrames}-frame project MP4 export completed`);
+      const outputPath = await saveFile({
+        title: 'Export MapMotion Video',
+        defaultPath: `${project.metadata.name}.mp4`,
+        filters: [{ name: 'MP4 video', extensions: ['mp4'] }],
+      });
+      if (typeof outputPath !== 'string') {
+        setExportState({ status: 'idle', currentFrame: 0, totalFrames: 0, percentage: 0 });
+        return;
+      }
+      const result = await exportProjectVideo(project, outputPath, {
+        signal: controller.signal,
+        onProgress: setExportState,
+      });
+      setExportState((state) => ({
+        ...state,
+        status: 'completed',
+        percentage: 100,
+        message: `Saved ${result.totalFrames} frames with ${result.encoderLabel}.`,
+      }));
+      setNotice('Project video export completed');
     } catch (error) {
-      setNotice(`Export failed: ${String(error)}`);
+      const cancelled = error instanceof DOMException && error.name === 'AbortError';
+      setExportState((state) => ({
+        ...state,
+        status: cancelled ? 'cancelled' : 'failed',
+        message: cancelled ? 'Export cancelled. Partial output removed.' : String(error),
+      }));
+      setNotice(cancelled ? 'Video export cancelled' : 'Video export failed');
+    } finally {
+      exportAbort.current = null;
     }
   };
+  const cancelExport = () => {
+    exportAbort.current?.abort();
+    void cancelProjectVideoExport();
+  };
+  const exportIsActive = ['preparing', 'rendering', 'finalizing'].includes(exportState.status);
   return (
     <main className="studio" dir={language === 'fa' ? 'rtl' : 'ltr'}>
       <header className="topbar">
@@ -275,8 +320,8 @@ export function App() {
           <button className="primary" onClick={save}>
             {words.save}
           </button>
-          <button className="export" onClick={exportProof}>
-            {words.export}
+          <button className="export" onClick={exportProof} disabled={exportIsActive}>
+            {exportIsActive ? 'Exporting…' : `${words.export} Video`}
           </button>
           <button className="lang" onClick={() => setLanguage((l) => (l === 'en' ? 'fa' : 'en'))}>
             {language === 'en' ? 'فا' : 'EN'}
@@ -458,6 +503,21 @@ export function App() {
               Update View
             </button>
           </div>
+          {exportState.status !== 'idle' && (
+            <div className={`export-status export-status-${exportState.status}`} aria-live="polite">
+              <div>
+                <strong>{exportStatusLabel(exportState.status)}</strong>
+                <span>
+                  {exportState.totalFrames > 0 &&
+                    `Frame ${exportState.currentFrame} / ${exportState.totalFrames} · `}
+                  {exportState.percentage}%{exportState.encoderLabel && ` · ${exportState.encoderLabel}`}
+                </span>
+                {exportState.message && <small>{exportState.message}</small>}
+              </div>
+              <progress max="100" value={exportState.percentage} />
+              {exportIsActive && <button onClick={cancelExport}>Cancel</button>}
+            </div>
+          )}
         </section>
         <aside className="panel right-panel">
           <div className="panel-heading">
@@ -565,6 +625,17 @@ export function App() {
     </main>
   );
 }
+
+const exportStatusLabel = (status: ExportProgressState['status']) => {
+  if (status === 'preparing') return 'Preparing video';
+  if (status === 'rendering') return 'Exporting video';
+  if (status === 'finalizing') return 'Finalizing video';
+  if (status === 'completed') return 'Export completed';
+  if (status === 'cancelled') return 'Export cancelled';
+  if (status === 'failed') return 'Export failed';
+  return 'Video export';
+};
+
 function Inspector({
   layer,
   onChange,

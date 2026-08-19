@@ -187,6 +187,11 @@ export interface RenderedProjectSequence {
   totalFrames: number;
 }
 
+export interface RenderedRgbaSequence extends RenderedProjectSequence {
+  renderMs: number;
+  consumeMs: number;
+}
+
 export async function renderProjectFrameSequence(
   project: Project,
   consumeFrame: (frame: RenderedProjectFrame) => void | Promise<void>,
@@ -207,20 +212,32 @@ export async function renderProjectFrameSequence(
 
 export async function renderProjectRgbaSequence(
   project: Project,
-  consumeFrame: (frame: Omit<RenderedProjectFrame, 'blob'> & { pixels: Uint8Array }) => void | Promise<void>,
-): Promise<RenderedProjectSequence> {
+  consumeFrame: (
+    frame: Omit<RenderedProjectFrame, 'blob'> & { pixels: Uint8Array; renderMs: number },
+  ) => void | Promise<void>,
+  signal?: AbortSignal,
+): Promise<RenderedRgbaSequence> {
   if (project.canvas.fps !== 30) throw new Error('Renderer milestone 3 supports exactly 30fps.');
   if (project.canvas.width !== MILESTONE_FRAME_WIDTH || project.canvas.height !== MILESTONE_FRAME_HEIGHT)
     throw new Error('Renderer milestone 3 supports exactly 1920x1080.');
 
   const duration = compileViews(project.views).duration;
   const totalFrames = Math.ceil(duration * project.canvas.fps);
+  let renderMs = 0;
+  let consumeMs = 0;
   for (let index = 0; index < totalFrames; index += 1) {
+    signal?.throwIfAborted();
     const time = index / project.canvas.fps;
+    const renderStarted = performance.now();
     const pixels = await renderProjectFrameRgba(project, time);
-    await consumeFrame({ pixels, index, time, totalFrames });
+    const frameRenderMs = performance.now() - renderStarted;
+    renderMs += frameRenderMs;
+    signal?.throwIfAborted();
+    const consumeStarted = performance.now();
+    await consumeFrame({ pixels, index, time, totalFrames, renderMs: frameRenderMs });
+    consumeMs += performance.now() - consumeStarted;
   }
-  return { duration, fps: project.canvas.fps, totalFrames };
+  return { duration, fps: project.canvas.fps, totalFrames, renderMs, consumeMs };
 }
 
 export function createRendererMilestoneProject(): Project {

@@ -329,6 +329,51 @@ button:disabled {
   color: #e8523d;
   font-size: 15px;
 }
+.export-status {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(160px, 0.7fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 9px 15px;
+  border-top: 1px solid #273444;
+  background: #111a26;
+  color: #aebdca;
+}
+.export-status div,
+.export-status span,
+.export-status small {
+  display: block;
+}
+.export-status strong {
+  color: #eef3f7;
+  font-size: 11px;
+}
+.export-status span,
+.export-status small {
+  margin-top: 3px;
+  font-size: 10px;
+}
+.export-status small {
+  color: #8092a4;
+}
+.export-status progress {
+  width: 100%;
+  accent-color: #e8523d;
+}
+.export-status button {
+  border: 1px solid #48586a;
+  background: #202b39;
+  color: #d9e2e9;
+  padding: 6px 12px;
+}
+.export-status-completed strong {
+  color: #69cf9a;
+}
+.export-status-failed strong,
+.export-status-cancelled strong {
+  color: #f08072;
+}
 .timeline-line {
   height: 3px;
   background: #334150;

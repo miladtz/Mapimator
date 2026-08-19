@@ -4,5 +4,6 @@ dist-portable/
 *.tsbuildinfo
 .vite/
 src-tauri/target/
+src-tauri/gen/
 src-tauri/resources/ffmpeg/
 .pnpm-store/

@@ -29,9 +29,18 @@ struct ExportResult {
     stderr: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EncoderProbeResult {
+    encoder: &'static str,
+    display_name: &'static str,
+    diagnostics: String,
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(ExportState::default())
         .invoke_handler(tauri::generate_handler![
             ffmpeg_resource_path,
@@ -39,10 +48,52 @@ pub fn run() {
             start_project_export,
             write_project_export_frame,
             finish_project_export,
-            abort_project_export
+            abort_project_export,
+            select_h264_encoder
         ])
         .run(tauri::generate_context!())
         .expect("error while running MapMotion Studio");
+}
+
+#[tauri::command]
+fn select_h264_encoder(app: tauri::AppHandle) -> Result<EncoderProbeResult, String> {
+    let ffmpeg = ffmpeg_resource_path(app)?;
+    let output = Command::new(ffmpeg)
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=128x128:r=30",
+            "-frames:v",
+            "1",
+            "-c:v",
+            "h264_nvenc",
+            "-f",
+            "null",
+            "-",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|error| format!("Unable to probe NVIDIA video encoding: {error}"))?;
+    let diagnostics = String::from_utf8_lossy(&output.stderr).into_owned();
+    if output.status.success() {
+        Ok(EncoderProbeResult {
+            encoder: "h264_nvenc",
+            display_name: "NVIDIA NVENC",
+            diagnostics,
+        })
+    } else {
+        Ok(EncoderProbeResult {
+            encoder: "libx264",
+            display_name: "Software H.264",
+            diagnostics,
+        })
+    }
 }
 
 #[tauri::command]
