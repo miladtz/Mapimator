@@ -10,7 +10,7 @@ import {
   type Layer,
   type Project,
 } from './project';
-import { evaluateProjectAtTime } from './viewCompiler';
+import { compileViews, evaluateProjectAtTime } from './viewCompiler';
 
 export const MILESTONE_FRAME_WIDTH = 1920;
 export const MILESTONE_FRAME_HEIGHT = 1080;
@@ -32,6 +32,21 @@ const fetchFontDataUrl = async (url: string) => {
   return blobToDataUrl(await response.blob());
 };
 
+let embeddedFontStylesPromise: Promise<string> | undefined;
+
+const getEmbeddedFontStyles = () => {
+  embeddedFontStylesPromise ??= Promise.all([
+    fetchFontDataUrl(interFontUrl),
+    fetchFontDataUrl(vazirmatnArabicFontUrl),
+  ]).then(
+    ([inter, vazirmatnArabic]) => `
+      @font-face { font-family: Inter; src: url('${inter}') format('woff2'); font-weight: 100 900; }
+      @font-face { font-family: Vazirmatn; src: url('${vazirmatnArabic}') format('woff2'); font-weight: 100 900; }
+    `,
+  );
+  return embeddedFontStylesPromise;
+};
+
 const inlineComputedStyles = (source: Element, clone: Element) => {
   const computed = getComputedStyle(source);
   const cloneElement = clone as HTMLElement | SVGElement;
@@ -47,15 +62,8 @@ const svgToPng = async (svg: SVGSVGElement, width: number, height: number) => {
   clone.setAttribute('width', String(width));
   clone.setAttribute('height', String(height));
 
-  const [inter, vazirmatnArabic] = await Promise.all([
-    fetchFontDataUrl(interFontUrl),
-    fetchFontDataUrl(vazirmatnArabicFontUrl),
-  ]);
   const fontStyles = document.createElementNS('http://www.w3.org/2000/svg', 'style');
-  fontStyles.textContent = `
-    @font-face { font-family: Inter; src: url('${inter}') format('woff2'); font-weight: 100 900; }
-    @font-face { font-family: Vazirmatn; src: url('${vazirmatnArabic}') format('woff2'); font-weight: 100 900; }
-  `;
+  fontStyles.textContent = await getEmbeddedFontStyles();
   clone.prepend(fontStyles);
 
   const svgBlob = new Blob([new XMLSerializer().serializeToString(clone)], {
@@ -137,6 +145,37 @@ export async function renderProjectFrame(
   }
 }
 
+export interface RenderedProjectFrame {
+  blob: Blob;
+  index: number;
+  time: number;
+  totalFrames: number;
+}
+
+export interface RenderedProjectSequence {
+  duration: number;
+  fps: number;
+  totalFrames: number;
+}
+
+export async function renderProjectFrameSequence(
+  project: Project,
+  consumeFrame: (frame: RenderedProjectFrame) => void | Promise<void>,
+): Promise<RenderedProjectSequence> {
+  if (project.canvas.fps !== 30) throw new Error('Renderer milestone 2 supports exactly 30fps.');
+  if (project.canvas.width !== MILESTONE_FRAME_WIDTH || project.canvas.height !== MILESTONE_FRAME_HEIGHT)
+    throw new Error('Renderer milestone 2 supports exactly 1920x1080.');
+
+  const duration = compileViews(project.views).duration;
+  const totalFrames = Math.ceil(duration * project.canvas.fps);
+  for (let index = 0; index < totalFrames; index += 1) {
+    const time = index / project.canvas.fps;
+    const blob = await renderProjectFrame(project, time);
+    await consumeFrame({ blob, index, time, totalFrames });
+  }
+  return { duration, fps: project.canvas.fps, totalFrames };
+}
+
 export function createRendererMilestoneProject(): Project {
   const camera: CameraState = { x: -72, y: 26, zoom: 1.12 };
   const region: Layer = { ...createLayer('region'), id: 'milestone-region', countryId: 'iran' };
@@ -205,6 +244,75 @@ export function createRendererMilestoneProject(): Project {
       camera,
       layers: structuredClone(project.layers),
       thumbnailColor: '#28415a',
+    },
+  ];
+  return project;
+}
+
+export function createRendererTransitionProject(): Project {
+  const project = createRendererMilestoneProject();
+  project.metadata = {
+    name: 'Renderer milestone 2',
+    createdAt: '2026-08-19T00:00:00.000Z',
+    updatedAt: '2026-08-19T00:00:00.000Z',
+  };
+
+  const firstLayers = structuredClone(project.layers);
+  const secondLayers = structuredClone(project.layers);
+  const firstRegion = firstLayers.find((layer) => layer.id === 'milestone-region');
+  const secondRegion = secondLayers.find((layer) => layer.id === 'milestone-region');
+  const firstArrow = firstLayers.find((layer) => layer.id === 'milestone-arrow');
+  const secondArrow = secondLayers.find((layer) => layer.id === 'milestone-arrow');
+  const secondEnglish = secondLayers.find((layer) => layer.id === 'milestone-english');
+  const firstPersian = firstLayers.find((layer) => layer.id === 'milestone-persian');
+  const secondPersian = secondLayers.find((layer) => layer.id === 'milestone-persian');
+  const firstEffect = firstLayers.find((layer) => layer.id === 'milestone-impact-pulse');
+  const secondEffect = secondLayers.find((layer) => layer.id === 'milestone-impact-pulse');
+
+  if (
+    !firstRegion ||
+    !secondRegion ||
+    !firstArrow ||
+    !secondArrow ||
+    !secondEnglish ||
+    !firstPersian ||
+    !secondPersian ||
+    !firstEffect ||
+    !secondEffect
+  )
+    throw new Error('The deterministic transition fixture is incomplete.');
+
+  firstRegion.opacity = 0.35;
+  secondRegion.opacity = 0.9;
+  Object.assign(firstArrow, { x: 470, y: 355, x2: 610, y2: 305 });
+  Object.assign(secondArrow, { x: 570, y: 330, x2: 790, y2: 235 });
+  Object.assign(secondEnglish, { x: 635, y: 190 });
+  firstPersian.opacity = 0;
+  Object.assign(secondPersian, { x: 735, y: 305, opacity: 1 });
+  Object.assign(firstEffect, { x: 610, y: 320, opacity: 0.35 });
+  Object.assign(secondEffect, { x: 755, y: 250, opacity: 1 });
+
+  project.layers = structuredClone(secondLayers);
+  project.views = [
+    {
+      id: 'milestone-transition-from',
+      name: 'Transition start',
+      holdDuration: 0,
+      transitionDuration: 2,
+      transitionPreset: 'linear',
+      camera: { x: -120, y: 38, zoom: 1.04 },
+      layers: firstLayers,
+      thumbnailColor: '#28415a',
+    },
+    {
+      id: 'milestone-transition-to',
+      name: 'Transition end',
+      holdDuration: 0.1,
+      transitionDuration: 0,
+      transitionPreset: 'linear',
+      camera: { x: -245, y: -18, zoom: 1.4 },
+      layers: secondLayers,
+      thumbnailColor: '#49315f',
     },
   ];
   return project;
