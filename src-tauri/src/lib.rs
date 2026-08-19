@@ -1,6 +1,8 @@
 use serde::Serialize;
 use std::{
+    collections::HashSet,
     fs,
+    fs::File,
     io::{Read, Write},
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
@@ -8,8 +10,12 @@ use std::{
     thread::JoinHandle,
 };
 use tauri::{ipc::InvokeBody, Manager, State};
+use zip::{write::SimpleFileOptions, CompressionMethod, DateTime, ZipArchive, ZipWriter};
 
 const SMOKE_FRAME_BYTES: usize = 1920 * 1080 * 4;
+const PORTABLE_MANIFEST_PATH: &str = "manifest.json";
+const PORTABLE_PROJECT_PATH: &str = "project.json";
+const MAX_PORTABLE_JSON_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Default)]
 struct ExportState(Mutex<Option<ExportSession>>);
@@ -23,7 +29,7 @@ struct ExportSession {
     frames_written: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ExportResult {
     frames_written: usize,
@@ -38,6 +44,13 @@ struct EncoderProbeResult {
     diagnostics: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PortableProjectPayload {
+    manifest_json: String,
+    project_json: String,
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -50,10 +63,150 @@ pub fn run() {
             write_project_export_frame,
             finish_project_export,
             abort_project_export,
-            select_h264_encoder
+            select_h264_encoder,
+            export_portable_project,
+            import_portable_project
         ])
         .run(tauri::generate_context!())
         .expect("error while running MapMotion Studio");
+}
+
+#[tauri::command]
+fn export_portable_project(
+    output_path: String,
+    manifest_json: String,
+    project_json: String,
+) -> Result<(), String> {
+    write_portable_project(
+        PathBuf::from(output_path),
+        manifest_json.as_bytes(),
+        project_json.as_bytes(),
+    )
+}
+
+fn write_portable_project(
+    output_path: PathBuf,
+    manifest_json: &[u8],
+    project_json: &[u8],
+) -> Result<(), String> {
+    if manifest_json.len() as u64 > MAX_PORTABLE_JSON_BYTES
+        || project_json.len() as u64 > MAX_PORTABLE_JSON_BYTES
+    {
+        return Err("Portable project JSON exceeds the Milestone 1 size limit.".into());
+    }
+    let parent = output_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or("Portable project destination has no valid parent directory.")?;
+    if !parent.is_dir() {
+        return Err("Portable project destination directory does not exist.".into());
+    }
+    let file_name = output_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("Portable project destination filename is invalid.")?;
+    let temporary_path = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
+    let write_result = (|| -> Result<(), String> {
+        let file = File::create(&temporary_path)
+            .map_err(|error| format!("Unable to create portable project package: {error}"))?;
+        let mut archive = ZipWriter::new(file);
+        let options = SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Deflated)
+            .last_modified_time(DateTime::default());
+        archive
+            .start_file(PORTABLE_MANIFEST_PATH, options)
+            .map_err(|error| format!("Unable to write portable project manifest: {error}"))?;
+        archive
+            .write_all(manifest_json)
+            .map_err(|error| format!("Unable to write portable project manifest: {error}"))?;
+        archive
+            .start_file(PORTABLE_PROJECT_PATH, options)
+            .map_err(|error| format!("Unable to write portable project payload: {error}"))?;
+        archive
+            .write_all(project_json)
+            .map_err(|error| format!("Unable to write portable project payload: {error}"))?;
+        let file = archive
+            .finish()
+            .map_err(|error| format!("Unable to finish portable project package: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("Unable to flush portable project package: {error}"))?;
+        if output_path.exists() {
+            fs::remove_file(&output_path)
+                .map_err(|error| format!("Unable to replace portable project package: {error}"))?;
+        }
+        fs::rename(&temporary_path, &output_path)
+            .map_err(|error| format!("Unable to finalize portable project package: {error}"))?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    write_result
+}
+
+#[tauri::command]
+fn import_portable_project(input_path: String) -> Result<PortableProjectPayload, String> {
+    read_portable_project(PathBuf::from(input_path))
+}
+
+fn read_portable_project(input_path: PathBuf) -> Result<PortableProjectPayload, String> {
+    let file = File::open(input_path)
+        .map_err(|error| format!("Unable to open portable project package: {error}"))?;
+    let mut archive = ZipArchive::new(file)
+        .map_err(|error| format!("File is not a valid portable project archive: {error}"))?;
+    if archive.len() > 2 {
+        return Err("Portable project contains unexpected entries.".into());
+    }
+    let mut names = HashSet::new();
+    let mut manifest_json = None;
+    let mut project_json = None;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| format!("Unable to inspect portable project entry: {error}"))?;
+        let enclosed = entry.enclosed_name().ok_or_else(|| {
+            format!(
+                "Portable project contains an unsafe archive path: {}.",
+                entry.name()
+            )
+        })?;
+        if enclosed.components().count() != 1 || entry.is_dir() {
+            return Err(format!(
+                "Portable project contains an unsupported archive path: {}.",
+                entry.name()
+            ));
+        }
+        let name = enclosed.to_string_lossy().into_owned();
+        if !names.insert(name.clone()) {
+            return Err(format!(
+                "Portable project contains duplicate entry: {name}."
+            ));
+        }
+        if !matches!(
+            name.as_str(),
+            PORTABLE_MANIFEST_PATH | PORTABLE_PROJECT_PATH
+        ) {
+            return Err(format!(
+                "Portable project contains unexpected entry: {name}."
+            ));
+        }
+        if entry.size() > MAX_PORTABLE_JSON_BYTES {
+            return Err(format!("Portable project entry is too large: {name}."));
+        }
+        let mut contents = String::new();
+        entry.read_to_string(&mut contents).map_err(|error| {
+            format!("Portable project entry is not valid UTF-8 JSON text: {error}")
+        })?;
+        match name.as_str() {
+            PORTABLE_MANIFEST_PATH => manifest_json = Some(contents),
+            PORTABLE_PROJECT_PATH => project_json = Some(contents),
+            _ => unreachable!(),
+        }
+    }
+    Ok(PortableProjectPayload {
+        manifest_json: manifest_json.ok_or("Portable project is missing manifest.json.")?,
+        project_json: project_json.ok_or("Portable project is missing project.json.")?,
+    })
 }
 
 #[tauri::command]
@@ -353,4 +506,72 @@ fn ffmpeg_resource_path(app: tauri::AppHandle) -> Result<String, String> {
                     .join("; ")
             )
         })
+}
+
+#[cfg(test)]
+mod portable_project_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_path(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "mapmotion-{label}-{}-{nonce}.mapmotionpack",
+            std::process::id()
+        ))
+    }
+
+    fn write_test_archive(path: &PathBuf, entries: &[(&str, &str)]) {
+        let file = File::create(path).expect("create archive");
+        let mut archive = ZipWriter::new(file);
+        let options = SimpleFileOptions::default().last_modified_time(DateTime::default());
+        for (name, contents) in entries {
+            archive.start_file(*name, options).expect("start entry");
+            archive.write_all(contents.as_bytes()).expect("write entry");
+        }
+        archive.finish().expect("finish archive");
+    }
+
+    #[test]
+    fn portable_project_round_trip_preserves_json() {
+        let path = test_path("round-trip");
+        write_portable_project(
+            path.clone(),
+            br#"{"packageVersion":1}"#,
+            br#"{"version":1}"#,
+        )
+        .expect("write package");
+        let payload = read_portable_project(path.clone()).expect("read package");
+        assert_eq!(payload.manifest_json, r#"{"packageVersion":1}"#);
+        assert_eq!(payload.project_json, r#"{"version":1}"#);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn portable_project_rejects_missing_entries() {
+        let path = test_path("missing-manifest");
+        write_test_archive(&path, &[(PORTABLE_PROJECT_PATH, "{}")]);
+        let error = read_portable_project(path.clone()).expect_err("missing manifest must fail");
+        assert!(error.contains("missing manifest.json"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn portable_project_rejects_traversal_entries() {
+        let path = test_path("traversal");
+        write_test_archive(
+            &path,
+            &[
+                (PORTABLE_MANIFEST_PATH, "{}"),
+                (PORTABLE_PROJECT_PATH, "{}"),
+                ("../escape.json", "{}"),
+            ],
+        );
+        let error = read_portable_project(path.clone()).expect_err("traversal must fail");
+        assert!(error.contains("unexpected entries") || error.contains("unsafe archive path"));
+        let _ = fs::remove_file(path);
+    }
 }

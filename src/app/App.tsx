@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { save as saveFile } from '@tauri-apps/plugin-dialog';
+import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
 import { OfflineMap } from '../components/OfflineMap';
 import { browserFileSystemAdapter } from '../core/adapters';
 import {
@@ -20,6 +20,7 @@ import {
 import { t } from '../core/i18n';
 import { compileViews, evaluateProjectAtTime } from '../core/viewCompiler';
 import { autoReframe } from '../core/layout';
+import { exportPortableProject, importPortableProject } from '../core/portableProject';
 import { DEFAULT_EXPORT_PRESET_ID, EXPORT_PRESETS, type ExportPresetId } from '../core/exportPresets';
 import {
   cancelProjectVideoExport,
@@ -68,6 +69,7 @@ export function App() {
     percentage: 0,
   });
   const [exportPresetId, setExportPresetId] = useState<ExportPresetId>(DEFAULT_EXPORT_PRESET_ID);
+  const [portableBusy, setPortableBusy] = useState(false);
   const exportAbort = useRef<AbortController | null>(null);
   const exportPreset = EXPORT_PRESETS.find((preset) => preset.id === exportPresetId)!;
   const words = t(language);
@@ -129,6 +131,49 @@ export function App() {
       setSelectedId(null);
       setNotice(words.opened);
     } else setNotice('No saved local project yet');
+  };
+  const exportProjectPackage = async () => {
+    if (portableBusy) return;
+    setPortableBusy(true);
+    try {
+      const safeName = project.metadata.name.replace(/[<>:"/\\|?*]+/g, '-').trim() || 'MapMotion project';
+      const outputPath = await saveFile({
+        title: 'Export Portable MapMotion Project',
+        defaultPath: `${safeName}.mapmotionpack`,
+        filters: [{ name: 'MapMotion portable project', extensions: ['mapmotionpack'] }],
+      });
+      if (typeof outputPath !== 'string') return;
+      await exportPortableProject(project, outputPath);
+      setNotice(`Portable project exported: ${project.metadata.name}`);
+    } catch (error) {
+      setNotice(`Export Project failed: ${String(error)}`);
+    } finally {
+      setPortableBusy(false);
+    }
+  };
+  const importProjectPackage = async () => {
+    if (portableBusy || exportIsActive) return;
+    setPortableBusy(true);
+    try {
+      const inputPath = await openFile({
+        title: 'Import Portable MapMotion Project',
+        multiple: false,
+        directory: false,
+        filters: [{ name: 'MapMotion portable project', extensions: ['mapmotionpack'] }],
+      });
+      if (typeof inputPath !== 'string') return;
+      const imported = await importPortableProject(inputPath);
+      setProject(imported);
+      setCamera(imported.views[0]?.camera ?? { x: 0, y: 0, zoom: 1 });
+      setSelectedId(null);
+      setActiveViewId(null);
+      setPreviewTime(null);
+      setNotice(`Portable project imported: ${imported.metadata.name}`);
+    } catch (error) {
+      setNotice(`Import Project failed: ${String(error)}`);
+    } finally {
+      setPortableBusy(false);
+    }
   };
   const duplicate = () => {
     if (!selected) return;
@@ -320,6 +365,12 @@ export function App() {
           </button>
           <button className="quiet" onClick={open}>
             {words.open}
+          </button>
+          <button className="quiet" onClick={importProjectPackage} disabled={portableBusy || exportIsActive}>
+            Import Project
+          </button>
+          <button className="quiet" onClick={exportProjectPackage} disabled={portableBusy || exportIsActive}>
+            Export Project
           </button>
           <button className="primary" onClick={save}>
             {words.save}

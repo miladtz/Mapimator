@@ -1,4 +1,5 @@
 import type { Project } from './project';
+import { validateAndMigrateProject } from './projectPersistence';
 
 export interface FileSystemAdapter {
   saveProject(project: Project): Promise<void>;
@@ -13,6 +14,6 @@ export const browserFileSystemAdapter: FileSystemAdapter = {
   },
   async openProject() {
     const saved = localStorage.getItem(STORAGE_KEY);
-    return saved ? (JSON.parse(saved) as Project) : null;
+    return saved ? validateAndMigrateProject(JSON.parse(saved)) : null;
   },
 };
