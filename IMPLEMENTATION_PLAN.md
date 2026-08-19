@@ -175,3 +175,17 @@ Local development uses the current user's Windows environment and does not requi
 **Tests:** `npm run format` and `npm run build` pass. Interactive verification switched to Portrait, toggled safe-area guides off/on, applied Auto Reframe, added a Text Layer, and created a View with no console errors.
 
 **Next proposed phase:** Phase 8 — deterministic video export.
+
+## Phase 8 completion report
+
+# PHASE 8 COMPLETE
+
+**Implemented:** deterministic rendering of evaluated project frames through the shared preview/export evaluator; direct target-layout rendering; sequential raw RGBA streaming without multi-frame buffering; application-packaged FFmpeg and companion libraries; H.264 MP4 output; automatic NVIDIA NVENC selection with libx264 fallback; progress and clean cancellation; native save dialog; and 1080p30, 1080p60, Shorts, square, portrait, and existing project-layout export support.
+
+**Tests:** clean `npm ci`; `npm run format`; `npm run build`; `cargo check`; `cargo test`; native Tauri release build; NSIS current-user bundle; ffprobe codec, dimensions, frame-rate, duration, frame-count, and pixel-format checks; packaged NVENC initialization; controlled automatic libx264 fallback; cancellation cleanup; recovery export; and saved-project restart/reopen verification all pass.
+
+**Manual verification:** installed the NSIS package without administrator privileges; launched the installed executable without Vite or development tooling; validated the editor with application-scoped offline hostname resolution; created and saved a representative project through the normal UI with multiple Views, Region, Arrow, English and Persian text, Impact Pulse, and camera transition; previewed before and after application restart; exported H.264 from the installed UI using its native Save dialog; visually inspected landscape and portrait frames; and confirmed the installed application used its packaged FFmpeg resources.
+
+**Known limitations:** no 4K; H.264 MP4 only; deterministic rendering is slower than real time; automatic encoder policy is NVENC then libx264; portrait projects may require the existing layout and Auto Reframe workflow; and the current Windows installer is not code-signed.
+
+**Next proposed phase:** Phase 9 — Portable Project Export.
