@@ -12,6 +12,24 @@ export const EXPORT_FRAME_HEIGHT = 1080;
 const nextPaint = () =>
   new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 
+const waitForSceneSvg = (host: HTMLElement) =>
+  new Promise<SVGSVGElement>((resolve, reject) => {
+    const mounted = host.querySelector('svg');
+    if (mounted) return resolve(mounted);
+    const observer = new MutationObserver(() => {
+      const svg = host.querySelector('svg');
+      if (!svg) return;
+      clearTimeout(timeout);
+      observer.disconnect();
+      resolve(svg);
+    });
+    const timeout = window.setTimeout(() => {
+      observer.disconnect();
+      reject(new Error('The deterministic map scene did not mount.'));
+    }, 5000);
+    observer.observe(host, { childList: true, subtree: true });
+  });
+
 const blobToDataUrl = (blob: Blob) =>
   new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -135,8 +153,7 @@ async function renderProjectFrameCanvas<T>(
     await document.fonts.load('700 36px Vazirmatn');
     await document.fonts.ready;
     await nextPaint();
-    const svg = host.querySelector('svg');
-    if (!svg) throw new Error('The deterministic map scene did not mount.');
+    const svg = await waitForSceneSvg(host);
     return await consumeCanvas(await svgToCanvas(svg, width, height));
   } finally {
     root.unmount();
