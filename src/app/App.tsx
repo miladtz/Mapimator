@@ -264,6 +264,7 @@ export function App() {
             onClick={() => {
               setProject(createProject('Untitled documentary'));
               setSelectedId(null);
+              setActiveViewId(null);
             }}
           >
             {words.new}
