@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, type PointerEvent, type WheelEvent } from 'react';
+import React, { useRef, type PointerEvent, type SVGProps, type WheelEvent } from 'react';
 import type { CameraState, Layer, MapStylePreset, Project } from '../core/project';
 import { formatNumbers, resolveTextDirection, resolveTextLanguage } from '../core/text';
 import { COUNTRIES, PERSIAN_COUNTRY_NAMES } from '../data/countries';
@@ -15,6 +15,21 @@ interface Props {
   safeArea: number;
   showSafeArea: boolean;
 }
+
+export interface MapSceneProps {
+  style: MapStylePreset;
+  layers: Layer[];
+  camera: CameraState;
+  labelLanguage: Project['mapSettings']['labelLanguage'];
+  width?: number | string;
+  height?: number | string;
+  selectedId?: string | null;
+  safeArea?: number;
+  showSafeArea?: boolean;
+  svgProps?: SVGProps<SVGSVGElement>;
+  onBackgroundClick?: () => void;
+  onLayerPointerDown?: (event: PointerEvent<SVGGElement>, layer: Layer) => void;
+}
 export function OfflineMap({
   style,
   layers,
@@ -29,7 +44,6 @@ export function OfflineMap({
 }: Props) {
   const drag = useRef<{ x: number; y: number } | null>(null);
   const moving = useRef<string | null>(null);
-  const transform = useMemo(() => `translate(${camera.x} ${camera.y}) scale(${camera.zoom})`, [camera]);
   const onPointerDown = (event: PointerEvent<SVGSVGElement>) => {
     if (moving.current) return;
     drag.current = { x: event.clientX - camera.x, y: event.clientY - camera.y };
@@ -65,16 +79,52 @@ export function OfflineMap({
     event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId);
   };
   return (
+    <MapScene
+      style={style}
+      layers={layers}
+      camera={camera}
+      labelLanguage={labelLanguage}
+      selectedId={selectedId}
+      safeArea={safeArea}
+      showSafeArea={showSafeArea}
+      onBackgroundClick={() => onSelect(null)}
+      onLayerPointerDown={beginLayerMove}
+      svgProps={{
+        onPointerDown,
+        onPointerMove,
+        onPointerUp: end,
+        onPointerLeave: end,
+        onWheel,
+      }}
+    />
+  );
+}
+
+export function MapScene({
+  style,
+  layers,
+  camera,
+  labelLanguage,
+  width = '100%',
+  height = '100%',
+  selectedId = null,
+  safeArea = 0,
+  showSafeArea = false,
+  svgProps,
+  onBackgroundClick,
+  onLayerPointerDown,
+}: MapSceneProps) {
+  const transform = `translate(${camera.x} ${camera.y}) scale(${camera.zoom})`;
+  return (
     <svg
+      {...svgProps}
+      xmlns="http://www.w3.org/2000/svg"
       className="offline-map"
+      width={width}
+      height={height}
       viewBox="0 0 1000 560"
       role="img"
       aria-label="Offline political map"
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={end}
-      onPointerLeave={end}
-      onWheel={onWheel}
       style={{ background: style.waterColor }}
     >
       <defs>
@@ -91,7 +141,8 @@ export function OfflineMap({
           <path d="M0,0 L8,4 L0,8Z" fill="context-stroke" />
         </marker>
       </defs>
-      <rect width="1000" height="560" fill="url(#grid)" onClick={() => onSelect(null)} />
+      <rect width="1000" height="560" fill={style.waterColor} onClick={onBackgroundClick} />
+      <rect width="1000" height="560" fill="url(#grid)" onClick={onBackgroundClick} />
       {showSafeArea && (
         <rect
           className="safe-area-guide"
@@ -129,7 +180,7 @@ export function OfflineMap({
               key={layer.id}
               layer={layer}
               selected={layer.id === selectedId}
-              onPointerDown={(event) => beginLayerMove(event, layer)}
+              onPointerDown={(event) => onLayerPointerDown?.(event, layer)}
             />
           ))}
       </g>
