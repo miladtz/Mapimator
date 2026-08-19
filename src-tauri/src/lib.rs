@@ -551,6 +551,30 @@ mod portable_project_tests {
     }
 
     #[test]
+    fn portable_project_output_is_deterministic() {
+        let first = test_path("deterministic-first");
+        let second = test_path("deterministic-second");
+        write_portable_project(
+            first.clone(),
+            br#"{"packageVersion":1}"#,
+            br#"{"version":1}"#,
+        )
+        .expect("write first package");
+        write_portable_project(
+            second.clone(),
+            br#"{"packageVersion":1}"#,
+            br#"{"version":1}"#,
+        )
+        .expect("write second package");
+        assert_eq!(
+            fs::read(&first).expect("read first"),
+            fs::read(&second).expect("read second")
+        );
+        let _ = fs::remove_file(first);
+        let _ = fs::remove_file(second);
+    }
+
+    #[test]
     fn portable_project_rejects_missing_entries() {
         let path = test_path("missing-manifest");
         write_test_archive(&path, &[(PORTABLE_PROJECT_PATH, "{}")]);
