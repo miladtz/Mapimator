@@ -19,7 +19,7 @@ import {
 import { t } from '../core/i18n';
 import { compileViews, evaluateProjectAtTime } from '../core/viewCompiler';
 import { autoReframe } from '../core/layout';
-import { invoke } from '@tauri-apps/api/core';
+import { exportProjectVideo } from '../core/videoExporter';
 
 const layerTypes: LayerType[] = ['pin', 'route', 'text', 'image', 'shape', 'region', 'arrow', 'geo-effect'];
 const icons: Record<LayerType, string> = {
@@ -240,8 +240,8 @@ export function App() {
     const outputPath = window.prompt('MP4 output path');
     if (!outputPath) return;
     try {
-      await invoke('render_test_mp4', { outputPath });
-      setNotice('10-second MP4 export completed');
+      const result = await exportProjectVideo(project, outputPath);
+      setNotice(`${result.totalFrames}-frame project MP4 export completed`);
     } catch (error) {
       setNotice(`Export failed: ${String(error)}`);
     }

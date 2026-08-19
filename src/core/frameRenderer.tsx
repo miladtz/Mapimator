@@ -56,7 +56,7 @@ const inlineComputedStyles = (source: Element, clone: Element) => {
     inlineComputedStyles(source.children[index], clone.children[index]);
 };
 
-const svgToPng = async (svg: SVGSVGElement, width: number, height: number) => {
+const svgToCanvas = async (svg: SVGSVGElement, width: number, height: number) => {
   const clone = svg.cloneNode(true) as SVGSVGElement;
   inlineComputedStyles(svg, clone);
   clone.setAttribute('width', String(width));
@@ -80,25 +80,31 @@ const svgToPng = async (svg: SVGSVGElement, width: number, height: number) => {
     const context = canvas.getContext('2d', { alpha: false });
     if (!context) throw new Error('Unable to create the deterministic frame canvas.');
     context.drawImage(image, 0, 0, width, height);
-    return await new Promise<Blob>((resolve, reject) =>
-      canvas.toBlob(
-        (blob) => (blob ? resolve(blob) : reject(new Error('Unable to encode the deterministic PNG frame.'))),
-        'image/png',
-      ),
-    );
+    return canvas;
   } finally {
     URL.revokeObjectURL(svgUrl);
   }
 };
 
-export async function renderProjectFrame(
+const canvasToPng = (canvas: HTMLCanvasElement) =>
+  new Promise<Blob>((resolve, reject) =>
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error('Unable to encode the deterministic PNG frame.'))),
+      'image/png',
+    ),
+  );
+
+type FrameCanvasConsumer<T> = (canvas: HTMLCanvasElement) => T | Promise<T>;
+
+async function renderProjectFrameCanvas<T>(
   project: Project,
   time: number,
-  width = MILESTONE_FRAME_WIDTH,
-  height = MILESTONE_FRAME_HEIGHT,
+  width: number,
+  height: number,
+  consumeCanvas: FrameCanvasConsumer<T>,
 ) {
   if (width !== MILESTONE_FRAME_WIDTH || height !== MILESTONE_FRAME_HEIGHT)
-    throw new Error('Renderer milestone 1 supports exactly 1920x1080.');
+    throw new Error('Renderer milestones support exactly 1920x1080.');
 
   const state = evaluateProjectAtTime(project, time);
   const style = MAP_STYLES.find((candidate) => candidate.id === project.mapSettings.styleId);
@@ -137,12 +143,35 @@ export async function renderProjectFrame(
     await nextPaint();
     const svg = host.querySelector('svg');
     if (!svg) throw new Error('The deterministic map scene did not mount.');
-    return await svgToPng(svg, width, height);
+    return await consumeCanvas(await svgToCanvas(svg, width, height));
   } finally {
     root.unmount();
     host.remove();
     freezeStyles.remove();
   }
+}
+
+export async function renderProjectFrame(
+  project: Project,
+  time: number,
+  width = MILESTONE_FRAME_WIDTH,
+  height = MILESTONE_FRAME_HEIGHT,
+) {
+  return renderProjectFrameCanvas(project, time, width, height, canvasToPng);
+}
+
+export async function renderProjectFrameRgba(
+  project: Project,
+  time: number,
+  width = MILESTONE_FRAME_WIDTH,
+  height = MILESTONE_FRAME_HEIGHT,
+) {
+  return renderProjectFrameCanvas(project, time, width, height, (canvas) => {
+    const context = canvas.getContext('2d', { alpha: false });
+    if (!context) throw new Error('Unable to read the deterministic frame canvas.');
+    const pixels = context.getImageData(0, 0, width, height).data;
+    return new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength);
+  });
 }
 
 export interface RenderedProjectFrame {
@@ -172,6 +201,24 @@ export async function renderProjectFrameSequence(
     const time = index / project.canvas.fps;
     const blob = await renderProjectFrame(project, time);
     await consumeFrame({ blob, index, time, totalFrames });
+  }
+  return { duration, fps: project.canvas.fps, totalFrames };
+}
+
+export async function renderProjectRgbaSequence(
+  project: Project,
+  consumeFrame: (frame: Omit<RenderedProjectFrame, 'blob'> & { pixels: Uint8Array }) => void | Promise<void>,
+): Promise<RenderedProjectSequence> {
+  if (project.canvas.fps !== 30) throw new Error('Renderer milestone 3 supports exactly 30fps.');
+  if (project.canvas.width !== MILESTONE_FRAME_WIDTH || project.canvas.height !== MILESTONE_FRAME_HEIGHT)
+    throw new Error('Renderer milestone 3 supports exactly 1920x1080.');
+
+  const duration = compileViews(project.views).duration;
+  const totalFrames = Math.ceil(duration * project.canvas.fps);
+  for (let index = 0; index < totalFrames; index += 1) {
+    const time = index / project.canvas.fps;
+    const pixels = await renderProjectFrameRgba(project, time);
+    await consumeFrame({ pixels, index, time, totalFrames });
   }
   return { duration, fps: project.canvas.fps, totalFrames };
 }
