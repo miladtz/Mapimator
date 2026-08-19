@@ -9,7 +9,7 @@ use std::{
 };
 use tauri::{ipc::InvokeBody, Manager, State};
 
-const FRAME_BYTES: usize = 1920 * 1080 * 4;
+const SMOKE_FRAME_BYTES: usize = 1920 * 1080 * 4;
 
 #[derive(Default)]
 struct ExportState(Mutex<Option<ExportSession>>);
@@ -19,6 +19,7 @@ struct ExportSession {
     stdin: Option<ChildStdin>,
     stderr_reader: JoinHandle<Result<String, String>>,
     output_path: PathBuf,
+    frame_bytes: usize,
     frames_written: usize,
 }
 
@@ -102,16 +103,40 @@ fn start_project_export(
     state: State<'_, ExportState>,
     output_path: String,
     encoder: String,
+    width: u32,
+    height: u32,
+    fps: u32,
 ) -> Result<(), String> {
     if !matches!(encoder.as_str(), "libx264" | "h264_nvenc") {
         return Err(format!("Unsupported milestone encoder: {encoder}"));
     }
+    let supported_size = matches!(
+        (width, height),
+        (1920, 1080) | (1080, 1920) | (1080, 1080) | (1080, 1350) | (1440, 1080)
+    );
+    if !supported_size {
+        return Err(format!(
+            "Unsupported H.264 export resolution: {width}x{height}."
+        ));
+    }
+    if !matches!(fps, 30 | 60) || (fps == 60 && (width, height) != (1920, 1080)) {
+        return Err(format!(
+            "Unsupported export frame rate: {width}x{height} at {fps} FPS."
+        ));
+    }
+    let frame_bytes = usize::try_from(width)
+        .ok()
+        .and_then(|value| value.checked_mul(height as usize))
+        .and_then(|value| value.checked_mul(4))
+        .ok_or("Export frame dimensions overflow the frame buffer size.")?;
     let mut active = state.0.lock().map_err(|_| "Export state lock failed.")?;
     if active.is_some() {
         return Err("A project export is already active.".into());
     }
 
     let ffmpeg = ffmpeg_resource_path(app)?;
+    let video_size = format!("{width}x{height}");
+    let frame_rate = fps.to_string();
     let mut child = Command::new(ffmpeg)
         .args([
             "-y",
@@ -120,9 +145,9 @@ fn start_project_export(
             "-pixel_format",
             "rgba",
             "-video_size",
-            "1920x1080",
+            video_size.as_str(),
             "-framerate",
-            "30",
+            frame_rate.as_str(),
             "-i",
             "-",
             "-an",
@@ -159,6 +184,7 @@ fn start_project_export(
         stdin: Some(stdin),
         stderr_reader,
         output_path: PathBuf::from(output_path),
+        frame_bytes,
         frames_written: 0,
     });
     Ok(())
@@ -173,14 +199,15 @@ fn write_project_export_frame(
         InvokeBody::Raw(bytes) => bytes,
         InvokeBody::Json(_) => return Err("Project frame must use the raw binary IPC body.".into()),
     };
-    if bytes.len() != FRAME_BYTES {
+    let mut active = state.0.lock().map_err(|_| "Export state lock failed.")?;
+    let session = active.as_mut().ok_or("No project export is active.")?;
+    if bytes.len() != session.frame_bytes {
         return Err(format!(
-            "Invalid RGBA frame size: expected {FRAME_BYTES} bytes, received {}.",
+            "Invalid RGBA frame size: expected {} bytes, received {}.",
+            session.frame_bytes,
             bytes.len()
         ));
     }
-    let mut active = state.0.lock().map_err(|_| "Export state lock failed.")?;
-    let session = active.as_mut().ok_or("No project export is active.")?;
     session
         .stdin
         .as_mut()
@@ -273,7 +300,7 @@ fn render_test_mp4(app: tauri::AppHandle, output_path: String) -> Result<(), Str
         .stdin(Stdio::piped())
         .spawn()
         .map_err(|error| format!("Unable to start bundled FFmpeg: {error}"))?;
-    let frame = vec![18_u8; FRAME_BYTES];
+    let frame = vec![18_u8; SMOKE_FRAME_BYTES];
     let stdin = child
         .stdin
         .as_mut()

@@ -3,6 +3,7 @@ import interFontUrl from '@fontsource-variable/inter/files/inter-latin-wght-norm
 import vazirmatnArabicFontUrl from '@fontsource-variable/vazirmatn/files/vazirmatn-arabic-wght-normal.woff2?url';
 import { MapScene } from '../components/OfflineMap';
 import { MAP_STYLES, type Project } from './project';
+import { projectExportSettings, validateExportSettings, type ExportVideoSettings } from './exportPresets';
 import { compileViews, evaluateProjectAtTime } from './viewCompiler';
 
 export const EXPORT_FRAME_WIDTH = 1920;
@@ -96,8 +97,7 @@ async function renderProjectFrameCanvas<T>(
   height: number,
   consumeCanvas: FrameCanvasConsumer<T>,
 ) {
-  if (width !== EXPORT_FRAME_WIDTH || height !== EXPORT_FRAME_HEIGHT)
-    throw new Error('Video export supports exactly 1920x1080.');
+  validateExportSettings({ width, height, fps: 30 });
 
   const state = evaluateProjectAtTime(project, time);
   const style = MAP_STYLES.find((candidate) => candidate.id === project.mapSettings.styleId);
@@ -128,6 +128,7 @@ async function renderProjectFrameCanvas<T>(
         labelLanguage={project.mapSettings.labelLanguage}
         width={width}
         height={height}
+        viewBox={exportViewBox(width, height)}
       />,
     );
     await document.fonts.load('700 36px Inter');
@@ -188,19 +189,18 @@ export interface RenderedRgbaSequence extends RenderedProjectSequence {
 export async function renderProjectFrameSequence(
   project: Project,
   consumeFrame: (frame: RenderedProjectFrame) => void | Promise<void>,
+  settings: ExportVideoSettings = projectExportSettings(project),
 ): Promise<RenderedProjectSequence> {
-  if (project.canvas.fps !== 30) throw new Error('Video export supports exactly 30fps.');
-  if (project.canvas.width !== EXPORT_FRAME_WIDTH || project.canvas.height !== EXPORT_FRAME_HEIGHT)
-    throw new Error('Video export supports exactly 1920x1080.');
+  validateExportSettings(settings);
 
   const duration = compileViews(project.views).duration;
-  const totalFrames = Math.ceil(duration * project.canvas.fps);
+  const totalFrames = Math.ceil(duration * settings.fps);
   for (let index = 0; index < totalFrames; index += 1) {
-    const time = index / project.canvas.fps;
-    const blob = await renderProjectFrame(project, time);
+    const time = index / settings.fps;
+    const blob = await renderProjectFrame(project, time, settings.width, settings.height);
     await consumeFrame({ blob, index, time, totalFrames });
   }
-  return { duration, fps: project.canvas.fps, totalFrames };
+  return { duration, fps: settings.fps, totalFrames };
 }
 
 export async function renderProjectRgbaSequence(
@@ -209,20 +209,19 @@ export async function renderProjectRgbaSequence(
     frame: Omit<RenderedProjectFrame, 'blob'> & { pixels: Uint8Array; renderMs: number },
   ) => void | Promise<void>,
   signal?: AbortSignal,
+  settings: ExportVideoSettings = projectExportSettings(project),
 ): Promise<RenderedRgbaSequence> {
-  if (project.canvas.fps !== 30) throw new Error('Video export supports exactly 30fps.');
-  if (project.canvas.width !== EXPORT_FRAME_WIDTH || project.canvas.height !== EXPORT_FRAME_HEIGHT)
-    throw new Error('Video export supports exactly 1920x1080.');
+  validateExportSettings(settings);
 
   const duration = compileViews(project.views).duration;
-  const totalFrames = Math.ceil(duration * project.canvas.fps);
+  const totalFrames = Math.ceil(duration * settings.fps);
   let renderMs = 0;
   let consumeMs = 0;
   for (let index = 0; index < totalFrames; index += 1) {
     signal?.throwIfAborted();
-    const time = index / project.canvas.fps;
+    const time = index / settings.fps;
     const renderStarted = performance.now();
-    const pixels = await renderProjectFrameRgba(project, time);
+    const pixels = await renderProjectFrameRgba(project, time, settings.width, settings.height);
     const frameRenderMs = performance.now() - renderStarted;
     renderMs += frameRenderMs;
     signal?.throwIfAborted();
@@ -230,5 +229,17 @@ export async function renderProjectRgbaSequence(
     await consumeFrame({ pixels, index, time, totalFrames, renderMs: frameRenderMs });
     consumeMs += performance.now() - consumeStarted;
   }
-  return { duration, fps: project.canvas.fps, totalFrames, renderMs, consumeMs };
+  return { duration, fps: settings.fps, totalFrames, renderMs, consumeMs };
 }
+const exportViewBox = (width: number, height: number) => {
+  const sceneWidth = 1000;
+  const sceneHeight = 560;
+  const targetAspect = width / height;
+  const sceneAspect = sceneWidth / sceneHeight;
+  if (targetAspect < sceneAspect) {
+    const fittedWidth = sceneHeight * targetAspect;
+    return `${(sceneWidth - fittedWidth) / 2} 0 ${fittedWidth} ${sceneHeight}`;
+  }
+  const fittedHeight = sceneWidth / targetAspect;
+  return `0 ${(sceneHeight - fittedHeight) / 2} ${sceneWidth} ${fittedHeight}`;
+};

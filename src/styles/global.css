@@ -85,6 +85,24 @@ button {
   gap: 8px;
   align-items: center;
 }
+.export-preset {
+  display: grid;
+  gap: 2px;
+}
+.export-preset span {
+  color: #8292a3;
+  font-size: 8px;
+  letter-spacing: 0.25px;
+}
+.export-preset select {
+  max-width: 235px;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  background: #182231;
+  color: #c8d3df;
+  padding: 5px 7px;
+  font-size: 10px;
+}
 .top-actions button,
 .style-switch button {
   border: 1px solid #334155;

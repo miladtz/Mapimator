@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { Project } from './project';
 import { renderProjectRgbaSequence } from './frameRenderer';
 import { compileViews } from './viewCompiler';
+import { projectExportSettings, validateExportSettings, type ExportVideoSettings } from './exportPresets';
 
 export type ReferenceEncoder = 'libx264' | 'h264_nvenc';
 export type ExportStatus =
@@ -17,6 +18,7 @@ export interface ExportProgressState {
 
 export interface ProjectVideoExportOptions {
   encoder?: ReferenceEncoder | 'auto';
+  settings?: ExportVideoSettings;
   signal?: AbortSignal;
   onProgress?: (progress: ExportProgressState) => void;
 }
@@ -76,8 +78,9 @@ export async function exportProjectVideo(
   const duration = compileViews(project.views).duration;
   if (duration <= 0) throw new Error('The project must contain a View sequence with a positive duration.');
 
+  const settings = validateExportSettings(options.settings ?? projectExportSettings(project));
   exportActive = true;
-  const totalFrames = Math.ceil(duration * project.canvas.fps);
+  const totalFrames = Math.ceil(duration * settings.fps);
   let reportedFrame = 0;
   let reportedPercentage = 0;
   const emit = (progress: ExportProgressState) => {
@@ -113,7 +116,15 @@ export async function exportProjectVideo(
       const candidate = candidates[attempt];
       options.signal?.throwIfAborted();
       try {
-        return await runExportAttempt(project, outputPath, candidate, attempt > 0, options.signal, emit);
+        return await runExportAttempt(
+          project,
+          outputPath,
+          settings,
+          candidate,
+          attempt > 0,
+          options.signal,
+          emit,
+        );
       } catch (error) {
         await cancelProjectVideoExport();
         if (options.signal?.aborted) throw abortError();
@@ -146,14 +157,21 @@ export async function exportProjectVideo(
 async function runExportAttempt(
   project: Project,
   outputPath: string,
+  settings: ExportVideoSettings,
   encoder: EncoderProbeResult,
   fallbackUsed: boolean,
   signal: AbortSignal | undefined,
   emit: (progress: ExportProgressState) => void,
 ): Promise<ProjectVideoExportResult> {
   const started = performance.now();
-  const totalFrames = Math.ceil(compileViews(project.views).duration * project.canvas.fps);
-  await invokeNative<void>('start_project_export', { outputPath, encoder: encoder.encoder });
+  const totalFrames = Math.ceil(compileViews(project.views).duration * settings.fps);
+  await invokeNative<void>('start_project_export', {
+    outputPath,
+    encoder: encoder.encoder,
+    width: settings.width,
+    height: settings.height,
+    fps: settings.fps,
+  });
   emit({
     status: 'rendering',
     currentFrame: 0,
@@ -176,6 +194,7 @@ async function runExportAttempt(
       });
     },
     signal,
+    settings,
   );
   signal?.throwIfAborted();
   emit({

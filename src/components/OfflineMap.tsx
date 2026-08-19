@@ -23,6 +23,7 @@ export interface MapSceneProps {
   labelLanguage: Project['mapSettings']['labelLanguage'];
   width?: number | string;
   height?: number | string;
+  viewBox?: string;
   selectedId?: string | null;
   safeArea?: number;
   showSafeArea?: boolean;
@@ -107,6 +108,7 @@ export function MapScene({
   labelLanguage,
   width = '100%',
   height = '100%',
+  viewBox = '0 0 1000 560',
   selectedId = null,
   safeArea = 0,
   showSafeArea = false,
@@ -122,7 +124,7 @@ export function MapScene({
       className="offline-map"
       width={width}
       height={height}
-      viewBox="0 0 1000 560"
+      viewBox={viewBox}
       role="img"
       aria-label="Offline political map"
       style={{ background: style.waterColor }}

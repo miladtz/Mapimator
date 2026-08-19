@@ -20,6 +20,7 @@ import {
 import { t } from '../core/i18n';
 import { compileViews, evaluateProjectAtTime } from '../core/viewCompiler';
 import { autoReframe } from '../core/layout';
+import { DEFAULT_EXPORT_PRESET_ID, EXPORT_PRESETS, type ExportPresetId } from '../core/exportPresets';
 import {
   cancelProjectVideoExport,
   exportProjectVideo,
@@ -66,7 +67,9 @@ export function App() {
     totalFrames: 0,
     percentage: 0,
   });
+  const [exportPresetId, setExportPresetId] = useState<ExportPresetId>(DEFAULT_EXPORT_PRESET_ID);
   const exportAbort = useRef<AbortController | null>(null);
+  const exportPreset = EXPORT_PRESETS.find((preset) => preset.id === exportPresetId)!;
   const words = t(language);
   const style = MAP_STYLES.find((item) => item.id === project.mapSettings.styleId)!;
   const selected = project.layers.find((l) => l.id === selectedId) ?? null;
@@ -264,6 +267,7 @@ export function App() {
         return;
       }
       const result = await exportProjectVideo(project, outputPath, {
+        settings: exportPreset,
         signal: controller.signal,
         onProgress: setExportState,
       });
@@ -320,6 +324,21 @@ export function App() {
           <button className="primary" onClick={save}>
             {words.save}
           </button>
+          <label className="export-preset">
+            <span>H.264 MP4 · Auto encoder</span>
+            <select
+              aria-label="Export preset"
+              value={exportPresetId}
+              disabled={exportIsActive}
+              onChange={(event) => setExportPresetId(event.target.value as ExportPresetId)}
+            >
+              {EXPORT_PRESETS.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.name} · {preset.width}×{preset.height} · {preset.fps} FPS
+                </option>
+              ))}
+            </select>
+          </label>
           <button className="export" onClick={exportProof} disabled={exportIsActive}>
             {exportIsActive ? 'Exporting…' : `${words.export} Video`}
           </button>
