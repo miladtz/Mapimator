@@ -2,18 +2,11 @@ import { createRoot } from 'react-dom/client';
 import interFontUrl from '@fontsource-variable/inter/files/inter-latin-wght-normal.woff2?url';
 import vazirmatnArabicFontUrl from '@fontsource-variable/vazirmatn/files/vazirmatn-arabic-wght-normal.woff2?url';
 import { MapScene } from '../components/OfflineMap';
-import {
-  MAP_STYLES,
-  createLayer,
-  createProject,
-  type CameraState,
-  type Layer,
-  type Project,
-} from './project';
+import { MAP_STYLES, type Project } from './project';
 import { compileViews, evaluateProjectAtTime } from './viewCompiler';
 
-export const MILESTONE_FRAME_WIDTH = 1920;
-export const MILESTONE_FRAME_HEIGHT = 1080;
+export const EXPORT_FRAME_WIDTH = 1920;
+export const EXPORT_FRAME_HEIGHT = 1080;
 
 const nextPaint = () =>
   new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
@@ -103,8 +96,8 @@ async function renderProjectFrameCanvas<T>(
   height: number,
   consumeCanvas: FrameCanvasConsumer<T>,
 ) {
-  if (width !== MILESTONE_FRAME_WIDTH || height !== MILESTONE_FRAME_HEIGHT)
-    throw new Error('Renderer milestones support exactly 1920x1080.');
+  if (width !== EXPORT_FRAME_WIDTH || height !== EXPORT_FRAME_HEIGHT)
+    throw new Error('Video export supports exactly 1920x1080.');
 
   const state = evaluateProjectAtTime(project, time);
   const style = MAP_STYLES.find((candidate) => candidate.id === project.mapSettings.styleId);
@@ -154,8 +147,8 @@ async function renderProjectFrameCanvas<T>(
 export async function renderProjectFrame(
   project: Project,
   time: number,
-  width = MILESTONE_FRAME_WIDTH,
-  height = MILESTONE_FRAME_HEIGHT,
+  width = EXPORT_FRAME_WIDTH,
+  height = EXPORT_FRAME_HEIGHT,
 ) {
   return renderProjectFrameCanvas(project, time, width, height, canvasToPng);
 }
@@ -163,8 +156,8 @@ export async function renderProjectFrame(
 export async function renderProjectFrameRgba(
   project: Project,
   time: number,
-  width = MILESTONE_FRAME_WIDTH,
-  height = MILESTONE_FRAME_HEIGHT,
+  width = EXPORT_FRAME_WIDTH,
+  height = EXPORT_FRAME_HEIGHT,
 ) {
   return renderProjectFrameCanvas(project, time, width, height, (canvas) => {
     const context = canvas.getContext('2d', { alpha: false });
@@ -196,9 +189,9 @@ export async function renderProjectFrameSequence(
   project: Project,
   consumeFrame: (frame: RenderedProjectFrame) => void | Promise<void>,
 ): Promise<RenderedProjectSequence> {
-  if (project.canvas.fps !== 30) throw new Error('Renderer milestone 2 supports exactly 30fps.');
-  if (project.canvas.width !== MILESTONE_FRAME_WIDTH || project.canvas.height !== MILESTONE_FRAME_HEIGHT)
-    throw new Error('Renderer milestone 2 supports exactly 1920x1080.');
+  if (project.canvas.fps !== 30) throw new Error('Video export supports exactly 30fps.');
+  if (project.canvas.width !== EXPORT_FRAME_WIDTH || project.canvas.height !== EXPORT_FRAME_HEIGHT)
+    throw new Error('Video export supports exactly 1920x1080.');
 
   const duration = compileViews(project.views).duration;
   const totalFrames = Math.ceil(duration * project.canvas.fps);
@@ -217,9 +210,9 @@ export async function renderProjectRgbaSequence(
   ) => void | Promise<void>,
   signal?: AbortSignal,
 ): Promise<RenderedRgbaSequence> {
-  if (project.canvas.fps !== 30) throw new Error('Renderer milestone 3 supports exactly 30fps.');
-  if (project.canvas.width !== MILESTONE_FRAME_WIDTH || project.canvas.height !== MILESTONE_FRAME_HEIGHT)
-    throw new Error('Renderer milestone 3 supports exactly 1920x1080.');
+  if (project.canvas.fps !== 30) throw new Error('Video export supports exactly 30fps.');
+  if (project.canvas.width !== EXPORT_FRAME_WIDTH || project.canvas.height !== EXPORT_FRAME_HEIGHT)
+    throw new Error('Video export supports exactly 1920x1080.');
 
   const duration = compileViews(project.views).duration;
   const totalFrames = Math.ceil(duration * project.canvas.fps);
@@ -238,146 +231,4 @@ export async function renderProjectRgbaSequence(
     consumeMs += performance.now() - consumeStarted;
   }
   return { duration, fps: project.canvas.fps, totalFrames, renderMs, consumeMs };
-}
-
-export function createRendererMilestoneProject(): Project {
-  const camera: CameraState = { x: -72, y: 26, zoom: 1.12 };
-  const region: Layer = { ...createLayer('region'), id: 'milestone-region', countryId: 'iran' };
-  const arrow: Layer = {
-    ...createLayer('arrow'),
-    id: 'milestone-arrow',
-    x: 510,
-    y: 338,
-    x2: 675,
-    y2: 282,
-  };
-  const english: Layer = {
-    ...createLayer('text'),
-    id: 'milestone-english',
-    name: 'English label',
-    text: 'Iraq',
-    x: 585,
-    y: 218,
-    fontSize: 25,
-    textLanguage: 'english',
-    textDirection: 'ltr',
-  };
-  const persian: Layer = {
-    ...createLayer('text'),
-    id: 'milestone-persian',
-    name: 'Persian label',
-    text: 'ایران',
-    x: 675,
-    y: 342,
-    fontSize: 30,
-    textLanguage: 'persian',
-    textDirection: 'rtl',
-    numberStyle: 'persian',
-  };
-  const effect: Layer = {
-    ...createLayer('geo-effect'),
-    id: 'milestone-impact-pulse',
-    x: 650,
-    y: 292,
-    effectSize: 58,
-    effectRepeat: false,
-  };
-  const project = createProject('Renderer milestone 1');
-  project.metadata = {
-    name: 'Renderer milestone 1',
-    createdAt: '2026-08-19T00:00:00.000Z',
-    updatedAt: '2026-08-19T00:00:00.000Z',
-  };
-  project.canvas = {
-    width: MILESTONE_FRAME_WIDTH,
-    height: MILESTONE_FRAME_HEIGHT,
-    fps: 30,
-    layoutId: 'landscape',
-    safeArea: 96,
-    showSafeArea: false,
-  };
-  project.mapSettings = { styleId: 'documentary-dark', labelLanguage: 'both' };
-  project.layers = [region, arrow, english, persian, effect];
-  project.views = [
-    {
-      id: 'milestone-view',
-      name: 'Milestone state',
-      holdDuration: 3,
-      transitionDuration: 0,
-      transitionPreset: 'linear',
-      camera,
-      layers: structuredClone(project.layers),
-      thumbnailColor: '#28415a',
-    },
-  ];
-  return project;
-}
-
-export function createRendererTransitionProject(): Project {
-  const project = createRendererMilestoneProject();
-  project.metadata = {
-    name: 'Renderer milestone 2',
-    createdAt: '2026-08-19T00:00:00.000Z',
-    updatedAt: '2026-08-19T00:00:00.000Z',
-  };
-
-  const firstLayers = structuredClone(project.layers);
-  const secondLayers = structuredClone(project.layers);
-  const firstRegion = firstLayers.find((layer) => layer.id === 'milestone-region');
-  const secondRegion = secondLayers.find((layer) => layer.id === 'milestone-region');
-  const firstArrow = firstLayers.find((layer) => layer.id === 'milestone-arrow');
-  const secondArrow = secondLayers.find((layer) => layer.id === 'milestone-arrow');
-  const secondEnglish = secondLayers.find((layer) => layer.id === 'milestone-english');
-  const firstPersian = firstLayers.find((layer) => layer.id === 'milestone-persian');
-  const secondPersian = secondLayers.find((layer) => layer.id === 'milestone-persian');
-  const firstEffect = firstLayers.find((layer) => layer.id === 'milestone-impact-pulse');
-  const secondEffect = secondLayers.find((layer) => layer.id === 'milestone-impact-pulse');
-
-  if (
-    !firstRegion ||
-    !secondRegion ||
-    !firstArrow ||
-    !secondArrow ||
-    !secondEnglish ||
-    !firstPersian ||
-    !secondPersian ||
-    !firstEffect ||
-    !secondEffect
-  )
-    throw new Error('The deterministic transition fixture is incomplete.');
-
-  firstRegion.opacity = 0.35;
-  secondRegion.opacity = 0.9;
-  Object.assign(firstArrow, { x: 470, y: 355, x2: 610, y2: 305 });
-  Object.assign(secondArrow, { x: 570, y: 330, x2: 790, y2: 235 });
-  Object.assign(secondEnglish, { x: 635, y: 190 });
-  firstPersian.opacity = 0;
-  Object.assign(secondPersian, { x: 735, y: 305, opacity: 1 });
-  Object.assign(firstEffect, { x: 610, y: 320, opacity: 0.35 });
-  Object.assign(secondEffect, { x: 755, y: 250, opacity: 1 });
-
-  project.layers = structuredClone(secondLayers);
-  project.views = [
-    {
-      id: 'milestone-transition-from',
-      name: 'Transition start',
-      holdDuration: 0,
-      transitionDuration: 2,
-      transitionPreset: 'linear',
-      camera: { x: -120, y: 38, zoom: 1.04 },
-      layers: firstLayers,
-      thumbnailColor: '#28415a',
-    },
-    {
-      id: 'milestone-transition-to',
-      name: 'Transition end',
-      holdDuration: 0.1,
-      transitionDuration: 0,
-      transitionPreset: 'linear',
-      camera: { x: -245, y: -18, zoom: 1.4 },
-      layers: secondLayers,
-      thumbnailColor: '#49315f',
-    },
-  ];
-  return project;
 }
