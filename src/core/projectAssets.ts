@@ -5,6 +5,35 @@ interface NativeAssetBytes {
   bytes: number[];
 }
 
+export interface AssetStorageIssue {
+  code: string;
+  message: string;
+  assetId?: string;
+}
+
+export interface AssetStorageDiagnostics {
+  storedAssets: number;
+  referencedAssets: number;
+  orphanMetadata: string[];
+  orphanFiles: string[];
+  storageBytes: number;
+  duplicatePayloads: number;
+  hashFailures: number;
+  missingFiles: number;
+  integrityFailures: number;
+  issues: AssetStorageIssue[];
+  elapsedMs: number;
+}
+
+export interface AssetCleanupResult {
+  removed: string[];
+  diagnostics: AssetStorageDiagnostics;
+}
+
+export interface ProjectAssetCleanupResult extends AssetCleanupResult {
+  project: Project;
+}
+
 const dataUrlCache = new Map<string, Promise<string>>();
 
 const bytesToDataUrl = (bytes: number[], mediaType: string) => {
@@ -36,4 +65,52 @@ export async function resolveProjectAssetUrls(project: Project): Promise<Record<
       project.assets.map(async (asset) => [asset.id, await resolveProjectAssetDataUrl(asset)]),
     ),
   );
+}
+
+export function findReferencedAssets(project: Project): Set<string> {
+  const referenced = new Set<string>();
+  const collect = (layers: Project['layers']) => {
+    for (const layer of layers) if (layer.type === 'image' && layer.assetId) referenced.add(layer.assetId);
+  };
+  collect(project.layers);
+  for (const view of project.views) collect(view.layers);
+  return referenced;
+}
+
+export function findOrphanMetadata(project: Project): ProjectAsset[] {
+  const referenced = findReferencedAssets(project);
+  return project.assets.filter((asset) => !referenced.has(asset.id));
+}
+
+export async function scanProjectAssets(project: Project): Promise<AssetStorageDiagnostics> {
+  return invoke<AssetStorageDiagnostics>('scan_project_assets', {
+    assets: project.assets,
+    referencedIds: [...findReferencedAssets(project)].sort(),
+  });
+}
+
+export async function findStoredAssets(): Promise<AssetStorageDiagnostics> {
+  return invoke<AssetStorageDiagnostics>('scan_project_assets', { assets: [], referencedIds: [] });
+}
+
+export async function validateProjectAssetStorage(project: Project): Promise<AssetStorageDiagnostics> {
+  const diagnostics = await scanProjectAssets(project);
+  const projectAssetIds = new Set(project.assets.map((asset) => asset.id));
+  const relevantIssues = diagnostics.issues.filter(
+    (issue) => issue.code === 'missing_metadata' || (issue.assetId && projectAssetIds.has(issue.assetId)),
+  );
+  if (relevantIssues.length) throw new Error(relevantIssues.map((issue) => issue.message).join('\n'));
+  return diagnostics;
+}
+
+export async function cleanupProjectAssets(project: Project): Promise<ProjectAssetCleanupResult> {
+  const referencedIds = [...findReferencedAssets(project)].sort();
+  const referenced = new Set(referencedIds);
+  const liveAssets = project.assets.filter((asset) => referenced.has(asset.id));
+  const result = await invoke<AssetCleanupResult>('cleanup_project_assets', {
+    assets: liveAssets,
+    referencedIds,
+  });
+  for (const id of result.removed) dataUrlCache.delete(id);
+  return { ...result, project: { ...project, assets: liveAssets } };
 }

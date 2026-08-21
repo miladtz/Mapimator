@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { Project, ProjectAsset } from './project';
 import { canonicalProjectJson, validateAndMigrateProject } from './projectPersistence';
+import { validateProjectAssetStorage } from './projectAssets';
 
 export const PORTABLE_PACKAGE_FORMAT = 'mapmotion-portable-project';
 export const PORTABLE_PACKAGE_VERSION = 2;
@@ -142,5 +143,6 @@ export async function importPortableProject(inputPath: string): Promise<Project>
       throw new Error(`Portable project asset metadata mismatch: ${asset.id}.`);
   }
   if (payload.assets.length) await invoke('commit_imported_assets', { assets: payload.assets });
+  await validateProjectAssetStorage(project);
   return project;
 }

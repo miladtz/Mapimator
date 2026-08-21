@@ -2,7 +2,7 @@ use image::GenericImageView;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     fs::File,
     io::{Read, Write},
@@ -10,6 +10,7 @@ use std::{
     process::{Child, ChildStdin, Command, Stdio},
     sync::Mutex,
     thread::JoinHandle,
+    time::Instant,
 };
 use tauri::{ipc::InvokeBody, Manager, State};
 use zip::{write::SimpleFileOptions, CompressionMethod, DateTime, ZipArchive, ZipWriter};
@@ -58,6 +59,41 @@ struct AssetBytes {
 }
 
 #[derive(Default)]
+struct AssetStoreState(Mutex<()>);
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AssetStorageIssue {
+    code: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    asset_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AssetStorageDiagnostics {
+    stored_assets: usize,
+    referenced_assets: usize,
+    orphan_metadata: Vec<String>,
+    orphan_files: Vec<String>,
+    storage_bytes: u64,
+    duplicate_payloads: usize,
+    hash_failures: usize,
+    missing_files: usize,
+    integrity_failures: usize,
+    issues: Vec<AssetStorageIssue>,
+    elapsed_ms: f64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AssetCleanupResult {
+    removed: Vec<String>,
+    diagnostics: AssetStorageDiagnostics,
+}
+
+#[derive(Default)]
 struct ExportState(Mutex<Option<ExportSession>>);
 
 struct ExportSession {
@@ -97,6 +133,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(ExportState::default())
+        .manage(AssetStoreState::default())
         .invoke_handler(tauri::generate_handler![
             ffmpeg_resource_path,
             render_test_mp4,
@@ -109,7 +146,9 @@ pub fn run() {
             import_portable_project,
             ingest_project_image,
             read_project_asset,
-            commit_imported_assets
+            commit_imported_assets,
+            scan_project_assets,
+            cleanup_project_assets
         ])
         .run(tauri::generate_context!())
         .expect("error while running MapMotion Studio");
@@ -118,11 +157,16 @@ pub fn run() {
 #[tauri::command]
 fn export_portable_project(
     app: tauri::AppHandle,
+    asset_state: State<'_, AssetStoreState>,
     output_path: String,
     manifest_json: String,
     project_json: String,
     assets: Vec<ProjectAsset>,
 ) -> Result<(), String> {
+    let _guard = asset_state
+        .0
+        .lock()
+        .map_err(|_| "Project asset storage lock failed.")?;
     let stored_assets = assets
         .into_iter()
         .map(|metadata| {
@@ -399,7 +443,15 @@ fn read_stored_asset(app: &tauri::AppHandle, asset_id: &str) -> Result<Vec<u8>, 
 }
 
 #[tauri::command]
-fn read_project_asset(app: tauri::AppHandle, asset_id: String) -> Result<AssetBytes, String> {
+fn read_project_asset(
+    app: tauri::AppHandle,
+    asset_state: State<'_, AssetStoreState>,
+    asset_id: String,
+) -> Result<AssetBytes, String> {
+    let _guard = asset_state
+        .0
+        .lock()
+        .map_err(|_| "Project asset storage lock failed.")?;
     Ok(AssetBytes {
         bytes: read_stored_asset(&app, &asset_id)?,
     })
@@ -408,8 +460,13 @@ fn read_project_asset(app: tauri::AppHandle, asset_id: String) -> Result<AssetBy
 #[tauri::command]
 fn ingest_project_image(
     app: tauri::AppHandle,
+    asset_state: State<'_, AssetStoreState>,
     source_path: String,
 ) -> Result<ProjectAsset, String> {
+    let _guard = asset_state
+        .0
+        .lock()
+        .map_err(|_| "Project asset storage lock failed.")?;
     let source = PathBuf::from(source_path);
     let filename = source
         .file_name()
@@ -447,7 +504,15 @@ fn ingest_project_image(
 }
 
 #[tauri::command]
-fn commit_imported_assets(app: tauri::AppHandle, assets: Vec<ImportedAsset>) -> Result<(), String> {
+fn commit_imported_assets(
+    app: tauri::AppHandle,
+    asset_state: State<'_, AssetStoreState>,
+    assets: Vec<ImportedAsset>,
+) -> Result<(), String> {
+    let _guard = asset_state
+        .0
+        .lock()
+        .map_err(|_| "Project asset storage lock failed.")?;
     commit_assets(&app, &assets)
 }
 
@@ -513,6 +578,274 @@ fn commit_assets(app: &tauri::AppHandle, assets: &[ImportedAsset]) -> Result<(),
         committed.push(target.clone());
     }
     Ok(())
+}
+
+#[tauri::command]
+fn scan_project_assets(
+    app: tauri::AppHandle,
+    asset_state: State<'_, AssetStoreState>,
+    assets: Vec<ProjectAsset>,
+    referenced_ids: Vec<String>,
+) -> Result<AssetStorageDiagnostics, String> {
+    let _guard = asset_state
+        .0
+        .lock()
+        .map_err(|_| "Project asset storage lock failed.")?;
+    scan_asset_storage(&asset_store_dir(&app)?, &assets, &referenced_ids)
+}
+
+#[tauri::command]
+fn cleanup_project_assets(
+    app: tauri::AppHandle,
+    asset_state: State<'_, AssetStoreState>,
+    assets: Vec<ProjectAsset>,
+    referenced_ids: Vec<String>,
+) -> Result<AssetCleanupResult, String> {
+    let _guard = asset_state
+        .0
+        .lock()
+        .map_err(|_| "Project asset storage lock failed.")?;
+    cleanup_asset_storage(&asset_store_dir(&app)?, &assets, &referenced_ids, None)
+}
+
+fn storage_issue(
+    diagnostics: &mut AssetStorageDiagnostics,
+    code: &str,
+    asset_id: Option<&str>,
+    message: String,
+) {
+    diagnostics.integrity_failures += 1;
+    diagnostics.issues.push(AssetStorageIssue {
+        code: code.into(),
+        message,
+        asset_id: asset_id.map(str::to_owned),
+    });
+}
+
+fn scan_asset_storage(
+    directory: &Path,
+    assets: &[ProjectAsset],
+    referenced_ids: &[String],
+) -> Result<AssetStorageDiagnostics, String> {
+    let started = Instant::now();
+    let referenced = referenced_ids.iter().cloned().collect::<HashSet<_>>();
+    let mut diagnostics = AssetStorageDiagnostics {
+        referenced_assets: referenced.len(),
+        ..AssetStorageDiagnostics::default()
+    };
+    let mut metadata = HashMap::<String, &ProjectAsset>::new();
+    let mut metadata_hashes = HashMap::<String, String>::new();
+    for asset in assets {
+        if metadata.insert(asset.id.clone(), asset).is_some() {
+            storage_issue(
+                &mut diagnostics,
+                "duplicate_metadata",
+                Some(&asset.id),
+                format!("Duplicate project asset metadata: {}.", asset.id),
+            );
+        }
+        if let Some(previous) = metadata_hashes.insert(asset.sha256.clone(), asset.id.clone()) {
+            if previous != asset.id {
+                storage_issue(
+                    &mut diagnostics,
+                    "duplicate_hash",
+                    Some(&asset.id),
+                    format!(
+                        "Project assets {previous} and {} declare the same payload hash.",
+                        asset.id
+                    ),
+                );
+            }
+        }
+        if let Err(error) = validate_asset_metadata(asset) {
+            storage_issue(&mut diagnostics, "invalid_metadata", Some(&asset.id), error);
+        }
+        if !referenced.contains(&asset.id) {
+            diagnostics.orphan_metadata.push(asset.id.clone());
+        }
+    }
+    for asset_id in &referenced {
+        if !metadata.contains_key(asset_id) {
+            storage_issue(
+                &mut diagnostics,
+                "missing_metadata",
+                Some(asset_id),
+                format!("Referenced project asset has no metadata: {asset_id}."),
+            );
+        }
+    }
+
+    let mut stored_ids = HashSet::new();
+    let mut payload_paths = HashMap::<String, String>::new();
+    if directory.is_dir() {
+        let entries = fs::read_dir(directory)
+            .map_err(|error| format!("Unable to scan project asset storage: {error}"))?;
+        for entry in entries {
+            let entry = entry
+                .map_err(|error| format!("Unable to inspect project asset storage: {error}"))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("Unable to inspect project asset file: {error}"))?;
+            if !file_type.is_file() {
+                continue;
+            }
+            let filename = entry.file_name().to_string_lossy().into_owned();
+            let Some(asset_id) = filename
+                .strip_suffix(".bin")
+                .filter(|id| valid_asset_id(id))
+            else {
+                diagnostics.orphan_files.push(filename);
+                continue;
+            };
+            diagnostics.stored_assets += 1;
+            stored_ids.insert(asset_id.to_owned());
+            let bytes = match fs::read(entry.path()) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    storage_issue(
+                        &mut diagnostics,
+                        "read_failure",
+                        Some(asset_id),
+                        format!("Unable to read stored project asset {asset_id}: {error}"),
+                    );
+                    continue;
+                }
+            };
+            diagnostics.storage_bytes =
+                diagnostics.storage_bytes.saturating_add(bytes.len() as u64);
+            let actual_hash = sha256_hex(&bytes);
+            if let Some(previous) = payload_paths.insert(actual_hash.clone(), asset_id.to_owned()) {
+                if previous != asset_id {
+                    diagnostics.duplicate_payloads += 1;
+                    storage_issue(
+                        &mut diagnostics,
+                        "duplicate_payload",
+                        Some(asset_id),
+                        format!("Stored assets {previous} and {asset_id} contain duplicate payload bytes."),
+                    );
+                }
+            }
+            if asset_id != format!("asset_{actual_hash}") {
+                diagnostics.hash_failures += 1;
+                storage_issue(
+                    &mut diagnostics,
+                    "filename_hash_mismatch",
+                    Some(asset_id),
+                    format!(
+                        "Stored asset filename does not match its SHA-256 payload: {asset_id}."
+                    ),
+                );
+            }
+            if let Some(asset) = metadata.get(asset_id) {
+                if bytes.len() as u64 != asset.size {
+                    storage_issue(
+                        &mut diagnostics,
+                        "size_mismatch",
+                        Some(asset_id),
+                        format!("Stored project asset size mismatch: {asset_id}."),
+                    );
+                }
+                if actual_hash != asset.sha256 {
+                    diagnostics.hash_failures += 1;
+                    storage_issue(
+                        &mut diagnostics,
+                        "hash_mismatch",
+                        Some(asset_id),
+                        format!("Stored project asset hash mismatch: {asset_id}."),
+                    );
+                }
+                match inspect_image(&bytes) {
+                    Ok((media_type, _, width, height)) => {
+                        if media_type != asset.media_type
+                            || width != asset.width
+                            || height != asset.height
+                        {
+                            storage_issue(
+                                &mut diagnostics,
+                                "image_metadata_mismatch",
+                                Some(asset_id),
+                                format!("Stored project image metadata mismatch: {asset_id}."),
+                            );
+                        }
+                    }
+                    Err(error) => storage_issue(
+                        &mut diagnostics,
+                        "image_decode_failure",
+                        Some(asset_id),
+                        format!("Stored project image {asset_id} is not decodable: {error}"),
+                    ),
+                }
+            } else {
+                diagnostics.orphan_files.push(filename);
+            }
+        }
+    }
+    for asset in assets {
+        if !stored_ids.contains(&asset.id) {
+            diagnostics.missing_files += 1;
+            storage_issue(
+                &mut diagnostics,
+                "missing_file",
+                Some(&asset.id),
+                format!("Stored project asset file is missing: {}.", asset.id),
+            );
+        }
+    }
+    diagnostics.orphan_metadata.sort();
+    diagnostics.orphan_metadata.dedup();
+    diagnostics.orphan_files.sort();
+    diagnostics.orphan_files.dedup();
+    diagnostics.elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    Ok(diagnostics)
+}
+
+fn cleanup_asset_storage(
+    directory: &Path,
+    live_assets: &[ProjectAsset],
+    referenced_ids: &[String],
+    fail_after: Option<usize>,
+) -> Result<AssetCleanupResult, String> {
+    let referenced = referenced_ids.iter().cloned().collect::<HashSet<_>>();
+    let mut removed = Vec::new();
+    if directory.is_dir() {
+        let mut entries = fs::read_dir(directory)
+            .map_err(|error| format!("Unable to scan project asset storage for cleanup: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                format!("Unable to inspect project asset storage for cleanup: {error}")
+            })?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            if !entry
+                .file_type()
+                .map_err(|error| format!("Unable to inspect cleanup candidate: {error}"))?
+                .is_file()
+            {
+                continue;
+            }
+            let filename = entry.file_name().to_string_lossy().into_owned();
+            let asset_id = filename
+                .strip_suffix(".bin")
+                .filter(|id| valid_asset_id(id));
+            let is_stale_temp = filename.starts_with('.') && filename.ends_with(".tmp");
+            let removable = asset_id.is_some_and(|id| !referenced.contains(id)) || is_stale_temp;
+            if !removable {
+                continue;
+            }
+            if fail_after.is_some_and(|limit| removed.len() >= limit) {
+                return Err("Simulated interruption during project asset cleanup.".into());
+            }
+            fs::remove_file(entry.path()).map_err(|error| {
+                format!("Unable to remove orphan project asset {filename}: {error}")
+            })?;
+            removed.push(asset_id.unwrap_or(&filename).to_owned());
+        }
+    }
+    let diagnostics = scan_asset_storage(directory, live_assets, referenced_ids)?;
+    Ok(AssetCleanupResult {
+        removed,
+        diagnostics,
+    })
 }
 
 fn valid_asset_id(value: &str) -> bool {
@@ -958,6 +1291,45 @@ mod portable_project_tests {
         )
     }
 
+    fn image_fixture_with_color(value: u8) -> (ProjectAsset, Vec<u8>) {
+        let image = image::RgbaImage::from_pixel(
+            2,
+            2,
+            image::Rgba([value, value.wrapping_mul(3), 255, 255]),
+        );
+        let mut cursor = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut cursor, image::ImageFormat::Png)
+            .expect("encode png");
+        let bytes = cursor.into_inner();
+        let sha256 = sha256_hex(&bytes);
+        (
+            ProjectAsset {
+                id: format!("asset_{sha256}"),
+                kind: "image".into(),
+                filename: format!("fixture-{value}.png"),
+                media_type: "image/png".into(),
+                sha256: sha256.clone(),
+                size: bytes.len() as u64,
+                width: 2,
+                height: 2,
+                package_path: format!("assets/{sha256}.png"),
+            },
+            bytes,
+        )
+    }
+
+    fn test_store(label: &str) -> PathBuf {
+        let directory = test_path(label).with_extension("store");
+        fs::create_dir_all(&directory).expect("create test store");
+        directory
+    }
+
+    fn store_fixture(directory: &Path, asset: &ProjectAsset, bytes: &[u8]) {
+        fs::write(directory.join(format!("{}.bin", asset.id)), bytes)
+            .expect("write stored fixture");
+    }
+
     fn manifest_json(assets: serde_json::Value) -> String {
         serde_json::json!({
             "format": "mapmotion-portable-project",
@@ -1223,5 +1595,133 @@ mod portable_project_tests {
             .contains("compression ratio"));
         let _ = fs::remove_file(total);
         let _ = fs::remove_file(compressed);
+    }
+
+    #[test]
+    fn asset_storage_reports_missing_orphan_and_duplicate_metadata() {
+        let directory = test_store("storage-diagnostics");
+        let (asset, bytes) = image_fixture();
+        let missing =
+            scan_asset_storage(&directory, &[asset.clone()], &[asset.id.clone()]).unwrap();
+        assert_eq!(missing.missing_files, 1);
+        assert!(missing
+            .issues
+            .iter()
+            .any(|issue| issue.code == "missing_file"));
+
+        store_fixture(&directory, &asset, &bytes);
+        let orphan_file = scan_asset_storage(&directory, &[], &[]).unwrap();
+        assert_eq!(orphan_file.orphan_files, vec![format!("{}.bin", asset.id)]);
+        let orphan_metadata = scan_asset_storage(&directory, &[asset.clone()], &[]).unwrap();
+        assert_eq!(orphan_metadata.orphan_metadata, vec![asset.id.clone()]);
+        let duplicate = scan_asset_storage(
+            &directory,
+            &[asset.clone(), asset.clone()],
+            &[asset.id.clone()],
+        )
+        .unwrap();
+        assert!(duplicate
+            .issues
+            .iter()
+            .any(|issue| issue.code == "duplicate_metadata"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn asset_storage_reports_payload_hash_size_and_media_corruption() {
+        let directory = test_store("storage-corruption");
+        let (asset, bytes) = image_fixture();
+        store_fixture(&directory, &asset, &bytes);
+        let fake_id = format!("asset_{}", "0".repeat(64));
+        fs::write(directory.join(format!("{fake_id}.bin")), &bytes).unwrap();
+        let duplicate_payload =
+            scan_asset_storage(&directory, &[asset.clone()], &[asset.id.clone()]).unwrap();
+        assert_eq!(duplicate_payload.duplicate_payloads, 1);
+        assert!(duplicate_payload.hash_failures >= 1);
+
+        let mut wrong_size = asset.clone();
+        wrong_size.size += 1;
+        let size = scan_asset_storage(&directory, &[wrong_size], &[asset.id.clone()]).unwrap();
+        assert!(size
+            .issues
+            .iter()
+            .any(|issue| issue.code == "size_mismatch"));
+
+        let mut wrong_media = asset.clone();
+        wrong_media.media_type = "image/jpeg".into();
+        wrong_media.package_path = format!("assets/{}.jpg", wrong_media.sha256);
+        let media = scan_asset_storage(&directory, &[wrong_media], &[asset.id.clone()]).unwrap();
+        assert!(media
+            .issues
+            .iter()
+            .any(|issue| issue.code == "image_metadata_mismatch"));
+
+        let mut corrupt = bytes;
+        corrupt[20] ^= 1;
+        store_fixture(&directory, &asset, &corrupt);
+        let hash = scan_asset_storage(&directory, &[asset.clone()], &[asset.id.clone()]).unwrap();
+        assert!(hash.hash_failures >= 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn asset_cleanup_is_interruption_safe_idempotent_and_preserves_references() {
+        let directory = test_store("storage-cleanup");
+        let (live, live_bytes) = image_fixture_with_color(1);
+        let (orphan_a, orphan_a_bytes) = image_fixture_with_color(2);
+        let (orphan_b, orphan_b_bytes) = image_fixture_with_color(3);
+        store_fixture(&directory, &live, &live_bytes);
+        store_fixture(&directory, &orphan_a, &orphan_a_bytes);
+        store_fixture(&directory, &orphan_b, &orphan_b_bytes);
+        let live_ids = vec![live.id.clone(), live.id.clone(), live.id.clone()];
+
+        let interrupted = cleanup_asset_storage(&directory, &[live.clone()], &live_ids, Some(1));
+        assert!(interrupted.unwrap_err().contains("Simulated interruption"));
+        assert!(directory.join(format!("{}.bin", live.id)).is_file());
+
+        let first = cleanup_asset_storage(&directory, &[live.clone()], &live_ids, None).unwrap();
+        assert!(directory.join(format!("{}.bin", live.id)).is_file());
+        assert_eq!(first.diagnostics.stored_assets, 1);
+        assert_eq!(first.diagnostics.referenced_assets, 1);
+        let second = cleanup_asset_storage(&directory, &[live.clone()], &live_ids, None).unwrap();
+        assert!(second.removed.is_empty());
+        assert_eq!(second.diagnostics.integrity_failures, 0);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn asset_storage_scans_and_cleans_one_hundred_objects() {
+        let directory = test_store("storage-performance");
+        let mut live_assets = Vec::new();
+        let mut live_ids = Vec::new();
+        for value in 0..100_u8 {
+            let (asset, bytes) = image_fixture_with_color(value);
+            store_fixture(&directory, &asset, &bytes);
+            if value < 80 {
+                live_ids.push(asset.id.clone());
+                live_assets.push(asset);
+            }
+        }
+        let scan_started = Instant::now();
+        let scan = scan_asset_storage(&directory, &live_assets, &live_ids).unwrap();
+        let scan_wall_ms = scan_started.elapsed().as_secs_f64() * 1_000.0;
+        assert_eq!(scan.stored_assets, 100);
+        assert_eq!(scan.orphan_files.len(), 20);
+        let cleanup_started = Instant::now();
+        let cleanup = cleanup_asset_storage(&directory, &live_assets, &live_ids, None).unwrap();
+        let cleanup_wall_ms = cleanup_started.elapsed().as_secs_f64() * 1_000.0;
+        assert_eq!(cleanup.removed.len(), 20);
+        assert_eq!(cleanup.diagnostics.stored_assets, 80);
+        assert_eq!(cleanup.diagnostics.integrity_failures, 0);
+        assert!(
+            scan_wall_ms < 5_000.0,
+            "100-asset scan took {scan_wall_ms:.2} ms"
+        );
+        assert!(
+            cleanup_wall_ms < 5_000.0,
+            "100-asset cleanup took {cleanup_wall_ms:.2} ms"
+        );
+        eprintln!("100-asset scan: {scan_wall_ms:.2} ms; cleanup: {cleanup_wall_ms:.2} ms");
+        fs::remove_dir_all(directory).unwrap();
     }
 }

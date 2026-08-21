@@ -27,7 +27,11 @@ import {
   exportProjectVideo,
   type ExportProgressState,
 } from '../core/videoExporter';
-import { ingestProjectImage, resolveProjectAssetUrls } from '../core/projectAssets';
+import {
+  ingestProjectImage,
+  resolveProjectAssetUrls,
+  validateProjectAssetStorage,
+} from '../core/projectAssets';
 
 const layerTypes: LayerType[] = ['pin', 'route', 'text', 'image', 'shape', 'region', 'arrow', 'geo-effect'];
 const icons: Record<LayerType, string> = {
@@ -152,21 +156,31 @@ export function App() {
     setNotice(`${layer.name} added`);
   };
   const save = async () => {
-    const next = {
-      ...project,
-      metadata: { ...project.metadata, updatedAt: new Date().toISOString() },
-    };
-    await browserFileSystemAdapter.saveProject(next);
-    setProject(next);
-    setNotice(words.saved);
+    try {
+      const next = {
+        ...project,
+        metadata: { ...project.metadata, updatedAt: new Date().toISOString() },
+      };
+      await validateProjectAssetStorage(next);
+      await browserFileSystemAdapter.saveProject(next);
+      setProject(next);
+      setNotice(words.saved);
+    } catch (error) {
+      setNotice(`Save failed: ${String(error)}`);
+    }
   };
   const open = async () => {
-    const saved = await browserFileSystemAdapter.openProject();
-    if (saved) {
-      setProject(saved);
-      setSelectedId(null);
-      setNotice(words.opened);
-    } else setNotice('No saved local project yet');
+    try {
+      const saved = await browserFileSystemAdapter.openProject();
+      if (saved) {
+        await validateProjectAssetStorage(saved);
+        setProject(saved);
+        setSelectedId(null);
+        setNotice(words.opened);
+      } else setNotice('No saved local project yet');
+    } catch (error) {
+      setNotice(`Open failed: ${String(error)}`);
+    }
   };
   const exportProjectPackage = async () => {
     if (portableBusy) return;
