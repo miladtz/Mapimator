@@ -20,7 +20,7 @@ import {
 import { t } from '../core/i18n';
 import { compileViews, evaluateProjectAtTime } from '../core/viewCompiler';
 import { autoReframe } from '../core/layout';
-import { exportPortableProject, importPortableProject } from '../core/portableProject';
+import { exportPortableProject, importPortableProjectDetailed } from '../core/portableProject';
 import { DEFAULT_EXPORT_PRESET_ID, EXPORT_PRESETS, type ExportPresetId } from '../core/exportPresets';
 import {
   cancelProjectVideoExport,
@@ -212,13 +212,18 @@ export function App() {
         filters: [{ name: 'MapMotion portable project', extensions: ['mapmotionpack'] }],
       });
       if (typeof inputPath !== 'string') return;
-      const imported = await importPortableProject(inputPath);
+      const { project: imported, compatibility } = await importPortableProjectDetailed(inputPath);
       setProject(imported);
       setCamera(imported.views[0]?.camera ?? { x: 0, y: 0, zoom: 1 });
       setSelectedId(null);
       setActiveViewId(null);
       setPreviewTime(null);
-      setNotice(`Portable project imported: ${imported.metadata.name}`);
+      const warningCount = compatibility.diagnostics.filter(
+        (diagnostic) => diagnostic.severity === 'warning',
+      ).length;
+      setNotice(
+        `Portable project imported: ${imported.metadata.name}${warningCount ? ` · ${warningCount} compatibility warning${warningCount === 1 ? '' : 's'}` : ''}`,
+      );
     } catch (error) {
       setNotice(`Import Project failed: ${String(error)}`);
     } finally {

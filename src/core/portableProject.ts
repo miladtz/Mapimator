@@ -2,26 +2,35 @@ import { invoke } from '@tauri-apps/api/core';
 import type { Project, ProjectAsset } from './project';
 import { canonicalProjectJson, validateAndMigrateProject } from './projectPersistence';
 import { validateProjectAssetStorage } from './projectAssets';
+import {
+  compatibilityAllowsImport,
+  DATASET_REGISTRY,
+  evaluatePortableProjectCompatibility,
+  formatSemanticVersion,
+  parseSemanticVersion,
+  type CompatibilityResult,
+  type DatasetRequirement,
+  type PortableExtensionRequirement,
+  type VersionInput,
+} from './compatibility';
 
 export const PORTABLE_PACKAGE_FORMAT = 'mapmotion-portable-project';
-export const PORTABLE_PACKAGE_VERSION = 2;
+export const PORTABLE_PACKAGE_VERSION = '2.0.0';
+export const PROJECT_SCHEMA_VERSION = '1.0.0';
 export const PORTABLE_MANIFEST_PATH = 'manifest.json';
 export const PORTABLE_PROJECT_PATH = 'project.json';
 
-export interface DataPackageRequirement {
-  id: string;
-  version: string;
-}
 export const INSTALLED_DATA_PACKAGES = [
-  { id: 'mapmotion-offline-starter-world', version: '0.1' },
-] as const satisfies readonly DataPackageRequirement[];
+  ...DATASET_REGISTRY.filter((dataset) => dataset.installed).map(({ id, version }) => ({ id, version })),
+] as const;
 
 export interface PortableProjectManifest {
   format: typeof PORTABLE_PACKAGE_FORMAT;
-  packageVersion: 1 | 2;
-  projectSchemaVersion: Project['version'];
+  packageVersion: VersionInput;
+  projectSchemaVersion: VersionInput;
   projectName: string;
-  requiredDataPackages: DataPackageRequirement[];
+  requiredDataPackages: DatasetRequirement[];
+  extensions?: PortableExtensionRequirement[];
   contents: { manifest: typeof PORTABLE_MANIFEST_PATH; project: typeof PORTABLE_PROJECT_PATH };
   assets?: ProjectAsset[];
 }
@@ -41,9 +50,14 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const createManifest = (project: Project): PortableProjectManifest => ({
   format: PORTABLE_PACKAGE_FORMAT,
   packageVersion: PORTABLE_PACKAGE_VERSION,
-  projectSchemaVersion: project.version,
+  projectSchemaVersion: PROJECT_SCHEMA_VERSION,
   projectName: project.metadata.name,
-  requiredDataPackages: [...INSTALLED_DATA_PACKAGES],
+  requiredDataPackages: DATASET_REGISTRY.filter((dataset) => dataset.required).map(({ id, version }) => ({
+    id,
+    version,
+    required: true,
+  })),
+  extensions: [],
   contents: { manifest: PORTABLE_MANIFEST_PATH, project: PORTABLE_PROJECT_PATH },
   assets: [...project.assets].sort((left, right) => left.packagePath.localeCompare(right.packagePath)),
 });
@@ -51,10 +65,10 @@ const createManifest = (project: Project): PortableProjectManifest => ({
 const validateManifest = (value: unknown): PortableProjectManifest => {
   if (!isRecord(value)) throw new Error('Portable project manifest must be an object.');
   if (value.format !== PORTABLE_PACKAGE_FORMAT) throw new Error('This is not a MapMotion portable project.');
-  if (value.packageVersion !== 1 && value.packageVersion !== 2)
-    throw new Error(`Unsupported portable package version: ${String(value.packageVersion)}.`);
-  if (value.projectSchemaVersion !== 1)
-    throw new Error(`Unsupported project schema version: ${String(value.projectSchemaVersion)}.`);
+  if (!['number', 'string'].includes(typeof value.packageVersion))
+    throw new Error('Portable package version metadata is malformed.');
+  if (!['number', 'string'].includes(typeof value.projectSchemaVersion))
+    throw new Error('Portable project schema version metadata is malformed.');
   if (typeof value.projectName !== 'string')
     throw new Error('Portable project manifest has no valid project name.');
   if (
@@ -69,18 +83,26 @@ const validateManifest = (value: unknown): PortableProjectManifest => {
     if (
       !isRecord(requirement) ||
       typeof requirement.id !== 'string' ||
-      typeof requirement.version !== 'string'
+      typeof requirement.version !== 'string' ||
+      (requirement.required !== undefined && typeof requirement.required !== 'boolean')
     )
       throw new Error('Portable project data requirement is malformed.');
-    const installed = INSTALLED_DATA_PACKAGES.find((candidate) => candidate.id === requirement.id);
-    if (!installed || installed.version !== requirement.version)
-      throw new Error(
-        `Required standard data package is unavailable: ${requirement.id}@${requirement.version}.`,
-      );
   }
-  if (value.packageVersion === 1 && value.assets !== undefined)
+  if (value.extensions !== undefined && !Array.isArray(value.extensions))
+    throw new Error('Portable project extension declarations are malformed.');
+  for (const extension of (value.extensions ?? []) as unknown[]) {
+    if (
+      !isRecord(extension) ||
+      typeof extension.id !== 'string' ||
+      typeof extension.version !== 'string' ||
+      typeof extension.required !== 'boolean'
+    )
+      throw new Error('Portable project extension declaration is malformed.');
+  }
+  const packageVersion = parseSemanticVersion(value.packageVersion as VersionInput);
+  if (packageVersion?.major === 1 && value.assets !== undefined)
     throw new Error('Milestone 1 portable manifests cannot declare project assets.');
-  if (value.packageVersion === 2 && !Array.isArray(value.assets))
+  if (packageVersion?.major !== 1 && !Array.isArray(value.assets))
     throw new Error('Portable project asset declarations are malformed.');
   return value as unknown as PortableProjectManifest;
 };
@@ -108,7 +130,35 @@ export async function exportPortableProject(project: Project, outputPath: string
   return manifest;
 }
 
-export async function importPortableProject(inputPath: string): Promise<Project> {
+export class PortableProjectCompatibilityError extends Error {
+  constructor(readonly compatibility: CompatibilityResult) {
+    super(
+      compatibility.diagnostics.map((diagnostic) => diagnostic.message).join('\n') ||
+        `Portable project compatibility is ${compatibility.category}.`,
+    );
+    this.name = 'PortableProjectCompatibilityError';
+  }
+}
+
+export interface ImportedPortableProject {
+  project: Project;
+  compatibility: CompatibilityResult;
+}
+
+const migratePackageManifest = (manifest: PortableProjectManifest): PortableProjectManifest => ({
+  ...manifest,
+  packageVersion: formatSemanticVersion(parseSemanticVersion(manifest.packageVersion)!),
+  projectSchemaVersion: formatSemanticVersion(parseSemanticVersion(manifest.projectSchemaVersion)!),
+  requiredDataPackages: manifest.requiredDataPackages.map((requirement) => ({
+    ...requirement,
+    required: requirement.required !== false,
+  })),
+  extensions: manifest.extensions ?? [],
+  assets: manifest.assets ?? [],
+});
+
+export async function importPortableProjectDetailed(inputPath: string): Promise<ImportedPortableProject> {
+  // 1. Native archive validation and bounded extraction.
   const payload = await invoke<NativePortablePayload>('import_portable_project', { inputPath });
   let manifestValue: unknown;
   let projectValue: unknown;
@@ -117,14 +167,23 @@ export async function importPortableProject(inputPath: string): Promise<Project>
   } catch {
     throw new Error('Portable project manifest JSON is malformed.');
   }
-  const manifest = validateManifest(manifestValue);
+  // 2. Manifest structure validation.
+  const sourceManifest = validateManifest(manifestValue);
+  // 3. Compatibility evaluation.
+  const compatibility = evaluatePortableProjectCompatibility(sourceManifest);
+  if (!compatibilityAllowsImport(compatibility)) throw new PortableProjectCompatibilityError(compatibility);
+  // 4. Package-level normalization/migration.
+  const manifest = migratePackageManifest(sourceManifest);
   try {
     projectValue = JSON.parse(payload.projectJson);
   } catch {
     throw new Error('Portable project payload JSON is malformed.');
   }
+  // 5 and 6. Existing project-schema migration entry point and dataset compatibility were evaluated above.
+  // 7. Authoritative project validation.
   const project = validateAndMigrateProject(projectValue);
-  if (project.version !== manifest.projectSchemaVersion)
+  const declaredSchema = parseSemanticVersion(manifest.projectSchemaVersion)!;
+  if (project.version !== declaredSchema.major)
     throw new Error('Portable project schema version does not match its manifest.');
   if (project.metadata.name !== manifest.projectName)
     throw new Error('Portable project name does not match its manifest.');
@@ -142,7 +201,12 @@ export async function importPortableProject(inputPath: string): Promise<Project>
     )
       throw new Error(`Portable project asset metadata mismatch: ${asset.id}.`);
   }
+  // Asset commit is transactional and happens only after every compatibility/project check succeeds.
   if (payload.assets.length) await invoke('commit_imported_assets', { assets: payload.assets });
   await validateProjectAssetStorage(project);
-  return project;
+  return { project, compatibility };
+}
+
+export async function importPortableProject(inputPath: string): Promise<Project> {
+  return (await importPortableProjectDetailed(inputPath)).project;
 }

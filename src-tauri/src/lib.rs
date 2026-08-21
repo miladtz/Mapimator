@@ -41,7 +41,7 @@ struct ProjectAsset {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NativeManifest {
-    package_version: u32,
+    package_version: serde_json::Value,
     assets: Option<Vec<ProjectAsset>>,
 }
 
@@ -358,17 +358,14 @@ fn read_portable_project(input_path: PathBuf) -> Result<PortableProjectPayload, 
         .map_err(|_| "Portable project payload is not valid UTF-8 JSON text.")?;
     let manifest: NativeManifest = serde_json::from_str(&manifest_json)
         .map_err(|error| format!("Portable project asset manifest is malformed: {error}"))?;
-    let declarations = match manifest.package_version {
-        1 => {
+    let declarations = match native_version_major(&manifest.package_version) {
+        Some(1) => {
             if manifest.assets.is_some() {
                 return Err("Milestone 1 packages cannot declare assets.".into());
             }
             Vec::new()
         }
-        2 => manifest
-            .assets
-            .ok_or("Portable project asset declarations are missing.")?,
-        version => return Err(format!("Unsupported portable package version: {version}.")),
+        _ => manifest.assets.unwrap_or_default(),
     };
     if declarations.len() > MAX_PROJECT_ASSETS {
         return Err("Portable project contains too many assets.".into());
@@ -421,6 +418,12 @@ fn read_portable_project(input_path: PathBuf) -> Result<PortableProjectPayload, 
         project_json,
         assets: imported_assets,
     })
+}
+
+fn native_version_major(value: &serde_json::Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_str()?.split(['.', '-', '+']).next()?.parse().ok())
 }
 
 fn asset_store_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -1333,8 +1336,8 @@ mod portable_project_tests {
     fn manifest_json(assets: serde_json::Value) -> String {
         serde_json::json!({
             "format": "mapmotion-portable-project",
-            "packageVersion": 2,
-            "projectSchemaVersion": 1,
+            "packageVersion": "2.0.0",
+            "projectSchemaVersion": "1.0.0",
             "projectName": "Asset test",
             "requiredDataPackages": [],
             "contents": { "manifest": "manifest.json", "project": "project.json" },
