@@ -1,4 +1,4 @@
-import type { CameraState, Layer, Project, View } from './project';
+import type { CameraState, Layer, Project, ProjectAsset, View } from './project';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -31,6 +31,7 @@ const optionalStrings = [
   'textDirection',
   'numberStyle',
   'geoEffectType',
+  'assetId',
 ] as const;
 const optionalNumbers = ['x2', 'y2', 'width', 'height', 'fontSize', 'effectSize', 'effectDuration'] as const;
 
@@ -92,6 +93,46 @@ const validateView = (value: unknown, index: number): View => {
   return value as unknown as View;
 };
 
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const ASSET_ID_PATTERN = /^asset_[a-f0-9]{64}$/;
+const ASSET_PATH_PATTERN = /^assets\/[a-f0-9]{64}\.(png|jpg)$/;
+
+const validateAsset = (value: unknown, index: number): ProjectAsset => {
+  const path = `project.assets[${index}]`;
+  if (!isRecord(value)) throw new Error(`${path} must be an object.`);
+  if (!isString(value.id) || !ASSET_ID_PATTERN.test(value.id)) throw new Error(`${path}.id is malformed.`);
+  if (value.kind !== 'image') throw new Error(`${path}.kind is unsupported.`);
+  if (
+    !isString(value.filename) ||
+    !value.filename ||
+    value.filename.includes('/') ||
+    value.filename.includes('\\')
+  )
+    throw new Error(`${path}.filename is malformed.`);
+  if (!oneOf(value.mediaType, ['image/png', 'image/jpeg'] as const))
+    throw new Error(`${path}.mediaType is unsupported.`);
+  if (!isString(value.sha256) || !SHA256_PATTERN.test(value.sha256) || value.id !== `asset_${value.sha256}`)
+    throw new Error(`${path} has inconsistent identity metadata.`);
+  if (!Number.isSafeInteger(value.size) || (value.size as number) <= 0)
+    throw new Error(`${path}.size must be a positive integer.`);
+  if (
+    !Number.isSafeInteger(value.width) ||
+    (value.width as number) <= 0 ||
+    !Number.isSafeInteger(value.height) ||
+    (value.height as number) <= 0
+  )
+    throw new Error(`${path} has invalid dimensions.`);
+  if (!isString(value.packagePath) || !ASSET_PATH_PATTERN.test(value.packagePath))
+    throw new Error(`${path}.packagePath is unsafe or malformed.`);
+  const extension = value.packagePath.slice(value.packagePath.lastIndexOf('.') + 1);
+  if (
+    (value.mediaType === 'image/png' && extension !== 'png') ||
+    (value.mediaType === 'image/jpeg' && !['jpg', 'jpeg'].includes(extension))
+  )
+    throw new Error(`${path}.packagePath does not match its media type.`);
+  return value as unknown as ProjectAsset;
+};
+
 export function validateAndMigrateProject(value: unknown): Project {
   if (!isRecord(value)) throw new Error('Project payload must be an object.');
   if (value.version !== 1) throw new Error(`Unsupported project schema version: ${String(value.version)}.`);
@@ -133,6 +174,26 @@ export function validateAndMigrateProject(value: unknown): Project {
   value.views.forEach(validateView);
   if (!Array.isArray(value.assets) || !isRecord(value.animation) || !isRecord(value.exportSettings))
     throw new Error('Project assets, animation, or export settings are malformed.');
+  const assetIds = new Set<string>();
+  const packagePaths = new Set<string>();
+  value.assets.forEach((asset, index) => {
+    const validated = validateAsset(asset, index);
+    if (!assetIds.add(validated.id)) throw new Error(`Duplicate project asset ID: ${validated.id}.`);
+    if (!packagePaths.add(validated.packagePath))
+      throw new Error(`Duplicate project asset package path: ${validated.packagePath}.`);
+  });
+  const validateReferences = (layers: Layer[], path: string) =>
+    layers.forEach((layer, index) => {
+      if (layer.assetId !== undefined) {
+        if (layer.type !== 'image') throw new Error(`${path}[${index}] uses an asset on a non-image layer.`);
+        if (!assetIds.has(layer.assetId))
+          throw new Error(`${path}[${index}] references nonexistent asset ID: ${layer.assetId}.`);
+      }
+    });
+  validateReferences(value.layers as Layer[], 'project.layers');
+  (value.views as View[]).forEach((view, index) =>
+    validateReferences(view.layers, `project.views[${index}].layers`),
+  );
   return value as unknown as Project;
 }
 

@@ -5,6 +5,7 @@ import { MapScene } from '../components/OfflineMap';
 import { MAP_STYLES, type Project } from './project';
 import { projectExportSettings, validateExportSettings, type ExportVideoSettings } from './exportPresets';
 import { compileViews, evaluateProjectAtTime } from './viewCompiler';
+import { resolveProjectAssetUrls } from './projectAssets';
 
 export const EXPORT_FRAME_WIDTH = 1920;
 export const EXPORT_FRAME_HEIGHT = 1080;
@@ -118,6 +119,7 @@ async function renderProjectFrameCanvas<T>(
   validateExportSettings({ width, height, fps: 30 });
 
   const state = evaluateProjectAtTime(project, time);
+  const assetUrls = await resolveProjectAssetUrls(project);
   const style = MAP_STYLES.find((candidate) => candidate.id === project.mapSettings.styleId);
   if (!style) throw new Error(`Unknown map style: ${project.mapSettings.styleId}`);
 
@@ -147,6 +149,7 @@ async function renderProjectFrameCanvas<T>(
         width={width}
         height={height}
         viewBox={exportViewBox(width, height)}
+        assetUrls={assetUrls}
       />,
     );
     await document.fonts.load('700 36px Inter');

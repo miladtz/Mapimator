@@ -14,6 +14,7 @@ interface Props {
   onMoveLayer: (id: string, x: number, y: number) => void;
   safeArea: number;
   showSafeArea: boolean;
+  assetUrls?: Readonly<Record<string, string>>;
 }
 
 export interface MapSceneProps {
@@ -30,6 +31,7 @@ export interface MapSceneProps {
   svgProps?: SVGProps<SVGSVGElement>;
   onBackgroundClick?: () => void;
   onLayerPointerDown?: (event: PointerEvent<SVGGElement>, layer: Layer) => void;
+  assetUrls?: Readonly<Record<string, string>>;
 }
 export function OfflineMap({
   style,
@@ -42,6 +44,7 @@ export function OfflineMap({
   onMoveLayer,
   safeArea,
   showSafeArea,
+  assetUrls,
 }: Props) {
   const drag = useRef<{ x: number; y: number } | null>(null);
   const moving = useRef<string | null>(null);
@@ -88,6 +91,7 @@ export function OfflineMap({
       selectedId={selectedId}
       safeArea={safeArea}
       showSafeArea={showSafeArea}
+      assetUrls={assetUrls}
       onBackgroundClick={() => onSelect(null)}
       onLayerPointerDown={beginLayerMove}
       svgProps={{
@@ -115,6 +119,7 @@ export function MapScene({
   svgProps,
   onBackgroundClick,
   onLayerPointerDown,
+  assetUrls = {},
 }: MapSceneProps) {
   const transform = `translate(${camera.x} ${camera.y}) scale(${camera.zoom})`;
   return (
@@ -183,6 +188,7 @@ export function MapScene({
               layer={layer}
               selected={layer.id === selectedId}
               onPointerDown={(event) => onLayerPointerDown?.(event, layer)}
+              assetUrl={layer.assetId ? assetUrls[layer.assetId] : undefined}
             />
           ))}
       </g>
@@ -233,10 +239,12 @@ function LayerGraphic({
   layer,
   selected,
   onPointerDown,
+  assetUrl,
 }: {
   layer: Layer;
   selected: boolean;
   onPointerDown: (event: PointerEvent<SVGGElement>) => void;
+  assetUrl?: string;
 }) {
   const common = {
     opacity: layer.opacity,
@@ -291,6 +299,19 @@ function LayerGraphic({
       </g>
     );
   }
+  if (layer.type === 'image' && assetUrl)
+    return (
+      <g {...common}>
+        <image
+          href={assetUrl}
+          x={layer.x}
+          y={layer.y}
+          width={layer.width}
+          height={layer.height}
+          preserveAspectRatio="xMidYMid meet"
+        />
+      </g>
+    );
   if (layer.type === 'shape' || layer.type === 'image')
     return (
       <g {...common}>

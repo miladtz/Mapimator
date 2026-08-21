@@ -27,6 +27,7 @@ import {
   exportProjectVideo,
   type ExportProgressState,
 } from '../core/videoExporter';
+import { ingestProjectImage, resolveProjectAssetUrls } from '../core/projectAssets';
 
 const layerTypes: LayerType[] = ['pin', 'route', 'text', 'image', 'shape', 'region', 'arrow', 'geo-effect'];
 const icons: Record<LayerType, string> = {
@@ -70,6 +71,7 @@ export function App() {
   });
   const [exportPresetId, setExportPresetId] = useState<ExportPresetId>(DEFAULT_EXPORT_PRESET_ID);
   const [portableBusy, setPortableBusy] = useState(false);
+  const [assetUrls, setAssetUrls] = useState<Record<string, string>>({});
   const exportAbort = useRef<AbortController | null>(null);
   const exportPreset = EXPORT_PRESETS.find((preset) => preset.id === exportPresetId)!;
   const words = t(language);
@@ -81,6 +83,15 @@ export function App() {
   );
   const sequence = useMemo(() => compileViews(project.views), [project.views]);
   const previewState = previewTime === null ? null : evaluateProjectAtTime(project, previewTime);
+  useEffect(() => {
+    let active = true;
+    resolveProjectAssetUrls(project)
+      .then((urls) => active && setAssetUrls(urls))
+      .catch((error) => active && setNotice(`Unable to load project asset: ${String(error)}`));
+    return () => {
+      active = false;
+    };
+  }, [project.assets]);
   useEffect(() => {
     if (previewTime === null) return;
     const startedAt = performance.now() - previewTime * 1000;
@@ -103,15 +114,40 @@ export function App() {
       ...p,
       layers: p.layers.map((l) => (l.id === id ? { ...l, ...patch } : l)),
     }));
-  const addLayer = (type: LayerType) => {
+  const addLayer = async (type: LayerType) => {
     const layer = createLayer(type, project.layers.length);
+    let asset = null;
+    if (type === 'image') {
+      try {
+        const sourcePath = await openFile({
+          title: 'Import Project Image',
+          multiple: false,
+          directory: false,
+          filters: [{ name: 'PNG or JPEG image', extensions: ['png', 'jpg', 'jpeg'] }],
+        });
+        if (typeof sourcePath !== 'string') return;
+        asset = await ingestProjectImage(sourcePath);
+        layer.assetId = asset.id;
+        layer.name = asset.filename;
+        layer.width = 160;
+        layer.height = Math.max(30, Math.min(160, (160 * asset.height) / asset.width));
+      } catch (error) {
+        setNotice(`Import image failed: ${String(error)}`);
+        return;
+      }
+    }
     if (type === 'geo-effect') {
       const effect =
         geoEffectCycle[project.layers.filter((l) => l.type === 'geo-effect').length % geoEffectCycle.length];
       layer.geoEffectType = effect.type;
       layer.name = effect.name;
     }
-    updateProject((p) => ({ ...p, layers: [...p.layers, layer] }));
+    updateProject((p) => ({
+      ...p,
+      assets:
+        asset && !p.assets.some((candidate) => candidate.id === asset.id) ? [...p.assets, asset] : p.assets,
+      layers: [...p.layers, layer],
+    }));
     setSelectedId(layer.id);
     setNotice(`${layer.name} added`);
   };
@@ -539,10 +575,11 @@ export function App() {
               onMoveLayer={(id, x, y) => updateLayer(id, { x, y })}
               safeArea={project.canvas.safeArea}
               showSafeArea={project.canvas.showSafeArea}
+              assetUrls={assetUrls}
             />
             <div className="add-toolbar">
               {layerTypes.map((type) => (
-                <button key={type} onClick={() => addLayer(type)} title={`Add ${layerLabel[type]}`}>
+                <button key={type} onClick={() => void addLayer(type)} title={`Add ${layerLabel[type]}`}>
                   <b>{icons[type]}</b>
                   {layerLabel[type]}
                 </button>

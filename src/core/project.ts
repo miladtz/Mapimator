@@ -17,6 +17,20 @@ export type GeoEffectType =
 export type TextLanguage = 'auto' | 'persian' | 'english';
 export type TextDirection = 'auto' | 'rtl' | 'ltr';
 export type NumberStyle = 'persian' | 'english';
+export type ProjectAssetKind = 'image';
+export type ProjectImageMediaType = 'image/png' | 'image/jpeg';
+export interface ProjectImageAsset {
+  id: string;
+  kind: ProjectAssetKind;
+  filename: string;
+  mediaType: ProjectImageMediaType;
+  sha256: string;
+  size: number;
+  width: number;
+  height: number;
+  packagePath: string;
+}
+export type ProjectAsset = ProjectImageAsset;
 export type CanvasLayoutId = 'landscape' | 'portrait' | 'square' | 'portrait-4-5' | 'classic-4-3' | 'custom';
 export interface CanvasLayout {
   id: CanvasLayoutId;
@@ -67,6 +81,7 @@ export interface Layer {
   effectSize?: number;
   effectDuration?: number;
   effectRepeat?: boolean;
+  assetId?: string;
 }
 export interface CameraState {
   x: number;
@@ -97,7 +112,7 @@ export interface Project {
   mapSettings: { styleId: MapStyleId; labelLanguage: 'en' | 'fa' | 'both' | 'none' };
   layers: Layer[];
   views: View[];
-  assets: unknown[];
+  assets: ProjectAsset[];
   animation: Record<string, never>;
   exportSettings: Record<string, never>;
 }
