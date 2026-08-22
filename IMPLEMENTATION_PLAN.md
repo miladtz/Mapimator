@@ -189,3 +189,15 @@ Local development uses the current user's Windows environment and does not requi
 **Known limitations:** no 4K; H.264 MP4 only; deterministic rendering is slower than real time; automatic encoder policy is NVENC then libx264; portrait projects may require the existing layout and Auto Reframe workflow; and the current Windows installer is not code-signed.
 
 **Next proposed phase:** Phase 9 — Portable Project Export.
+
+# PHASE 9 COMPLETE
+
+**Implemented:** deterministic `.mapmotionpack` export and staged import; canonical project serialization; content-addressed project-owned image packaging; semantic package and project-schema versions; installed dataset and extension compatibility registries; compatible, warning, and blocking negotiation; structured diagnostics; bounded native ZIP validation; unsafe-path protection; asset size and SHA-256 verification; transactional asset commit; and atomic project replacement after complete validation.
+
+**Tests:** representative project save/restart/reopen and portable round-trip; canonical project equality; layer and View ordering; deterministic repeated package hashes; manifest, project, asset, dataset, and extension declarations; Milestone 1–4 package import compatibility; compatible, warning, and blocking negotiation; missing manifest; unsupported package major version; missing required dataset; missing required extension; malformed project; malformed manifest; unsafe archive path; same-size asset hash mismatch; atomic failure behavior; landscape and portrait H.264 regression exports; renderer startup; and the full frontend and native quality gates.
+
+**Manual verification:** created a representative project with two Views, Region, Arrow, project-owned Image, English `Iraq`, Persian `ایران`, bilingual map labels, Impact Pulse, and distinct View cameras; previewed and saved it; restarted the native application and reopened it; exported, imported, and previewed the portable package; visually inspected decoded landscape and portrait video frames; confirmed correct Persian shaping, English text, image content, effect rendering, camera transitions, and absence of editor chrome; and confirmed the current project remained unchanged after every rejected import.
+
+**Known limitations:** package compatibility currently covers the bundled starter-world dataset and has no installed optional extensions; unknown optional extensions are reported but not interpreted; portable packages contain project-owned images only; H.264 output and portrait composition retain the Phase 8 limitations; portrait projects require the existing portrait layout and composition/Auto Reframe workflow; deterministic rendering remains slower than real time; and Windows release installers remain unsigned.
+
+**Future work:** Phase 10 may add Templates & Presets on top of the stable portable-project and deterministic-rendering foundations. Any future package schema, dataset, asset-kind, or extension changes must use the existing semantic compatibility and staged-import pipeline rather than bypassing it.
