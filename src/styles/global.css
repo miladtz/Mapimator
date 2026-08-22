@@ -286,11 +286,42 @@ button:disabled {
   fill: #455d75;
 }
 .country-label {
-  font-size: 8px;
+  font-size: 6.4px;
   font-weight: 600;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.35px;
   pointer-events: none;
   user-select: none;
+  paint-order: stroke;
+  stroke: color-mix(in srgb, currentColor 12%, transparent);
+  stroke-width: 1px;
+}
+.physical-lakes,
+.physical-rivers,
+.country-borders,
+.coastlines,
+.continent-label,
+.marine-label,
+.city-label {
+  pointer-events: none;
+}
+.continent-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1.8px;
+  opacity: 0.42;
+}
+.marine-label {
+  font-size: 5px;
+  font-style: italic;
+  letter-spacing: 0.7px;
+  opacity: 0.72;
+}
+.city-label text {
+  font-size: 4.2px;
+  font-weight: 550;
+  paint-order: stroke;
+  stroke: color-mix(in srgb, currentColor 8%, transparent);
+  stroke-width: 0.8px;
 }
 .map-credit {
   font-size: 7px;

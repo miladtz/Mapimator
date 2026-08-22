@@ -1,0 +1,2 @@
+# Generated deterministically by scripts/build-world-map.mjs.
+src/data/worldMap.ts

@@ -164,7 +164,13 @@ export function validateAndMigrateProject(value: unknown): Project {
     throw new Error('Project canvas settings are malformed.');
   if (
     !isRecord(value.mapSettings) ||
-    !oneOf(value.mapSettings.styleId, ['documentary-dark', 'documentary-light'] as const) ||
+    !oneOf(value.mapSettings.styleId, [
+      'documentary-dark',
+      'documentary-light',
+      'modern',
+      'ink',
+      'terrain',
+    ] as const) ||
     !oneOf(value.mapSettings.labelLanguage, ['en', 'fa', 'both', 'none'] as const)
   )
     throw new Error('Project map settings are malformed.');

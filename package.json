@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "data:world": "node scripts/build-world-map.mjs dist-portable/natural-earth-50m src/data/worldMap.ts",
     "test:compatibility": "node scripts/verify-compatibility.mjs",
+    "test:map-data": "node scripts/verify-world-map.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:build": "tauri build",

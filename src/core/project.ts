@@ -1,5 +1,5 @@
 export type AppLanguage = 'en' | 'fa';
-export type MapStyleId = 'documentary-dark' | 'documentary-light';
+export type MapStyleId = 'documentary-dark' | 'documentary-light' | 'modern' | 'ink' | 'terrain';
 export type LayerType = 'region' | 'pin' | 'text' | 'shape' | 'arrow' | 'image' | 'route' | 'geo-effect';
 export type GeoEffectType =
   | 'impact-pulse'
@@ -56,6 +56,19 @@ export interface MapStylePreset {
   countryBorderWidth: number;
   countryLabelColor: string;
   backgroundColor: string;
+  lakeColor: string;
+  riverColor: string;
+  coastlineColor: string;
+  cityColor: string;
+  physicalLabelColor: string;
+  continentLabelColor: string;
+  texture: 'none' | 'modern' | 'ink' | 'terrain';
+}
+export interface BasemapCapability {
+  id: 'vector' | 'satellite';
+  available: boolean;
+  source: 'natural-earth' | null;
+  reason?: string;
 }
 export interface Layer {
   id: string;
@@ -127,6 +140,13 @@ export const MAP_STYLES: MapStylePreset[] = [
     countryBorderWidth: 1.2,
     countryLabelColor: '#e7eff9',
     backgroundColor: '#101a2a',
+    lakeColor: '#13243a',
+    riverColor: '#477aa1',
+    coastlineColor: '#9ab4ce',
+    cityColor: '#f4c56a',
+    physicalLabelColor: '#7396b5',
+    continentLabelColor: '#71849a',
+    texture: 'none',
   },
   {
     id: 'documentary-light',
@@ -137,6 +157,74 @@ export const MAP_STYLES: MapStylePreset[] = [
     countryBorderWidth: 1.1,
     countryLabelColor: '#183246',
     backgroundColor: '#edf3f5',
+    lakeColor: '#a6cfdb',
+    riverColor: '#6aa8bd',
+    coastlineColor: '#496c7c',
+    cityColor: '#a33c2d',
+    physicalLabelColor: '#47788b',
+    continentLabelColor: '#80979f',
+    texture: 'none',
+  },
+  {
+    id: 'modern',
+    name: 'Modern',
+    landColor: '#d6e2dc',
+    waterColor: '#88b9c6',
+    countryBorderColor: '#ffffff',
+    countryBorderWidth: 0.85,
+    countryLabelColor: '#173a3f',
+    backgroundColor: '#8bbbc7',
+    lakeColor: '#89becb',
+    riverColor: '#5d9fab',
+    coastlineColor: '#f4fbf8',
+    cityColor: '#e45b45',
+    physicalLabelColor: '#296d78',
+    continentLabelColor: '#58817c',
+    texture: 'modern',
+  },
+  {
+    id: 'ink',
+    name: 'Ink',
+    landColor: '#e8e0cd',
+    waterColor: '#f3eedf',
+    countryBorderColor: '#2b2925',
+    countryBorderWidth: 0.9,
+    countryLabelColor: '#171614',
+    backgroundColor: '#f3eedf',
+    lakeColor: '#f3eedf',
+    riverColor: '#676159',
+    coastlineColor: '#171614',
+    cityColor: '#8b3028',
+    physicalLabelColor: '#71695f',
+    continentLabelColor: '#9b9387',
+    texture: 'ink',
+  },
+  {
+    id: 'terrain',
+    name: 'Terrain',
+    landColor: '#9caf7c',
+    waterColor: '#8eb9c7',
+    countryBorderColor: '#f2ead4',
+    countryBorderWidth: 0.8,
+    countryLabelColor: '#263222',
+    backgroundColor: '#8eb9c7',
+    lakeColor: '#76aab9',
+    riverColor: '#4f8fa4',
+    coastlineColor: '#e9e2c9',
+    cityColor: '#9b382d',
+    physicalLabelColor: '#416f79',
+    continentLabelColor: '#607457',
+    texture: 'terrain',
+  },
+];
+
+export const BASEMAP_CAPABILITIES: BasemapCapability[] = [
+  { id: 'vector', available: true, source: 'natural-earth' },
+  {
+    id: 'satellite',
+    available: false,
+    source: null,
+    reason: 'Requires a separately licensed, versioned offline imagery pyramid.',
   },
 ];
 export const layerLabel: Record<LayerType, string> = {

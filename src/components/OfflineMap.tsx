@@ -1,7 +1,19 @@
 import React, { useRef, type PointerEvent, type SVGProps, type WheelEvent } from 'react';
 import type { CameraState, Layer, MapStylePreset, Project } from '../core/project';
 import { formatNumbers, resolveTextDirection, resolveTextLanguage } from '../core/text';
-import { COUNTRIES, PERSIAN_COUNTRY_NAMES } from '../data/countries';
+import {
+  CITY_LABELS,
+  COASTLINE_PATH,
+  CONTINENT_LABELS,
+  COUNTRIES,
+  COUNTRY_BORDER_PATH,
+  findCountry,
+  LAKE_PATH,
+  MARINE_LABELS,
+  RIVER_PATHS,
+  WORLD_MAP_DATASET,
+  type MapLabel,
+} from '../data/worldMap';
 
 interface Props {
   style: MapStylePreset;
@@ -122,6 +134,12 @@ export function MapScene({
   assetUrls = {},
 }: MapSceneProps) {
   const transform = `translate(${camera.x} ${camera.y}) scale(${camera.zoom})`;
+  const labelDetail = camera.zoom >= 2.1 ? 2 : camera.zoom >= 1.35 ? 1 : 0;
+  const countryLabelRank = [3, 4, 6][labelDetail];
+  const visibleCities = CITY_LABELS.filter((label) => (label.rank ?? 9) <= labelDetail);
+  const visibleMarineLabels = MARINE_LABELS.filter(
+    (label) => label.kind === 'ocean' || (labelDetail >= 1 && (label.rank ?? 9) <= labelDetail + 1),
+  );
   return (
     <svg
       {...svgProps}
@@ -144,6 +162,20 @@ export function MapScene({
             strokeWidth=".6"
           />
         </pattern>
+        <linearGradient id="modern-land" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor={style.landColor} />
+          <stop offset="1" stopColor="#a9c5bb" />
+        </linearGradient>
+        <linearGradient id="terrain-land" x1="0" y1="0" x2="0.85" y2="1">
+          <stop offset="0" stopColor="#d7d39a" />
+          <stop offset=".38" stopColor={style.landColor} />
+          <stop offset=".72" stopColor="#789665" />
+          <stop offset="1" stopColor="#b59b72" />
+        </linearGradient>
+        <pattern id="ink-land" width="7" height="7" patternUnits="userSpaceOnUse">
+          <rect width="7" height="7" fill={style.landColor} />
+          <path d="M0 7L7 0" stroke="#514c44" strokeWidth=".35" opacity=".18" />
+        </pattern>
         <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
           <path d="M0,0 L8,4 L0,8Z" fill="context-stroke" />
         </marker>
@@ -164,20 +196,84 @@ export function MapScene({
           <path
             key={c.id}
             d={c.path}
-            fill={style.landColor}
-            stroke={style.countryBorderColor}
-            strokeWidth={style.countryBorderWidth}
-            vectorEffect="non-scaling-stroke"
+            fill={
+              style.texture === 'modern'
+                ? 'url(#modern-land)'
+                : style.texture === 'terrain'
+                  ? 'url(#terrain-land)'
+                  : style.texture === 'ink'
+                    ? 'url(#ink-land)'
+                    : style.landColor
+            }
+            fillRule="evenodd"
             className="country"
           />
         ))}
+        <path d={LAKE_PATH} fill={style.lakeColor} fillRule="evenodd" className="physical-lakes" />
+        {RIVER_PATHS.map((path, index) => (
+          <path
+            key={`rivers-${index}`}
+            d={path}
+            fill="none"
+            stroke={style.riverColor}
+            strokeWidth={[1.05, 0.7, 0.45][index]}
+            opacity={[0.9, 0.72, 0.52][index]}
+            vectorEffect="non-scaling-stroke"
+            className="physical-rivers"
+          />
+        ))}
+        <path
+          d={COUNTRY_BORDER_PATH}
+          fill="none"
+          stroke={style.countryBorderColor}
+          strokeWidth={style.countryBorderWidth}
+          vectorEffect="non-scaling-stroke"
+          className="country-borders"
+        />
+        <path
+          d={COASTLINE_PATH}
+          fill="none"
+          stroke={style.coastlineColor}
+          strokeWidth={Math.max(0.75, style.countryBorderWidth)}
+          vectorEffect="non-scaling-stroke"
+          className="coastlines"
+        />
         {labelLanguage !== 'none' &&
-          COUNTRIES.map((c) => (
+          CONTINENT_LABELS.map((label) => (
+            <MapFeatureLabel
+              key={`${label.id}-continent`}
+              label={label}
+              language={labelLanguage}
+              color={style.continentLabelColor}
+              className="continent-label"
+            />
+          ))}
+        {labelLanguage !== 'none' &&
+          visibleMarineLabels.map((label) => (
+            <MapFeatureLabel
+              key={`${label.id}-marine`}
+              label={label}
+              language={labelLanguage}
+              color={style.physicalLabelColor}
+              className="marine-label"
+            />
+          ))}
+        {labelLanguage !== 'none' &&
+          COUNTRIES.filter((country) => country.labelRank <= countryLabelRank).map((c) => (
             <CountryLabel
               key={`${c.id}-label`}
               country={c}
               language={labelLanguage}
               color={style.countryLabelColor}
+            />
+          ))}
+        {labelLanguage !== 'none' &&
+          visibleCities.map((label) => (
+            <CityLabel
+              key={`${label.id}-city`}
+              label={label}
+              language={labelLanguage}
+              color={style.cityColor}
             />
           ))}
         {layers
@@ -193,7 +289,7 @@ export function MapScene({
           ))}
       </g>
       <text x="26" y="526" fill={style.countryLabelColor} opacity=".52" className="map-credit">
-        MAPMOTION OFFLINE STARTER DATA · v0.1
+        NATURAL EARTH 1:50M · OFFLINE · {WORLD_MAP_DATASET.version}
       </text>
     </svg>
   );
@@ -207,7 +303,7 @@ function CountryLabel({
   language: Project['mapSettings']['labelLanguage'];
   color: string;
 }) {
-  const fa = PERSIAN_COUNTRY_NAMES[country.id] ?? country.name;
+  const fa = country.nameFa || country.name;
   return (
     <text
       x={country.label[0]}
@@ -235,6 +331,71 @@ function CountryLabel({
     </text>
   );
 }
+function MapFeatureLabel({
+  label,
+  language,
+  color,
+  className,
+}: {
+  label: MapLabel;
+  language: Project['mapSettings']['labelLanguage'];
+  color: string;
+  className: string;
+}) {
+  const text = language === 'fa' ? label.nameFa : label.name;
+  return (
+    <text
+      x={label.point[0]}
+      y={label.point[1]}
+      fill={color}
+      className={`${className} ${language === 'fa' ? 'persian-text' : ''}`}
+      textAnchor="middle"
+      direction={language === 'fa' ? 'rtl' : 'ltr'}
+      unicodeBidi="plaintext"
+    >
+      {language === 'both' ? (
+        <>
+          <tspan x={label.point[0]} dy="-3" className="persian-text" direction="rtl">
+            {label.nameFa}
+          </tspan>
+          <tspan x={label.point[0]} dy="8">
+            {label.name}
+          </tspan>
+        </>
+      ) : (
+        text
+      )}
+    </text>
+  );
+}
+
+function CityLabel({
+  label,
+  language,
+  color,
+}: {
+  label: MapLabel;
+  language: Project['mapSettings']['labelLanguage'];
+  color: string;
+}) {
+  const text = language === 'fa' ? label.nameFa : label.name;
+  const shown = language === 'both' ? `${label.name} · ${label.nameFa}` : text;
+  return (
+    <g className="city-label">
+      <circle cx={label.point[0]} cy={label.point[1]} r={label.capital ? 1.8 : 1.2} fill={color} />
+      <text
+        x={label.point[0] + 3}
+        y={label.point[1] - 2}
+        fill={color}
+        className={language !== 'en' ? 'persian-text' : ''}
+        direction={language === 'fa' ? 'rtl' : 'ltr'}
+        unicodeBidi="plaintext"
+      >
+        {shown}
+      </text>
+    </g>
+  );
+}
 function LayerGraphic({
   layer,
   selected,
@@ -252,7 +413,7 @@ function LayerGraphic({
     className: `layer-graphic ${selected ? 'selected-layer' : ''}`,
   };
   if (layer.type === 'region') {
-    const country = COUNTRIES.find((c) => c.id === layer.countryId);
+    const country = findCountry(layer.countryId);
     return country ? (
       <g {...common}>
         <path d={country.path} fill={layer.color} fillOpacity=".45" stroke={layer.color} strokeWidth="3" />

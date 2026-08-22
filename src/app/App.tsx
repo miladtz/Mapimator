@@ -3,6 +3,7 @@ import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
 import { OfflineMap } from '../components/OfflineMap';
 import { browserFileSystemAdapter } from '../core/adapters';
 import {
+  BASEMAP_CAPABILITIES,
   MAP_STYLES,
   CANVAS_LAYOUTS,
   createLayer,
@@ -526,33 +527,29 @@ export function App() {
                 <option value="both">EN + فا</option>
                 <option value="none">No labels</option>
               </select>
+              {MAP_STYLES.map((preset) => (
+                <button
+                  key={preset.id}
+                  className={style.id === preset.id ? 'active' : ''}
+                  onClick={() =>
+                    updateProject((p) => ({
+                      ...p,
+                      mapSettings: { ...p.mapSettings, styleId: preset.id },
+                    }))
+                  }
+                >
+                  {preset.id === 'documentary-dark'
+                    ? words.dark
+                    : preset.id === 'documentary-light'
+                      ? words.light
+                      : preset.name}
+                </button>
+              ))}
               <button
-                className={style.id === 'documentary-dark' ? 'active' : ''}
-                onClick={() =>
-                  updateProject((p) => ({
-                    ...p,
-                    mapSettings: {
-                      ...p.mapSettings,
-                      styleId: 'documentary-dark',
-                    },
-                  }))
-                }
+                disabled
+                title={BASEMAP_CAPABILITIES.find((capability) => capability.id === 'satellite')?.reason}
               >
-                {words.dark}
-              </button>
-              <button
-                className={style.id === 'documentary-light' ? 'active' : ''}
-                onClick={() =>
-                  updateProject((p) => ({
-                    ...p,
-                    mapSettings: {
-                      ...p.mapSettings,
-                      styleId: 'documentary-light',
-                    },
-                  }))
-                }
-              >
-                {words.light}
+                Satellite
               </button>
             </div>
             <div className="layout-controls">

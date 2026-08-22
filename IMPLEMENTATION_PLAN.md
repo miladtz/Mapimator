@@ -201,3 +201,13 @@ Local development uses the current user's Windows environment and does not requi
 **Known limitations:** package compatibility currently covers the bundled starter-world dataset and has no installed optional extensions; unknown optional extensions are reported but not interpreted; portable packages contain project-owned images only; H.264 output and portrait composition retain the Phase 8 limitations; portrait projects require the existing portrait layout and composition/Auto Reframe workflow; deterministic rendering remains slower than real time; and Windows release installers remain unsigned.
 
 **Future work:** Phase 10 may add Templates & Presets on top of the stable portable-project and deterministic-rendering foundations. Any future package schema, dataset, asset-kind, or extension changes must use the existing semantic compatibility and staged-import pipeline rather than bypassing it.
+
+## Phase 10 progress — Milestone 1: Professional Offline Map Foundation
+
+**Implemented:** a pinned, reproducible Natural Earth 1:50m offline world dataset with 242 country geometries, admin-0 borders, coastlines, lakes, ranked rivers, 134 major-city labels, 68 marine labels, seven continent labels, and English/Persian names where Natural Earth provides them; ranked label decluttering; legacy country-ID aliases; Dark, Light, Modern, Ink, and Terrain vector styles; and an explicit unavailable capability for satellite imagery rather than a network fallback.
+
+**Compatibility:** existing project schema, camera state, View state, preview evaluation, deterministic renderer, H.264 exporter, saved projects, and portable package format are unchanged. The legacy starter dataset remains registered as installed for older portable packages, while new packages declare `mapmotion-natural-earth-world@1.0.0`.
+
+**Validation:** deterministic dataset rebuild; focused map-data assertions; frontend build; compatibility matrix; Cargo check and tests; native preview/save/restart/open; Milestone 1–3 portable imports; portable round-trip and repeated package hashes; repeated PNG frame hashes; all five styles; Persian/English labels; legacy and ISO Region identifiers; and representative 1920×1080 H.264 export all pass.
+
+**Limitations:** satellite imagery needs a separately licensed, versioned, size-bounded offline imagery pyramid; Terrain is a deterministic vector cartographic treatment rather than elevation raster relief; global-detail rendering is slower than the starter geometry; and the generated map module increases the main application bundle enough to trigger Vite's chunk-size advisory.
