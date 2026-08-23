@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
 import { OfflineMap } from '../components/OfflineMap';
+import type { MapMode } from '../components/OfflineMap';
 import { browserFileSystemAdapter } from '../core/adapters';
 import {
   BASEMAP_CAPABILITIES,
@@ -21,6 +22,7 @@ import {
 import { t } from '../core/i18n';
 import { compileViews, evaluateProjectAtTime } from '../core/viewCompiler';
 import { autoReframe } from '../core/layout';
+import { fitCountryCamera, fitLayerCamera, fitSelectionCamera, fitWorldCamera } from '../core/camera';
 import { exportPortableProject, importPortableProjectDetailed } from '../core/portableProject';
 import { DEFAULT_EXPORT_PRESET_ID, EXPORT_PRESETS, type ExportPresetId } from '../core/exportPresets';
 import {
@@ -59,6 +61,12 @@ const geoEffectCycle: { type: GeoEffectType; name: string }[] = [
   { type: 'disputed-border', name: 'Disputed border' },
   { type: 'influence-zone', name: 'Influence zone' },
 ];
+type PlaybackState = 'stopped' | 'playing' | 'paused';
+
+const VIEW_PIXELS_PER_SECOND = 36;
+const MIN_VIEW_CARD_WIDTH = 126;
+const VIEW_CARD_GAP = 9;
+
 export function App() {
   const [project, setProject] = useState<Project>(() => createProject('Untitled documentary'));
   const [language, setLanguage] = useState<AppLanguage>('en');
@@ -66,8 +74,13 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [camera, setCamera] = useState<CameraState>({ x: 0, y: 0, zoom: 1 });
+  const [mapMode, setMapMode] = useState<MapMode>('flat');
   const [activeViewId, setActiveViewId] = useState<string | null>(null);
   const [previewTime, setPreviewTime] = useState<number | null>(null);
+  const [playbackState, setPlaybackState] = useState<PlaybackState>('stopped');
+  const [layersPanelOpen, setLayersPanelOpen] = useState(true);
+  const [draggedViewId, setDraggedViewId] = useState<string | null>(null);
+  const [openViewMenuId, setOpenViewMenuId] = useState<string | null>(null);
   const [exportState, setExportState] = useState<ExportProgressState & { message?: string }>({
     status: 'idle',
     currentFrame: 0,
@@ -78,16 +91,21 @@ export function App() {
   const [portableBusy, setPortableBusy] = useState(false);
   const [assetUrls, setAssetUrls] = useState<Record<string, string>>({});
   const exportAbort = useRef<AbortController | null>(null);
+  const previewTimeRef = useRef(0);
+  const timelineScrollRef = useRef<HTMLDivElement | null>(null);
   const exportPreset = EXPORT_PRESETS.find((preset) => preset.id === exportPresetId)!;
   const words = t(language);
   const style = MAP_STYLES.find((item) => item.id === project.mapSettings.styleId)!;
   const selected = project.layers.find((l) => l.id === selectedId) ?? null;
+  const activeView = project.views.find((view) => view.id === activeViewId) ?? null;
   const visibleLayers = useMemo(
     () => project.layers.filter((l) => l.name.toLowerCase().includes(search.toLowerCase())),
     [project.layers, search],
   );
   const sequence = useMemo(() => compileViews(project.views), [project.views]);
   const previewState = previewTime === null ? null : evaluateProjectAtTime(project, previewTime);
+  const previewDisplayTime = previewTime ?? 0;
+  const playheadPosition = timelinePosition(sequence, previewDisplayTime);
   useEffect(() => {
     let active = true;
     resolveProjectAssetUrls(project)
@@ -98,22 +116,65 @@ export function App() {
     };
   }, [project.assets]);
   useEffect(() => {
-    if (previewTime === null) return;
-    const startedAt = performance.now() - previewTime * 1000;
+    previewTimeRef.current = previewDisplayTime;
+  }, [previewDisplayTime]);
+  useEffect(() => {
+    if (playbackState !== 'playing') return;
+    const startedAt = performance.now() - previewTimeRef.current * 1000;
     let frame = 0;
     const tick = () => {
       const next = (performance.now() - startedAt) / 1000;
       if (next >= sequence.duration) {
-        setPreviewTime(null);
+        previewTimeRef.current = sequence.duration;
+        setPreviewTime(sequence.duration);
+        setPlaybackState('paused');
         return;
       }
+      previewTimeRef.current = next;
       setPreviewTime(next);
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [previewTime === null, sequence.duration]);
+  }, [playbackState, sequence.duration]);
+  useEffect(() => {
+    if (!previewState) return;
+    const current = project.views[previewState.activeViewIndex];
+    if (current && current.id !== activeViewId) setActiveViewId(current.id);
+  }, [activeViewId, previewState?.activeViewIndex, project.views]);
+  useEffect(() => {
+    const scroller = timelineScrollRef.current;
+    if (!scroller || playbackState !== 'playing') return;
+    const edgePadding = 56;
+    const left = playheadPosition;
+    if (left < scroller.scrollLeft + edgePadding)
+      scroller.scrollTo({ left: Math.max(0, left - edgePadding), behavior: 'smooth' });
+    else if (left > scroller.scrollLeft + scroller.clientWidth - edgePadding)
+      scroller.scrollTo({ left: left - scroller.clientWidth + edgePadding, behavior: 'smooth' });
+  }, [playbackState, playheadPosition]);
+  useEffect(() => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setLayersPanelOpen(false);
+        setOpenViewMenuId(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   const updateProject = (fn: (p: Project) => Project) => setProject(fn);
+  const applyCameraEdit = useCallback((next: CameraState) => {
+    setCamera(next);
+    setPreviewTime(null);
+    setPlaybackState('stopped');
+  }, []);
+  const handleCameraChange = useCallback(
+    (next: CameraState) => {
+      if (playbackState === 'playing') return;
+      applyCameraEdit(next);
+    },
+    [applyCameraEdit, playbackState],
+  );
   const updateLayer = (id: string, patch: Partial<Layer>) =>
     updateProject((p) => ({
       ...p,
@@ -177,6 +238,10 @@ export function App() {
         await validateProjectAssetStorage(saved);
         setProject(saved);
         setSelectedId(null);
+        setActiveViewId(saved.views[0]?.id ?? null);
+        setCamera(saved.views[0]?.camera ?? { x: 0, y: 0, zoom: 1 });
+        setPreviewTime(0);
+        setPlaybackState('stopped');
         setNotice(words.opened);
       } else setNotice('No saved local project yet');
     } catch (error) {
@@ -217,8 +282,9 @@ export function App() {
       setProject(imported);
       setCamera(imported.views[0]?.camera ?? { x: 0, y: 0, zoom: 1 });
       setSelectedId(null);
-      setActiveViewId(null);
-      setPreviewTime(null);
+      setActiveViewId(imported.views[0]?.id ?? null);
+      setPreviewTime(0);
+      setPlaybackState('stopped');
       const warningCount = compatibility.diagnostics.filter(
         (diagnostic) => diagnostic.severity === 'warning',
       ).length;
@@ -265,6 +331,7 @@ export function App() {
     const view = createView(`View ${project.views.length + 1}`, project.layers, camera);
     updateProject((p) => ({ ...p, views: [...p.views, view] }));
     setActiveViewId(view.id);
+    setPlaybackState('stopped');
     setNotice(`${view.name} captured`);
   };
   const activateView = (id: string) => {
@@ -272,8 +339,10 @@ export function App() {
     if (!view) return;
     setActiveViewId(id);
     setCamera(view.camera);
+    setPreviewTime(null);
     updateProject((p) => ({ ...p, layers: structuredClone(view.layers) }));
     setSelectedId(null);
+    setPlaybackState('stopped');
     setNotice(`${view.name} previewed`);
   };
   const updateView = () => {
@@ -286,8 +355,8 @@ export function App() {
     }));
     setNotice('View updated — project not saved yet');
   };
-  const duplicateView = () => {
-    const source = project.views.find((v) => v.id === activeViewId);
+  const duplicateView = (viewId = activeViewId) => {
+    const source = project.views.find((v) => v.id === viewId);
     if (!source) return addView();
     const view = {
       ...structuredClone(source),
@@ -296,9 +365,11 @@ export function App() {
     };
     updateProject((p) => ({ ...p, views: [...p.views, view] }));
     setActiveViewId(view.id);
+    setPlaybackState('stopped');
+    setOpenViewMenuId(null);
   };
-  const renameView = () => {
-    const source = project.views.find((v) => v.id === activeViewId);
+  const renameView = (viewId = activeViewId) => {
+    const source = project.views.find((v) => v.id === viewId);
     if (!source) return;
     const name = window.prompt('View name', source.name)?.trim();
     if (name)
@@ -306,14 +377,64 @@ export function App() {
         ...p,
         views: p.views.map((v) => (v.id === source.id ? { ...v, name } : v)),
       }));
+    setOpenViewMenuId(null);
   };
-  const deleteView = () => {
-    if (!activeViewId) return;
+  const deleteView = (viewId = activeViewId) => {
+    if (!viewId) return;
+    const index = project.views.findIndex((view) => view.id === viewId);
+    if (index < 0) return;
+    const remaining = project.views.filter((view) => view.id !== viewId);
     updateProject((p) => ({
       ...p,
-      views: p.views.filter((v) => v.id !== activeViewId),
+      views: p.views.filter((v) => v.id !== viewId),
     }));
-    setActiveViewId(null);
+    const next = remaining[Math.min(index, remaining.length - 1)] ?? null;
+    setActiveViewId(next?.id ?? null);
+    if (next) setCamera(next.camera);
+    const nextSequence = compileViews(remaining);
+    const nextIndex = next ? remaining.findIndex((view) => view.id === next.id) : 0;
+    const nextTime = nextSequence.segments[Math.max(0, nextIndex)]?.start ?? 0;
+    setPreviewTime(nextTime);
+    setPlaybackState('stopped');
+    setOpenViewMenuId(null);
+    setNotice(next ? `Deleted View; selected ${next.name}` : 'Deleted last View');
+  };
+  const reorderView = (fromId: string, toId: string) => {
+    if (fromId === toId) return;
+    updateProject((p) => {
+      const from = p.views.findIndex((view) => view.id === fromId);
+      const to = p.views.findIndex((view) => view.id === toId);
+      if (from < 0 || to < 0) return p;
+      const views = [...p.views];
+      const [moved] = views.splice(from, 1);
+      views.splice(to, 0, moved);
+      return { ...p, views };
+    });
+    setActiveViewId(fromId);
+    setPreviewTime(0);
+    setPlaybackState('stopped');
+  };
+  const playPreview = () => {
+    if (!project.views.length) return;
+    const atEnd = previewTimeRef.current >= sequence.duration - 1 / project.canvas.fps;
+    const nextTime = previewTime === null || atEnd ? 0 : previewTimeRef.current;
+    previewTimeRef.current = nextTime;
+    setPreviewTime(nextTime);
+    setPlaybackState('playing');
+  };
+  const pausePreview = () => {
+    if (playbackState === 'playing') setPlaybackState('paused');
+  };
+  const stopPreview = () => {
+    previewTimeRef.current = 0;
+    setPreviewTime(0);
+    setPlaybackState('stopped');
+  };
+  const seekPreview = (time: number) => {
+    const next = Math.max(0, Math.min(sequence.duration, time));
+    previewTimeRef.current = next;
+    setPreviewTime(next);
+    if (playbackState === 'stopped') setPlaybackState('paused');
   };
   const updateTransition = (
     patch: Partial<Pick<View, 'holdDuration' | 'transitionDuration' | 'transitionPreset'>>,
@@ -349,8 +470,35 @@ export function App() {
   const reframe = () => {
     const layout = CANVAS_LAYOUTS.find((item) => item.id === project.canvas.layoutId);
     if (!layout) return;
-    setCamera(autoReframe(project.layers, camera, layout));
+    applyCameraEdit(autoReframe(project.layers, camera, layout));
     setNotice('Auto Reframe applied');
+  };
+  const fitWorld = () => {
+    applyCameraEdit(fitWorldCamera());
+    setNotice('Fit World applied');
+  };
+  const fitCountry = () => {
+    const countryId = selected?.countryId ?? window.prompt('Country id or ISO code', 'IRN')?.trim();
+    if (!countryId) return;
+    const next = fitCountryCamera(countryId);
+    if (!next) {
+      setNotice(`Country not found: ${countryId}`);
+      return;
+    }
+    applyCameraEdit(next);
+    setNotice(`Fit Country applied: ${countryId.toUpperCase()}`);
+  };
+  const fitSelection = () => {
+    applyCameraEdit(fitSelectionCamera(project.layers, selectedId, camera));
+    setNotice(selectedId ? 'Fit Selection applied' : 'Fit Layers applied');
+  };
+  const fitLayer = () => {
+    if (!selected) {
+      setNotice('Select a layer before Fit Layer');
+      return;
+    }
+    applyCameraEdit(fitLayerCamera(selected, camera));
+    setNotice(`Fit Layer applied: ${selected.name}`);
   };
   const exportProof = async () => {
     if (exportAbort.current) return;
@@ -369,6 +517,7 @@ export function App() {
       }
       const result = await exportProjectVideo(project, outputPath, {
         settings: exportPreset,
+        mapMode,
         signal: controller.signal,
         onProgress: setExportState,
       });
@@ -454,54 +603,56 @@ export function App() {
           </button>
         </div>
       </header>
-      <section className="workspace">
-        <aside className="panel left-panel">
-          <div className="panel-heading">
-            <span>{words.project}</span>
-            <span className="status-dot" />
-          </div>
-          <div className="project-card">
-            <div className="mini-map">◇</div>
-            <div>
-              <strong>{project.metadata.name}</strong>
-              <small>1920 × 1080 · {project.canvas.fps} FPS</small>
+      <section className={`workspace ${layersPanelOpen ? 'layers-open' : 'layers-closed'}`}>
+        {layersPanelOpen && (
+          <aside className="panel left-panel" onWheel={(event) => event.stopPropagation()}>
+            <div className="panel-heading">
+              <span>{words.project}</span>
+              <span className="status-dot" />
             </div>
-          </div>
-          <div className="panel-heading layers-heading">
-            <span>{words.layers}</span>
-            <span className="layer-count">{project.layers.length}</span>
-          </div>
-          <input
-            className="search"
-            placeholder={words.search}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <div className="layer-list">
-            {visibleLayers.length ? (
-              visibleLayers.map((layer) => (
-                <button
-                  key={layer.id}
-                  className={`layer-row ${selectedId === layer.id ? 'selected' : ''}`}
-                  onClick={() => setSelectedId(layer.id)}
-                >
-                  <span className="layer-icon">{icons[layer.type]}</span>
-                  <span className="layer-row-name">
-                    <strong>{layer.name}</strong>
-                    <small>{layerLabel[layer.type].toUpperCase()}</small>
-                  </span>
-                  <span className="row-status">{layer.locked ? '▣' : layer.visible ? '◉' : '○'}</span>
-                </button>
-              ))
-            ) : (
-              <div className="empty-state">
-                <span className="empty-icon">▱</span>
-                <strong>No layers yet</strong>
-                <p>Add a tool from the map canvas.</p>
+            <div className="project-card">
+              <div className="mini-map">◇</div>
+              <div>
+                <strong>{project.metadata.name}</strong>
+                <small>1920 × 1080 · {project.canvas.fps} FPS</small>
               </div>
-            )}
-          </div>
-        </aside>
+            </div>
+            <div className="panel-heading layers-heading">
+              <span>{words.layers}</span>
+              <span className="layer-count">{project.layers.length}</span>
+            </div>
+            <input
+              className="search"
+              placeholder={words.search}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            <div className="layer-list">
+              {visibleLayers.length ? (
+                visibleLayers.map((layer) => (
+                  <button
+                    key={layer.id}
+                    className={`layer-row ${selectedId === layer.id ? 'selected' : ''}`}
+                    onClick={() => setSelectedId(layer.id)}
+                  >
+                    <span className="layer-icon">{icons[layer.type]}</span>
+                    <span className="layer-row-name">
+                      <strong>{layer.name}</strong>
+                      <small>{layerLabel[layer.type].toUpperCase()}</small>
+                    </span>
+                    <span className="row-status">{layer.locked ? '▣' : layer.visible ? '◉' : '○'}</span>
+                  </button>
+                ))
+              ) : (
+                <div className="empty-state">
+                  <span className="empty-icon">▱</span>
+                  <strong>No layers yet</strong>
+                  <p>Add a tool from the map canvas.</p>
+                </div>
+              )}
+            </div>
+          </aside>
+        )}
         <section className="canvas-column">
           <div className="canvas-head">
             <div>
@@ -565,7 +716,31 @@ export function App() {
                 ))}
                 <option value="custom">Custom…</option>
               </select>
+              <button
+                className={mapMode === 'flat' ? 'active' : ''}
+                onClick={() => {
+                  setMapMode('flat');
+                  setNotice('Flat map mode');
+                }}
+              >
+                Flat
+              </button>
+              <button
+                className={mapMode === 'globe' ? 'active' : ''}
+                onClick={() => {
+                  setMapMode('globe');
+                  setNotice('Globe map mode');
+                }}
+              >
+                Globe
+              </button>
               <button onClick={reframe}>Auto Reframe</button>
+              <button onClick={fitWorld}>Fit World</button>
+              <button onClick={fitCountry}>Fit Country</button>
+              <button onClick={fitSelection}>Fit Selection</button>
+              <button onClick={fitLayer} disabled={!selected}>
+                Fit Layer
+              </button>
               <label>
                 <input
                   aria-label="Show safe area"
@@ -582,9 +757,11 @@ export function App() {
           <div className="map-frame">
             <OfflineMap
               style={style}
+              mapMode={mapMode}
               layers={previewState?.layers ?? project.layers}
               camera={previewState?.camera ?? camera}
-              onCameraChange={previewTime === null ? setCamera : () => {}}
+              onCameraChange={handleCameraChange}
+              interactionEnabled={playbackState !== 'playing'}
               labelLanguage={project.mapSettings.labelLanguage}
               selectedId={selectedId}
               onSelect={setSelectedId}
@@ -603,29 +780,6 @@ export function App() {
             </div>
             <div className="map-hint">{words.panZoom}</div>
           </div>
-          <div className="preview-bar">
-            <button
-              className="play"
-              onClick={() => setPreviewTime(previewTime === null ? 0 : null)}
-              disabled={project.views.length < 2}
-            >
-              {previewTime === null ? '▶ Preview' : '■ Stop'}
-            </button>
-            <span>
-              {previewTime !== null
-                ? `Previewing View ${previewState!.activeViewIndex + 1} · ${previewState!.transitionProgress < 1 ? 'transition' : 'hold'}`
-                : activeViewId
-                  ? 'Edit scene, then Update View'
-                  : 'Create a View to capture this scene'}
-            </span>
-            <button
-              className="update-view"
-              onClick={updateView}
-              disabled={!activeViewId || previewTime !== null}
-            >
-              Update View
-            </button>
-          </div>
           {exportState.status !== 'idle' && (
             <div className={`export-status export-status-${exportState.status}`} aria-live="polite">
               <div>
@@ -642,7 +796,7 @@ export function App() {
             </div>
           )}
         </section>
-        <aside className="panel right-panel">
+        <aside className="panel right-panel" onWheel={(event) => event.stopPropagation()}>
           <div className="panel-heading">
             <span>{words.properties}</span>
           </div>
@@ -669,33 +823,48 @@ export function App() {
           )}
         </aside>
       </section>
-      <footer className="views-strip">
-        <div className="views-title">
-          <span>{words.views}</span>
-          <small>Scenes, not keyframes</small>
-        </div>
-        <div className="view-cards">
-          {project.views.map((view, index) => (
+      <TimelinePanel>
+        <TimelineToolbar>
+          <div className="transport-controls" role="group" aria-label="Preview transport">
             <button
-              key={view.id}
-              className={`view-card ${activeViewId === view.id ? 'active' : ''}`}
-              onClick={() => activateView(view.id)}
+              className={playbackState === 'playing' ? 'active' : ''}
+              onClick={playPreview}
+              disabled={project.views.length < 1}
+              aria-label="Play preview"
+              title="Play"
             >
-              <span className="view-thumb" style={{ background: view.thumbnailColor }}>
-                {String(index + 1).padStart(2, '0')}
-              </span>
-              <strong>{view.name}</strong>
-              <small>
-                {view.holdDuration.toFixed(1)}s hold · {view.transitionDuration.toFixed(1)}s{' '}
-                {view.transitionPreset}
-              </small>
+              ▶
             </button>
-          ))}
-          <button className="add-view" onClick={addView}>
-            + Add View
+            <button
+              className={playbackState === 'paused' ? 'active' : ''}
+              onClick={pausePreview}
+              disabled={playbackState !== 'playing'}
+              aria-label="Pause preview"
+              title="Pause"
+            >
+              ⏸
+            </button>
+            <button
+              className={playbackState === 'stopped' ? 'active' : ''}
+              onClick={stopPreview}
+              disabled={project.views.length < 1}
+              aria-label="Stop preview"
+              title="Stop"
+            >
+              ⏹
+            </button>
+          </div>
+          <select aria-label="Preview mode" defaultValue="sequence">
+            <option value="sequence">Sequence Preview</option>
+            <option value="current">Current View</option>
+          </select>
+          <button type="button">Layout</button>
+          <button type="button" onClick={() => setLayersPanelOpen((open) => !open)}>
+            Layers
           </button>
-          {activeViewId && (
-            <div className="view-actions">
+          <span className="timeline-future">Future controls</span>
+          {activeView && (
+            <div className="timeline-view-fields">
               <label>
                 Hold
                 <input
@@ -704,7 +873,7 @@ export function App() {
                   min="0.5"
                   max="30"
                   step="0.5"
-                  value={project.views.find((v) => v.id === activeViewId)!.holdDuration}
+                  value={activeView.holdDuration}
                   onChange={(e) => updateTransition({ holdDuration: Number(e.target.value) })}
                 />
               </label>
@@ -716,17 +885,13 @@ export function App() {
                   min="0"
                   max="30"
                   step="0.5"
-                  value={project.views.find((v) => v.id === activeViewId)!.transitionDuration}
-                  onChange={(e) =>
-                    updateTransition({
-                      transitionDuration: Number(e.target.value),
-                    })
-                  }
+                  value={activeView.transitionDuration}
+                  onChange={(e) => updateTransition({ transitionDuration: Number(e.target.value) })}
                 />
               </label>
               <select
                 aria-label="Transition easing"
-                value={project.views.find((v) => v.id === activeViewId)!.transitionPreset}
+                value={activeView.transitionPreset}
                 onChange={(e) =>
                   updateTransition({
                     transitionPreset: e.target.value as View['transitionPreset'],
@@ -734,19 +899,217 @@ export function App() {
                 }
               >
                 <option value="smooth">Smooth</option>
-                <option value="cinematic">Cinematic</option>
                 <option value="linear">Linear</option>
+                <option value="ease-in">Ease In</option>
+                <option value="ease-out">Ease Out</option>
+                <option value="ease-in-out">Ease In-Out</option>
+                <option value="cinematic">Cinematic</option>
+                <option value="bezier">Bezier</option>
               </select>
-              <button onClick={updateView}>Update</button>
-              <button onClick={duplicateView}>Duplicate</button>
-              <button onClick={renameView}>Rename</button>
-              <button onClick={deleteView}>Delete</button>
+              <button className="update-view" onClick={updateView} disabled={playbackState === 'playing'}>
+                Update View
+              </button>
             </div>
           )}
-        </div>
-      </footer>
+          <span className="timeline-preview-state">
+            {previewTime !== null
+              ? `${formatTimelineTime(previewDisplayTime)} / ${formatTimelineTime(sequence.duration)} · View ${previewState!.activeViewIndex + 1} · ${playbackState}`
+              : activeView
+                ? 'Ready to preview'
+                : 'Create a View to preview'}
+          </span>
+        </TimelineToolbar>
+        <TimelineViewport>
+          <div
+            ref={timelineScrollRef}
+            className="timeline-scroll"
+            onWheel={(event) => {
+              event.stopPropagation();
+              if (event.ctrlKey) {
+                event.preventDefault();
+                return;
+              }
+              event.preventDefault();
+              const horizontalDelta = event.shiftKey ? event.deltaY : event.deltaX || event.deltaY;
+              event.currentTarget.scrollLeft += horizontalDelta;
+            }}
+          >
+            <div className="timeline-track">
+              {project.views.length > 0 && (
+                <div
+                  className="timeline-playhead"
+                  style={{ left: playheadPosition }}
+                  aria-label={`Playhead at ${formatTimelineTime(previewDisplayTime)}`}
+                >
+                  <span />
+                </div>
+              )}
+              {project.views.map((view, index) => {
+                const segment = sequence.segments[index];
+                const duration = viewDurationSeconds(project.views, index);
+                const cardWidth = viewCardWidth(duration);
+                return (
+                  <div
+                    key={view.id}
+                    className={`view-card ${activeViewId === view.id ? 'active' : ''}`}
+                    style={{ flexBasis: cardWidth }}
+                    draggable
+                    tabIndex={0}
+                    onClick={(event) => {
+                      activateView(view.id);
+                      if (segment) {
+                        const bounds = event.currentTarget.getBoundingClientRect();
+                        const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
+                        seekPreview(segment.start + ratio * (segment.end - segment.start));
+                      }
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Delete' && event.target === event.currentTarget) {
+                        event.preventDefault();
+                        deleteView(view.id);
+                      }
+                    }}
+                    onDragStart={() => setDraggedViewId(view.id)}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      if (draggedViewId) reorderView(draggedViewId, view.id);
+                      setDraggedViewId(null);
+                    }}
+                  >
+                    <span className="view-thumb" style={{ background: view.thumbnailColor }}>
+                      {String(index + 1).padStart(2, '0')}
+                    </span>
+                    <strong>{view.name}</strong>
+                    <button
+                      className="view-menu-trigger"
+                      aria-label={`Open actions for ${view.name}`}
+                      aria-expanded={openViewMenuId === view.id}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setOpenViewMenuId((openId) => (openId === view.id ? null : view.id));
+                      }}
+                    >
+                      ⋯
+                    </button>
+                    <small>
+                      <span className="view-duration-exact">{duration.toFixed(1)}s</span>
+                      {view.holdDuration.toFixed(1)}s hold ·{' '}
+                      {index < project.views.length - 1
+                        ? `${view.transitionDuration.toFixed(1)}s transition`
+                        : 'final View'}
+                    </small>
+                    {openViewMenuId === view.id && (
+                      <div
+                        className="view-card-menu"
+                        role="menu"
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <button onClick={() => renameView(view.id)} role="menuitem">
+                          Rename
+                        </button>
+                        <button onClick={() => duplicateView(view.id)} role="menuitem">
+                          Duplicate
+                        </button>
+                        <button className="danger" onClick={() => deleteView(view.id)} role="menuitem">
+                          Delete View
+                        </button>
+                      </div>
+                    )}
+                    {index < project.views.length - 1 && segment && (
+                      <span
+                        className="view-transition-band"
+                        style={{
+                          width: `${(view.transitionDuration / Math.max(duration, Number.EPSILON)) * 100}%`,
+                        }}
+                        title={`${view.transitionDuration.toFixed(1)}s transition`}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+              <button className="add-view" onClick={addView}>
+                + Add View
+              </button>
+              <div className="timeline-zoom-reserve" aria-hidden="true">
+                Timeline zoom
+              </div>
+            </div>
+          </div>
+        </TimelineViewport>
+        <TimelineStatusBar>
+          <div>
+            <strong>{words.views}</strong>
+            <span>
+              {project.views.length} view{project.views.length === 1 ? '' : 's'} Â·{' '}
+              {activeView ? activeView.name : 'No View selected'}
+            </span>
+          </div>
+          {activeView && (
+            <div className="view-actions">
+              <button onClick={updateView}>Update</button>
+              <button onClick={() => duplicateView()}>Duplicate</button>
+              <button onClick={() => renameView()}>Rename</button>
+              <button onClick={() => deleteView()}>Delete</button>
+            </div>
+          )}
+        </TimelineStatusBar>
+      </TimelinePanel>
     </main>
   );
+}
+
+function TimelinePanel({ children }: { children: React.ReactNode }) {
+  return (
+    <footer className="timeline-panel" aria-label="Timeline">
+      {children}
+    </footer>
+  );
+}
+
+function TimelineToolbar({ children }: { children: React.ReactNode }) {
+  return <div className="timeline-toolbar">{children}</div>;
+}
+
+function TimelineViewport({ children }: { children: React.ReactNode }) {
+  return <div className="timeline-viewport">{children}</div>;
+}
+
+function TimelineStatusBar({ children }: { children: React.ReactNode }) {
+  return <div className="timeline-status-bar">{children}</div>;
+}
+
+function viewDurationSeconds(views: View[], index: number) {
+  const view = views[index];
+  if (!view) return 0;
+  return view.holdDuration + (index < views.length - 1 ? view.transitionDuration : 0);
+}
+
+function viewCardWidth(duration: number) {
+  return Math.max(MIN_VIEW_CARD_WIDTH, duration * VIEW_PIXELS_PER_SECOND);
+}
+
+function timelinePosition(sequence: ReturnType<typeof compileViews>, time: number) {
+  if (!sequence.segments.length) return 0;
+  const clampedTime = Math.max(0, Math.min(sequence.duration, time));
+  let position = 0;
+  for (const segment of sequence.segments) {
+    const duration = segment.end - segment.start;
+    const width = viewCardWidth(duration);
+    if (clampedTime <= segment.end || segment === sequence.segments[sequence.segments.length - 1]) {
+      const progress = duration > 0 ? (clampedTime - segment.start) / duration : 0;
+      return position + Math.max(0, Math.min(1, progress)) * width;
+    }
+    position += width + VIEW_CARD_GAP;
+  }
+  return position;
+}
+
+function formatTimelineTime(time: number) {
+  const safeTime = Math.max(0, time);
+  const minutes = Math.floor(safeTime / 60);
+  const seconds = safeTime - minutes * 60;
+  return `${minutes}:${seconds.toFixed(1).padStart(4, '0')}`;
 }
 
 const exportStatusLabel = (status: ExportProgressState['status']) => {

@@ -7,3 +7,4 @@ src-tauri/target/
 src-tauri/gen/
 src-tauri/resources/ffmpeg/
 .pnpm-store/
+.tools/

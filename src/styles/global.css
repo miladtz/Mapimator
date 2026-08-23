@@ -131,6 +131,9 @@ button:disabled {
   display: grid;
   grid-template-columns: 238px minmax(520px, 1fr) 245px;
 }
+.workspace.layers-closed {
+  grid-template-columns: minmax(520px, 1fr) 245px;
+}
 .panel {
   background: #151d28;
   border-right: 1px solid #283544;
@@ -286,14 +289,11 @@ button:disabled {
   fill: #455d75;
 }
 .country-label {
-  font-size: 6.4px;
-  font-weight: 600;
-  letter-spacing: 0.35px;
+  font-size: 6.6px;
+  font-weight: 400;
+  letter-spacing: 0.24px;
   pointer-events: none;
   user-select: none;
-  paint-order: stroke;
-  stroke: color-mix(in srgb, currentColor 12%, transparent);
-  stroke-width: 1px;
 }
 .physical-lakes,
 .physical-rivers,
@@ -305,23 +305,31 @@ button:disabled {
   pointer-events: none;
 }
 .continent-label {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 1.8px;
-  opacity: 0.42;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 1.5px;
+  fill-opacity: 0.72;
+  transition: opacity 0.16s ease;
 }
 .marine-label {
-  font-size: 5px;
+  font-size: 5.8px;
   font-style: italic;
-  letter-spacing: 0.7px;
-  opacity: 0.72;
+  letter-spacing: 0.6px;
+  transition: opacity 0.16s ease;
 }
 .city-label text {
-  font-size: 4.2px;
-  font-weight: 550;
-  paint-order: stroke;
-  stroke: color-mix(in srgb, currentColor 8%, transparent);
-  stroke-width: 0.8px;
+  font-size: 3.8px;
+  font-weight: 400;
+}
+.capital-label text {
+  font-size: 4.3px;
+  font-weight: 500;
+}
+.country-label,
+.city-label,
+.physical-lakes,
+.physical-rivers {
+  transition: opacity 0.16s ease;
 }
 .map-credit {
   font-size: 7px;
@@ -351,6 +359,14 @@ button:disabled {
   padding: 5px;
   font-size: 10px;
 }
+.layout-controls .active {
+  background: #31485d;
+  color: #fff;
+}
+.globe-graticule {
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+}
 .safe-area-guide {
   fill: none;
   stroke: #f3b43f;
@@ -359,24 +375,8 @@ button:disabled {
   opacity: 0.65;
   pointer-events: none;
 }
-.preview-bar {
-  height: 45px;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 0 15px;
-  border-top: 1px solid #273444;
-  color: #8ea1b5;
-  font-size: 10px;
-}
-.preview-bar button {
-  border: 0;
-  background: transparent;
-  color: #9fb0c0;
-}
-.preview-bar .play {
-  color: #e8523d;
-  font-size: 15px;
+.left-panel {
+  overflow: auto;
 }
 .export-status {
   min-height: 58px;

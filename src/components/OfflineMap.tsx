@@ -1,15 +1,32 @@
-import React, { useRef, type PointerEvent, type SVGProps, type WheelEvent } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  type KeyboardEvent,
+  type PointerEvent,
+  type SVGProps,
+  type WheelEvent,
+} from 'react';
+import {
+  applyEdgeResistance,
+  CAMERA_SETTINGS,
+  CAMERA_VIEWPORT,
+  clamp,
+  constrainCamera,
+  fitWorldCamera,
+  roundCamera,
+  zoomAtPoint,
+} from '../core/camera';
 import type { CameraState, Layer, MapStylePreset, Project } from '../core/project';
+import { selectMapLabels } from '../core/mapLabels';
 import { formatNumbers, resolveTextDirection, resolveTextLanguage } from '../core/text';
 import {
-  CITY_LABELS,
   COASTLINE_PATH,
-  CONTINENT_LABELS,
   COUNTRIES,
   COUNTRY_BORDER_PATH,
   findCountry,
   LAKE_PATH,
-  MARINE_LABELS,
   RIVER_PATHS,
   WORLD_MAP_DATASET,
   type MapLabel,
@@ -17,9 +34,11 @@ import {
 
 interface Props {
   style: MapStylePreset;
+  mapMode: MapMode;
   layers: Layer[];
   camera: CameraState;
   onCameraChange: (camera: CameraState) => void;
+  interactionEnabled?: boolean;
   labelLanguage: Project['mapSettings']['labelLanguage'];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
@@ -29,8 +48,11 @@ interface Props {
   assetUrls?: Readonly<Record<string, string>>;
 }
 
+export type MapMode = 'flat' | 'globe';
+
 export interface MapSceneProps {
   style: MapStylePreset;
+  mapMode?: MapMode;
   layers: Layer[];
   camera: CameraState;
   labelLanguage: Project['mapSettings']['labelLanguage'];
@@ -44,12 +66,20 @@ export interface MapSceneProps {
   onBackgroundClick?: () => void;
   onLayerPointerDown?: (event: PointerEvent<SVGGElement>, layer: Layer) => void;
   assetUrls?: Readonly<Record<string, string>>;
+  globeRotation?: GlobeRotation;
+}
+
+interface GlobeRotation {
+  lon: number;
+  lat: number;
 }
 export function OfflineMap({
   style,
+  mapMode,
   layers,
   camera,
   onCameraChange,
+  interactionEnabled = true,
   labelLanguage,
   selectedId,
   onSelect,
@@ -59,44 +89,317 @@ export function OfflineMap({
   assetUrls,
 }: Props) {
   const drag = useRef<{ x: number; y: number } | null>(null);
+  const lastPan = useRef<{ x: number; y: number; time: number } | null>(null);
+  const velocity = useRef({ x: 0, y: 0 });
+  const globeRotation = useRef<GlobeRotation>({ lon: 0, lat: 0 });
+  const globeVelocity = useRef({ lon: 0, lat: 0 });
+  const animation = useRef<number | null>(null);
+  const globeAnimation = useRef<number | null>(null);
+  const targetCamera = useRef(constrainCamera(camera));
+  const currentCamera = useRef(constrainCamera(camera));
+  const spacePan = useRef(false);
   const moving = useRef<string | null>(null);
+  const activePointerId = useRef<number | null>(null);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const onCameraChangeRef = useRef(onCameraChange);
+  useEffect(() => {
+    onCameraChangeRef.current = onCameraChange;
+  }, [onCameraChange]);
+  const emitCameraChange = useCallback((next: CameraState) => {
+    onCameraChangeRef.current(next);
+  }, []);
+  const cancelCameraFrames = useCallback(() => {
+    if (animation.current !== null) cancelAnimationFrame(animation.current);
+    if (globeAnimation.current !== null) cancelAnimationFrame(globeAnimation.current);
+    animation.current = null;
+    globeAnimation.current = null;
+  }, []);
+  const cancelActiveCameraInteraction = useCallback(() => {
+    cancelCameraFrames();
+    const svg = svgRef.current;
+    const pointerId = activePointerId.current;
+    activePointerId.current = null;
+    if (svg && pointerId !== null && svg.hasPointerCapture(pointerId)) svg.releasePointerCapture(pointerId);
+    drag.current = null;
+    lastPan.current = null;
+    moving.current = null;
+    spacePan.current = false;
+    velocity.current = { x: 0, y: 0 };
+    globeVelocity.current = { lon: 0, lat: 0 };
+    currentCamera.current = constrainCamera(currentCamera.current);
+    targetCamera.current = currentCamera.current;
+  }, [cancelCameraFrames]);
+  useEffect(() => {
+    if (animation.current || globeAnimation.current) return;
+    currentCamera.current = constrainCamera(camera);
+    targetCamera.current = currentCamera.current;
+  }, [camera]);
+  useEffect(() => {
+    const recover = () => cancelActiveCameraInteraction();
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') recover();
+    };
+    window.addEventListener('blur', recover);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('blur', recover);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      cancelActiveCameraInteraction();
+    };
+  }, [cancelActiveCameraInteraction]);
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const observer = new ResizeObserver(() => cancelActiveCameraInteraction());
+    observer.observe(svg);
+    return () => observer.disconnect();
+  }, [cancelActiveCameraInteraction]);
+  useEffect(
+    () => cancelActiveCameraInteraction(),
+    [cancelActiveCameraInteraction, interactionEnabled, mapMode],
+  );
+  const animateTo = (target: CameraState, duration = CAMERA_SETTINGS.animatedZoomMs) => {
+    cancelCameraFrames();
+    const start = constrainCamera(targetCamera.current);
+    const end = constrainCamera(target);
+    const startedAt = performance.now();
+    const tick = () => {
+      const progress = Math.min(1, (performance.now() - startedAt) / duration);
+      const eased = progress * progress * (3 - 2 * progress);
+      const next = roundCamera({
+        x: start.x + (end.x - start.x) * eased,
+        y: start.y + (end.y - start.y) * eased,
+        zoom: start.zoom * Math.pow(end.zoom / start.zoom, eased),
+      });
+      targetCamera.current = next;
+      currentCamera.current = next;
+      emitCameraChange(next);
+      if (progress < 1) animation.current = requestAnimationFrame(tick);
+      else animation.current = null;
+    };
+    animation.current = requestAnimationFrame(tick);
+  };
+  const glideToTarget = () => {
+    cancelCameraFrames();
+    const tick = () => {
+      const next = roundCamera({
+        x: currentCamera.current.x + (targetCamera.current.x - currentCamera.current.x) * 0.34,
+        y: currentCamera.current.y + (targetCamera.current.y - currentCamera.current.y) * 0.34,
+        zoom:
+          currentCamera.current.zoom * Math.pow(targetCamera.current.zoom / currentCamera.current.zoom, 0.34),
+      });
+      currentCamera.current = next;
+      emitCameraChange(next);
+      if (
+        Math.abs(next.x - targetCamera.current.x) > 0.02 ||
+        Math.abs(next.y - targetCamera.current.y) > 0.02 ||
+        Math.abs(next.zoom - targetCamera.current.zoom) > 0.0001
+      )
+        animation.current = requestAnimationFrame(tick);
+      else {
+        currentCamera.current = targetCamera.current;
+        emitCameraChange(targetCamera.current);
+        animation.current = null;
+      }
+    };
+    animation.current = requestAnimationFrame(tick);
+  };
+  const runMomentum = () => {
+    cancelCameraFrames();
+    const tick = () => {
+      velocity.current = {
+        x: velocity.current.x * CAMERA_SETTINGS.panFriction,
+        y: velocity.current.y * CAMERA_SETTINGS.panFriction,
+      };
+      if (Math.hypot(velocity.current.x, velocity.current.y) < 0.05) {
+        targetCamera.current = constrainCamera(targetCamera.current);
+        currentCamera.current = targetCamera.current;
+        emitCameraChange(targetCamera.current);
+        animation.current = null;
+        return;
+      }
+      targetCamera.current = applyEdgeResistance({
+        ...targetCamera.current,
+        x: targetCamera.current.x + velocity.current.x,
+        y: targetCamera.current.y + velocity.current.y,
+      });
+      currentCamera.current = targetCamera.current;
+      emitCameraChange(targetCamera.current);
+      animation.current = requestAnimationFrame(tick);
+    };
+    animation.current = requestAnimationFrame(tick);
+  };
+  const applyGlobeRotation = (rotation: GlobeRotation) => {
+    globeRotation.current = {
+      lon: wrap(rotation.lon, -180, 180),
+      lat: clamp(rotation.lat, -82, 82),
+    };
+    emitCameraChange({ ...currentCamera.current });
+  };
+  const runGlobeMomentum = () => {
+    cancelCameraFrames();
+    const tick = () => {
+      globeVelocity.current = {
+        lon: globeVelocity.current.lon * 0.92,
+        lat: globeVelocity.current.lat * 0.9,
+      };
+      if (Math.hypot(globeVelocity.current.lon, globeVelocity.current.lat) < 0.05) {
+        globeAnimation.current = null;
+        return;
+      }
+      applyGlobeRotation({
+        lon: globeRotation.current.lon + globeVelocity.current.lon,
+        lat: globeRotation.current.lat + globeVelocity.current.lat,
+      });
+      globeAnimation.current = requestAnimationFrame(tick);
+    };
+    globeAnimation.current = requestAnimationFrame(tick);
+  };
   const onPointerDown = (event: PointerEvent<SVGSVGElement>) => {
+    if (!interactionEnabled) return;
     if (moving.current) return;
-    drag.current = { x: event.clientX - camera.x, y: event.clientY - camera.y };
+    cancelActiveCameraInteraction();
+    event.currentTarget.focus();
+    const point = svgPoint(event);
+    drag.current = { x: point.x - currentCamera.current.x, y: point.y - currentCamera.current.y };
+    lastPan.current = { x: event.clientX, y: event.clientY, time: performance.now() };
+    velocity.current = { x: 0, y: 0 };
+    activePointerId.current = event.pointerId;
     event.currentTarget.setPointerCapture(event.pointerId);
   };
   const onPointerMove = (event: PointerEvent<SVGSVGElement>) => {
     if (moving.current) {
-      const rect = event.currentTarget.getBoundingClientRect();
-      onMoveLayer(
-        moving.current,
-        ((event.clientX - rect.left) / rect.width) * 1000,
-        ((event.clientY - rect.top) / rect.height) * 560,
-      );
-    } else if (drag.current)
-      onCameraChange({ ...camera, x: event.clientX - drag.current.x, y: event.clientY - drag.current.y });
+      const point = svgPoint(event);
+      onMoveLayer(moving.current, point.x, point.y);
+    } else if (drag.current) {
+      const now = performance.now();
+      const previous = lastPan.current;
+      if (previous) {
+        const dt = Math.max(1, now - previous.time);
+        if (mapMode === 'globe')
+          globeVelocity.current = {
+            lon: ((event.clientX - previous.x) / dt) * 16.67 * 0.42,
+            lat: ((event.clientY - previous.y) / dt) * 16.67 * 0.42,
+          };
+        else
+          velocity.current = {
+            x: ((event.clientX - previous.x) / dt) * 16.67,
+            y: ((event.clientY - previous.y) / dt) * 16.67,
+          };
+      }
+      lastPan.current = { x: event.clientX, y: event.clientY, time: now };
+      if (mapMode === 'globe') {
+        applyGlobeRotation({
+          lon: globeRotation.current.lon - globeVelocity.current.lon,
+          lat: globeRotation.current.lat + globeVelocity.current.lat,
+        });
+        return;
+      }
+      targetCamera.current = applyEdgeResistance({
+        ...currentCamera.current,
+        x: svgPoint(event).x - drag.current.x,
+        y: svgPoint(event).y - drag.current.y,
+      });
+      currentCamera.current = targetCamera.current;
+      emitCameraChange(targetCamera.current);
+    }
   };
   const end = () => {
+    const shouldMomentum = drag.current && Math.hypot(velocity.current.x, velocity.current.y) > 0.5;
+    const shouldGlobeMomentum =
+      drag.current &&
+      mapMode === 'globe' &&
+      Math.hypot(globeVelocity.current.lon, globeVelocity.current.lat) > 0.5;
     drag.current = null;
+    lastPan.current = null;
     moving.current = null;
+    activePointerId.current = null;
+    if (shouldGlobeMomentum) runGlobeMomentum();
+    else if (shouldMomentum) runMomentum();
+    else {
+      targetCamera.current = constrainCamera(targetCamera.current);
+      currentCamera.current = targetCamera.current;
+      emitCameraChange(targetCamera.current);
+    }
   };
   const onWheel = (event: WheelEvent<SVGSVGElement>) => {
     event.preventDefault();
-    onCameraChange({
-      ...camera,
-      zoom: Math.max(0.72, Math.min(3.4, camera.zoom * (event.deltaY > 0 ? 0.89 : 1.12))),
-    });
+    event.stopPropagation();
+    if (!interactionEnabled) return;
+    const { x, y } = svgPoint(event);
+    const delta = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+    if (mapMode === 'globe') {
+      const adaptiveSpeed =
+        CAMERA_SETTINGS.zoomSpeed * (0.72 + Math.log2(Math.max(1, targetCamera.current.zoom)) * 0.14);
+      const zoom = clamp(
+        targetCamera.current.zoom * Math.exp(-delta * CAMERA_SETTINGS.wheelSmoothing * adaptiveSpeed),
+        CAMERA_SETTINGS.minZoom,
+        CAMERA_SETTINGS.maxZoom,
+      );
+      targetCamera.current = roundCamera({ x: 0, y: 0, zoom });
+      if (!animation.current) glideToTarget();
+      return;
+    }
+    targetCamera.current = zoomAtPoint(targetCamera.current, x, y, delta * CAMERA_SETTINGS.wheelSmoothing);
+    if (!animation.current) glideToTarget();
+  };
+  const onDoubleClick = (event: React.MouseEvent<SVGSVGElement>) => {
+    if (!interactionEnabled) return;
+    const { x, y } = svgPoint(event);
+    if (mapMode === 'globe') {
+      targetCamera.current = roundCamera({
+        x: 0,
+        y: 0,
+        zoom: clamp(currentCamera.current.zoom * 1.62, CAMERA_SETTINGS.minZoom, CAMERA_SETTINGS.maxZoom),
+      });
+      glideToTarget();
+      return;
+    }
+    animateTo(zoomAtPoint(currentCamera.current, x, y, -420));
+  };
+  const onKeyDown = (event: KeyboardEvent<SVGSVGElement>) => {
+    if (!interactionEnabled) return;
+    if (event.code === 'Space') spacePan.current = true;
+    if (event.key === 'Home') {
+      event.preventDefault();
+      animateTo(fitWorldCamera());
+    }
+    const step = CAMERA_SETTINGS.keyboardStep;
+    const movement: Record<string, [number, number]> = {
+      ArrowLeft: [step, 0],
+      ArrowRight: [-step, 0],
+      ArrowUp: [0, step],
+      ArrowDown: [0, -step],
+    };
+    const next = movement[event.key];
+    if (!next) return;
+    event.preventDefault();
+    animateTo(
+      constrainCamera({
+        ...currentCamera.current,
+        x: currentCamera.current.x + next[0],
+        y: currentCamera.current.y + next[1],
+      }),
+      180,
+    );
+  };
+  const onKeyUp = (event: KeyboardEvent<SVGSVGElement>) => {
+    if (event.code === 'Space') spacePan.current = false;
   };
   const beginLayerMove = (event: PointerEvent<SVGGElement>, layer: Layer) => {
+    if (!interactionEnabled) return;
     if (layer.locked) return;
+    if (spacePan.current) return;
     event.stopPropagation();
     moving.current = layer.id;
+    activePointerId.current = event.pointerId;
     onSelect(layer.id);
     event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId);
   };
   return (
     <MapScene
       style={style}
+      mapMode={mapMode}
       layers={layers}
       camera={camera}
       labelLanguage={labelLanguage}
@@ -104,21 +407,40 @@ export function OfflineMap({
       safeArea={safeArea}
       showSafeArea={showSafeArea}
       assetUrls={assetUrls}
+      globeRotation={globeRotation.current}
       onBackgroundClick={() => onSelect(null)}
       onLayerPointerDown={beginLayerMove}
       svgProps={{
+        ref: svgRef,
         onPointerDown,
         onPointerMove,
         onPointerUp: end,
         onPointerLeave: end,
+        onPointerCancel: cancelActiveCameraInteraction,
+        onLostPointerCapture: (event) => {
+          if (activePointerId.current === event.pointerId) cancelActiveCameraInteraction();
+        },
         onWheel,
+        onDoubleClick,
+        onKeyDown,
+        onKeyUp,
+        tabIndex: 0,
       }}
     />
   );
 }
 
+function svgPoint(event: { currentTarget: SVGSVGElement; clientX: number; clientY: number }) {
+  const point = event.currentTarget.createSVGPoint();
+  point.x = event.clientX;
+  point.y = event.clientY;
+  const transformed = point.matrixTransform(event.currentTarget.getScreenCTM()?.inverse());
+  return { x: transformed.x, y: transformed.y };
+}
+
 export function MapScene({
   style,
+  mapMode = 'flat',
   layers,
   camera,
   labelLanguage,
@@ -132,13 +454,26 @@ export function MapScene({
   onBackgroundClick,
   onLayerPointerDown,
   assetUrls = {},
+  globeRotation = { lon: 0, lat: 0 },
 }: MapSceneProps) {
-  const transform = `translate(${camera.x} ${camera.y}) scale(${camera.zoom})`;
-  const labelDetail = camera.zoom >= 2.1 ? 2 : camera.zoom >= 1.35 ? 1 : 0;
-  const countryLabelRank = [3, 4, 6][labelDetail];
-  const visibleCities = CITY_LABELS.filter((label) => (label.rank ?? 9) <= labelDetail);
-  const visibleMarineLabels = MARINE_LABELS.filter(
-    (label) => label.kind === 'ocean' || (labelDetail >= 1 && (label.rank ?? 9) <= labelDetail + 1),
+  const globe = globeProjection(camera, globeRotation);
+  const transform =
+    mapMode === 'globe' ? undefined : `translate(${camera.x} ${camera.y}) scale(${camera.zoom})`;
+  const labels = useMemo(() => selectMapLabels(camera), [camera.x, camera.y, camera.zoom]);
+  const projectedMap = useMemo(
+    () =>
+      mapMode === 'globe'
+        ? {
+            countries: new Map(
+              COUNTRIES.map((country) => [country.id, projectPathToGlobe(country.path, globe)]),
+            ),
+            lakes: projectPathToGlobe(LAKE_PATH, globe),
+            rivers: RIVER_PATHS.map((path) => projectPathToGlobe(path, globe)),
+            borders: projectPathToGlobe(COUNTRY_BORDER_PATH, globe),
+            coastlines: projectPathToGlobe(COASTLINE_PATH, globe),
+          }
+        : null,
+    [mapMode, globe.centerLat, globe.centerLon, globe.radius],
   );
   return (
     <svg
@@ -150,9 +485,20 @@ export function MapScene({
       viewBox={viewBox}
       role="img"
       aria-label="Offline political map"
-      style={{ background: style.waterColor }}
+      style={{ background: mapMode === 'globe' ? style.backgroundColor : style.waterColor }}
     >
       <defs>
+        <clipPath id="globe-clip">
+          <circle cx="500" cy="280" r={globe.radius} />
+        </clipPath>
+        <radialGradient id="globe-water" cx=".38" cy=".28" r=".74">
+          <stop offset="0" stopColor={style.waterColor} />
+          <stop offset=".72" stopColor={style.waterColor} />
+          <stop offset="1" stopColor={style.backgroundColor} />
+        </radialGradient>
+        <filter id="globe-shadow" x="-8%" y="-8%" width="116%" height="116%">
+          <feDropShadow dx="0" dy="14" stdDeviation="12" floodColor="#000000" floodOpacity=".28" />
+        </filter>
         <pattern id="grid" width="70" height="70" patternUnits="userSpaceOnUse">
           <path
             d="M 70 0 L 0 0 0 70"
@@ -180,8 +526,24 @@ export function MapScene({
           <path d="M0,0 L8,4 L0,8Z" fill="context-stroke" />
         </marker>
       </defs>
-      <rect width="1000" height="560" fill={style.waterColor} onClick={onBackgroundClick} />
-      <rect width="1000" height="560" fill="url(#grid)" onClick={onBackgroundClick} />
+      <rect width="1000" height="560" fill={style.backgroundColor} onClick={onBackgroundClick} />
+      {mapMode === 'flat' ? (
+        <>
+          <rect width="1000" height="560" fill={style.waterColor} onClick={onBackgroundClick} />
+          <rect width="1000" height="560" fill="url(#grid)" onClick={onBackgroundClick} />
+        </>
+      ) : (
+        <ellipse
+          cx="500"
+          cy="280"
+          rx={globe.radius}
+          ry={globe.radius}
+          fill="url(#globe-water)"
+          filter="url(#globe-shadow)"
+          className="globe-shell"
+          onClick={onBackgroundClick}
+        />
+      )}
       {showSafeArea && (
         <rect
           className="safe-area-guide"
@@ -191,102 +553,125 @@ export function MapScene({
           height={560 - safeArea}
         />
       )}
-      <g transform={transform}>
-        {COUNTRIES.map((c) => (
+      <g clipPath={mapMode === 'globe' ? 'url(#globe-clip)' : undefined}>
+        {mapMode === 'globe' && <GlobeGraticule color={style.countryBorderColor} />}
+        <g transform={transform}>
+          {COUNTRIES.map((c) => {
+            const projected = projectedMap ? projectedMap.countries.get(c.id) : c.path;
+            return projected ? (
+              <path
+                key={c.id}
+                d={projected}
+                fill={
+                  style.texture === 'modern'
+                    ? 'url(#modern-land)'
+                    : style.texture === 'terrain'
+                      ? 'url(#terrain-land)'
+                      : style.texture === 'ink'
+                        ? 'url(#ink-land)'
+                        : style.landColor
+                }
+                fillRule="evenodd"
+                className="country"
+              />
+            ) : null;
+          })}
           <path
-            key={c.id}
-            d={c.path}
-            fill={
-              style.texture === 'modern'
-                ? 'url(#modern-land)'
-                : style.texture === 'terrain'
-                  ? 'url(#terrain-land)'
-                  : style.texture === 'ink'
-                    ? 'url(#ink-land)'
-                    : style.landColor
-            }
+            d={projectedMap ? projectedMap.lakes : LAKE_PATH}
+            fill={style.lakeColor}
             fillRule="evenodd"
-            className="country"
+            className="physical-lakes"
+            opacity={labels.lakesOpacity}
           />
-        ))}
-        <path d={LAKE_PATH} fill={style.lakeColor} fillRule="evenodd" className="physical-lakes" />
-        {RIVER_PATHS.map((path, index) => (
+          {RIVER_PATHS.map((path, index) => (
+            <path
+              key={`rivers-${index}`}
+              d={projectedMap ? projectedMap.rivers[index] : path}
+              fill="none"
+              stroke={style.riverColor}
+              strokeWidth={[1.05, 0.7, 0.45][index]}
+              opacity={[0.9, 0.72, 0.52][index] * labels.riversOpacity}
+              vectorEffect="non-scaling-stroke"
+              className="physical-rivers"
+            />
+          ))}
           <path
-            key={`rivers-${index}`}
-            d={path}
+            d={projectedMap ? projectedMap.borders : COUNTRY_BORDER_PATH}
             fill="none"
-            stroke={style.riverColor}
-            strokeWidth={[1.05, 0.7, 0.45][index]}
-            opacity={[0.9, 0.72, 0.52][index]}
+            stroke={style.countryBorderColor}
+            strokeWidth={style.countryBorderWidth}
             vectorEffect="non-scaling-stroke"
-            className="physical-rivers"
+            className="country-borders"
           />
-        ))}
-        <path
-          d={COUNTRY_BORDER_PATH}
-          fill="none"
-          stroke={style.countryBorderColor}
-          strokeWidth={style.countryBorderWidth}
-          vectorEffect="non-scaling-stroke"
-          className="country-borders"
-        />
-        <path
-          d={COASTLINE_PATH}
-          fill="none"
-          stroke={style.coastlineColor}
-          strokeWidth={Math.max(0.75, style.countryBorderWidth)}
-          vectorEffect="non-scaling-stroke"
-          className="coastlines"
-        />
-        {labelLanguage !== 'none' &&
-          CONTINENT_LABELS.map((label) => (
-            <MapFeatureLabel
-              key={`${label.id}-continent`}
-              label={label}
-              language={labelLanguage}
-              color={style.continentLabelColor}
-              className="continent-label"
-            />
-          ))}
-        {labelLanguage !== 'none' &&
-          visibleMarineLabels.map((label) => (
-            <MapFeatureLabel
-              key={`${label.id}-marine`}
-              label={label}
-              language={labelLanguage}
-              color={style.physicalLabelColor}
-              className="marine-label"
-            />
-          ))}
-        {labelLanguage !== 'none' &&
-          COUNTRIES.filter((country) => country.labelRank <= countryLabelRank).map((c) => (
-            <CountryLabel
-              key={`${c.id}-label`}
-              country={c}
-              language={labelLanguage}
-              color={style.countryLabelColor}
-            />
-          ))}
-        {labelLanguage !== 'none' &&
-          visibleCities.map((label) => (
-            <CityLabel
-              key={`${label.id}-city`}
-              label={label}
-              language={labelLanguage}
-              color={style.cityColor}
-            />
-          ))}
-        {layers
-          .filter((l) => l.visible)
-          .map((layer) => (
-            <LayerGraphic
-              key={layer.id}
-              layer={layer}
-              selected={layer.id === selectedId}
-              onPointerDown={(event) => onLayerPointerDown?.(event, layer)}
-              assetUrl={layer.assetId ? assetUrls[layer.assetId] : undefined}
-            />
-          ))}
+          <path
+            d={projectedMap ? projectedMap.coastlines : COASTLINE_PATH}
+            fill="none"
+            stroke={style.coastlineColor}
+            strokeWidth={Math.max(0.75, style.countryBorderWidth)}
+            vectorEffect="non-scaling-stroke"
+            className="coastlines"
+          />
+          {labelLanguage !== 'none' &&
+            labels.continents.map(({ item: label, opacity }) => (
+              <MapFeatureLabel
+                key={`${label.id}-continent`}
+                label={label}
+                language={labelLanguage}
+                color={style.continentLabelColor}
+                className="continent-label"
+                opacity={opacity}
+                globe={mapMode === 'globe' ? globe : undefined}
+              />
+            ))}
+          {labelLanguage !== 'none' &&
+            labels.oceans.map(({ item: label, opacity }) => (
+              <MapFeatureLabel
+                key={`${label.id}-marine`}
+                label={label}
+                language={labelLanguage}
+                color={style.physicalLabelColor}
+                className="marine-label"
+                opacity={opacity}
+                globe={mapMode === 'globe' ? globe : undefined}
+              />
+            ))}
+          {labelLanguage !== 'none' &&
+            labels.countries.map(({ item: c, opacity, scale, letterSpacing }) => (
+              <CountryLabel
+                key={`${c.id}-label`}
+                country={c}
+                language={labelLanguage}
+                color={style.countryLabelColor}
+                opacity={opacity}
+                scale={scale}
+                letterSpacing={letterSpacing}
+                globe={mapMode === 'globe' ? globe : undefined}
+              />
+            ))}
+          {labelLanguage !== 'none' &&
+            [...labels.capitals, ...labels.cities].map(({ item: label, opacity }) => (
+              <CityLabel
+                key={`${label.id}-city`}
+                label={label}
+                language={labelLanguage}
+                color={style.cityColor}
+                opacity={opacity}
+                globe={mapMode === 'globe' ? globe : undefined}
+              />
+            ))}
+          {layers
+            .filter((l) => l.visible)
+            .map((layer) => (
+              <LayerGraphic
+                key={layer.id}
+                layer={layer}
+                selected={layer.id === selectedId}
+                onPointerDown={(event) => onLayerPointerDown?.(event, layer)}
+                assetUrl={layer.assetId ? assetUrls[layer.assetId] : undefined}
+                globe={mapMode === 'globe' ? globe : undefined}
+              />
+            ))}
+        </g>
       </g>
       <text x="26" y="526" fill={style.countryLabelColor} opacity=".52" className="map-credit">
         NATURAL EARTH 1:50M · OFFLINE · {WORLD_MAP_DATASET.version}
@@ -294,23 +679,134 @@ export function MapScene({
     </svg>
   );
 }
+
+function GlobeGraticule({ color }: { color: string }) {
+  return (
+    <g className="globe-graticule" stroke={color} fill="none" opacity=".18">
+      {[260, 340, 420, 500, 580, 660, 740].map((x) => (
+        <path key={`lon-${x}`} d={`M ${x} 18 C ${x - 52} 142 ${x - 52} 418 ${x} 542`} />
+      ))}
+      {[100, 160, 220, 280, 340, 400, 460].map((y) => (
+        <ellipse key={`lat-${y}`} cx="500" cy={y} rx={Math.max(80, 270 - Math.abs(280 - y) * 0.64)} ry="20" />
+      ))}
+      <circle cx="500" cy="280" r="270" strokeWidth="1.3" opacity=".6" />
+    </g>
+  );
+}
+
+interface GlobeProjection {
+  cx: number;
+  cy: number;
+  radius: number;
+  centerLon: number;
+  centerLat: number;
+  symbolScale: number;
+}
+
+function globeProjection(camera: CameraState, rotation: GlobeRotation): GlobeProjection {
+  const radius = clamp(230 + (camera.zoom - 1) * 40, 230, 430);
+  return {
+    cx: 500,
+    cy: 280,
+    radius,
+    centerLon: rotation.lon,
+    centerLat: rotation.lat,
+    symbolScale: clamp(radius / 270, 0.82, 1.42),
+  };
+}
+
+function projectLayerPoint(x: number, y: number, globe?: GlobeProjection) {
+  return globe ? projectPointToGlobe([x, y], globe) : { x, y };
+}
+
+function projectPointToGlobe(point: readonly [number, number], globe: GlobeProjection) {
+  const lon = (point[0] / 1000) * 360 - 180;
+  const lat = 90 - (point[1] / 560) * 180;
+  const lambda = degToRad(lon - globe.centerLon);
+  const phi = degToRad(lat);
+  const phi0 = degToRad(globe.centerLat);
+  const cosc = Math.sin(phi0) * Math.sin(phi) + Math.cos(phi0) * Math.cos(phi) * Math.cos(lambda);
+  if (cosc < -0.012) return null;
+  return {
+    x: round(globe.cx + globe.radius * Math.cos(phi) * Math.sin(lambda), 3),
+    y: round(
+      globe.cy -
+        globe.radius * (Math.cos(phi0) * Math.sin(phi) - Math.sin(phi0) * Math.cos(phi) * Math.cos(lambda)),
+      3,
+    ),
+  };
+}
+
+function projectPathToGlobe(path: string, globe: GlobeProjection) {
+  const tokens = path.match(/[MLZ]|-?\d+(?:\.\d+)?/g) ?? [];
+  const commands: string[] = [];
+  let index = 0;
+  let penVisible = false;
+  while (index < tokens.length) {
+    const token = tokens[index++];
+    if (token === 'Z') {
+      if (penVisible) commands.push('Z');
+      penVisible = false;
+      continue;
+    }
+    if (token !== 'M' && token !== 'L') continue;
+    const x = Number(tokens[index++]);
+    const y = Number(tokens[index++]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    const projected = projectPointToGlobe([x, y], globe);
+    if (!projected) {
+      penVisible = false;
+      continue;
+    }
+    commands.push(`${penVisible && token === 'L' ? 'L' : 'M'}${projected.x} ${projected.y}`);
+    penVisible = true;
+  }
+  return commands.join('');
+}
+
+function degToRad(value: number) {
+  return (value * Math.PI) / 180;
+}
+
+function round(value: number, decimals: number) {
+  const scale = 10 ** decimals;
+  return Math.round(value * scale) / scale;
+}
+
+function wrap(value: number, min: number, max: number) {
+  const width = max - min;
+  return ((((value - min) % width) + width) % width) + min;
+}
+
 function CountryLabel({
   country,
   language,
   color,
+  opacity,
+  scale = 1,
+  letterSpacing = 0.16,
+  globe,
 }: {
   country: (typeof COUNTRIES)[number];
   language: Project['mapSettings']['labelLanguage'];
   color: string;
+  opacity: number;
+  scale?: number;
+  letterSpacing?: number;
+  globe?: GlobeProjection;
 }) {
   const fa = country.nameFa || country.name;
+  const point = projectLayerPoint(country.label[0], country.label[1], globe);
+  if (!point) return null;
   return (
     <text
-      x={country.label[0]}
-      y={country.label[1]}
+      x={point.x}
+      y={point.y}
       fill={color}
       className="country-label"
+      style={{ fontSize: `${5.9 * scale}px`, letterSpacing }}
       textAnchor="middle"
+      opacity={opacity}
     >
       {language === 'en' && country.name}
       {language === 'fa' && (
@@ -320,10 +816,10 @@ function CountryLabel({
       )}
       {language === 'both' && (
         <>
-          <tspan x={country.label[0]} dy="-4" direction="rtl" unicodeBidi="plaintext">
+          <tspan x={point.x} dy="-4" direction="rtl" unicodeBidi="plaintext">
             {fa}
           </tspan>
-          <tspan x={country.label[0]} dy="9">
+          <tspan x={point.x} dy="9">
             {country.name}
           </tspan>
         </>
@@ -336,29 +832,36 @@ function MapFeatureLabel({
   language,
   color,
   className,
+  opacity,
+  globe,
 }: {
   label: MapLabel;
   language: Project['mapSettings']['labelLanguage'];
   color: string;
   className: string;
+  opacity: number;
+  globe?: GlobeProjection;
 }) {
   const text = language === 'fa' ? label.nameFa : label.name;
+  const point = projectLayerPoint(label.point[0], label.point[1], globe);
+  if (!point) return null;
   return (
     <text
-      x={label.point[0]}
-      y={label.point[1]}
+      x={point.x}
+      y={point.y}
       fill={color}
       className={`${className} ${language === 'fa' ? 'persian-text' : ''}`}
       textAnchor="middle"
       direction={language === 'fa' ? 'rtl' : 'ltr'}
       unicodeBidi="plaintext"
+      opacity={opacity}
     >
       {language === 'both' ? (
         <>
-          <tspan x={label.point[0]} dy="-3" className="persian-text" direction="rtl">
+          <tspan x={point.x} dy="-3" className="persian-text" direction="rtl">
             {label.nameFa}
           </tspan>
-          <tspan x={label.point[0]} dy="8">
+          <tspan x={point.x} dy="8">
             {label.name}
           </tspan>
         </>
@@ -373,19 +876,25 @@ function CityLabel({
   label,
   language,
   color,
+  opacity,
+  globe,
 }: {
   label: MapLabel;
   language: Project['mapSettings']['labelLanguage'];
   color: string;
+  opacity: number;
+  globe?: GlobeProjection;
 }) {
   const text = language === 'fa' ? label.nameFa : label.name;
   const shown = language === 'both' ? `${label.name} · ${label.nameFa}` : text;
+  const point = projectLayerPoint(label.point[0], label.point[1], globe);
+  if (!point) return null;
   return (
-    <g className="city-label">
-      <circle cx={label.point[0]} cy={label.point[1]} r={label.capital ? 1.8 : 1.2} fill={color} />
+    <g className={`city-label ${label.capital ? 'capital-label' : ''}`} opacity={opacity}>
+      <circle cx={point.x} cy={point.y} r={label.capital ? 1.8 : 1.2} fill={color} />
       <text
-        x={label.point[0] + 3}
-        y={label.point[1] - 2}
+        x={point.x + 3}
+        y={point.y - 2}
         fill={color}
         className={language !== 'en' ? 'persian-text' : ''}
         direction={language === 'fa' ? 'rtl' : 'ltr'}
@@ -401,23 +910,33 @@ function LayerGraphic({
   selected,
   onPointerDown,
   assetUrl,
+  globe,
 }: {
   layer: Layer;
   selected: boolean;
   onPointerDown: (event: PointerEvent<SVGGElement>) => void;
   assetUrl?: string;
+  globe?: GlobeProjection;
 }) {
   const common = {
     opacity: layer.opacity,
     onPointerDown,
     className: `layer-graphic ${selected ? 'selected-layer' : ''}`,
   };
+  const point = projectLayerPoint(layer.x, layer.y, globe);
+  const point2 =
+    typeof layer.x2 === 'number' && typeof layer.y2 === 'number'
+      ? projectLayerPoint(layer.x2, layer.y2, globe)
+      : null;
+  if (!point) return null;
   if (layer.type === 'region') {
     const country = findCountry(layer.countryId);
+    const path = country && globe ? projectPathToGlobe(country.path, globe) : country?.path;
+    if (!country || !path) return null;
     return country ? (
       <g {...common}>
-        <path d={country.path} fill={layer.color} fillOpacity=".45" stroke={layer.color} strokeWidth="3" />
-        <text x={layer.x} y={layer.y + 28} fill={layer.color} textAnchor="middle" className="layer-caption">
+        <path d={path} fill={layer.color} fillOpacity=".45" stroke={layer.color} strokeWidth="3" />
+        <text x={point.x} y={point.y + 28} fill={layer.color} textAnchor="middle" className="layer-caption">
           {layer.name}
         </text>
       </g>
@@ -426,11 +945,18 @@ function LayerGraphic({
   if (layer.type === 'pin')
     return (
       <g {...common}>
-        <circle cx={layer.x} cy={layer.y} r="13" fill={layer.color} stroke="#fff" strokeWidth="3" />
-        <circle cx={layer.x} cy={layer.y} r="4" fill="#17202d" />
+        <circle
+          cx={point.x}
+          cy={point.y}
+          r={13 * (globe?.symbolScale ?? 1)}
+          fill={layer.color}
+          stroke="#fff"
+          strokeWidth="3"
+        />
+        <circle cx={point.x} cy={point.y} r={4 * (globe?.symbolScale ?? 1)} fill="#17202d" />
         <text
-          x={layer.x + 18}
-          y={layer.y + 4}
+          x={point.x + 18 * (globe?.symbolScale ?? 1)}
+          y={point.y + 4}
           fill="#fff"
           className="layer-text"
           direction={resolveTextDirection(layer.text ?? '', layer.textDirection)}
@@ -446,8 +972,8 @@ function LayerGraphic({
     return (
       <g {...common}>
         <text
-          x={layer.x}
-          y={layer.y}
+          x={point.x}
+          y={point.y}
           fill={layer.color}
           className={`headline ${isPersian ? 'persian-text' : ''}`}
           style={{ fontSize: layer.fontSize }}
@@ -465,10 +991,10 @@ function LayerGraphic({
       <g {...common}>
         <image
           href={assetUrl}
-          x={layer.x}
-          y={layer.y}
-          width={layer.width}
-          height={layer.height}
+          x={point.x}
+          y={point.y}
+          width={(layer.width ?? 0) * (globe?.symbolScale ?? 1)}
+          height={(layer.height ?? 0) * (globe?.symbolScale ?? 1)}
           preserveAspectRatio="xMidYMid meet"
         />
       </g>
@@ -477,10 +1003,10 @@ function LayerGraphic({
     return (
       <g {...common}>
         <rect
-          x={layer.x}
-          y={layer.y}
-          width={layer.width}
-          height={layer.height}
+          x={point.x}
+          y={point.y}
+          width={(layer.width ?? 0) * (globe?.symbolScale ?? 1)}
+          height={(layer.height ?? 0) * (globe?.symbolScale ?? 1)}
           rx="3"
           fill={layer.type === 'image' ? '#24364c' : layer.color}
           fillOpacity={layer.type === 'image' ? '.9' : '.25'}
@@ -488,8 +1014,8 @@ function LayerGraphic({
           strokeWidth="2"
         />
         <text
-          x={layer.x + (layer.width ?? 0) / 2}
-          y={layer.y + (layer.height ?? 0) / 2 + 4}
+          x={point.x + ((layer.width ?? 0) * (globe?.symbolScale ?? 1)) / 2}
+          y={point.y + ((layer.height ?? 0) * (globe?.symbolScale ?? 1)) / 2 + 4}
           textAnchor="middle"
           fill={layer.color}
           className="layer-caption"
@@ -498,24 +1024,44 @@ function LayerGraphic({
         </text>
       </g>
     );
-  if (layer.type === 'geo-effect') return <GeoEffect layer={layer} common={common} />;
+  if (layer.type === 'geo-effect')
+    return <GeoEffect layer={projectedLayer(layer, point, point2, globe)} common={common} />;
   const dash = layer.type === 'route' ? '8 6' : undefined;
+  if (!point2) return null;
   return (
     <g {...common}>
       <line
-        x1={layer.x}
-        y1={layer.y}
-        x2={layer.x2}
-        y2={layer.y2}
+        x1={point.x}
+        y1={point.y}
+        x2={point2.x}
+        y2={point2.y}
         stroke={layer.color}
         strokeWidth={layer.type === 'arrow' ? 6 : 3}
         strokeDasharray={dash}
         markerEnd="url(#arrowhead)"
       />
-      <circle cx={layer.x} cy={layer.y} r="4" fill={layer.color} />
+      <circle cx={point.x} cy={point.y} r="4" fill={layer.color} />
     </g>
   );
 }
+
+function projectedLayer(
+  layer: Layer,
+  point: { x: number; y: number },
+  point2: { x: number; y: number } | null,
+  globe?: GlobeProjection,
+): Layer {
+  const scale = globe?.symbolScale ?? 1;
+  return {
+    ...layer,
+    x: point.x,
+    y: point.y,
+    x2: point2?.x ?? layer.x2,
+    y2: point2?.y ?? layer.y2,
+    effectSize: (layer.effectSize ?? 44) * scale,
+  };
+}
+
 function GeoEffect({
   layer,
   common,

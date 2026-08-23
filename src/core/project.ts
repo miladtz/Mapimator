@@ -106,7 +106,7 @@ export interface View {
   name: string;
   holdDuration: number;
   transitionDuration: number;
-  transitionPreset: 'smooth' | 'cinematic' | 'linear';
+  transitionPreset: 'smooth' | 'cinematic' | 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'bezier';
   camera: CameraState;
   layers: Layer[];
   thumbnailColor: string;

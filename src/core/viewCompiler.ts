@@ -1,4 +1,5 @@
 import type { CameraState, Layer, Project, View } from './project';
+import { easeCameraProgress, interpolateCamera, interpolateNumber } from './camera';
 
 export type LayerDiff = 'ENTER' | 'EXIT' | 'UPDATE' | 'HOLD' | 'NONE';
 export interface AnimationSegment {
@@ -38,9 +39,6 @@ export const compileViews = (views: View[]): AnimationSequence => {
   });
   return { duration: cursor, segments };
 };
-const ease = (t: number, preset: View['transitionPreset']) =>
-  preset === 'linear' ? t : preset === 'cinematic' ? t * t * (3 - 2 * t) : 1 - Math.pow(1 - t, 3);
-const interpolate = (a: number, b: number, t: number) => a + (b - a) * t;
 const blendLayer = (previous: Layer | undefined, next: Layer | undefined, t: number): Layer | null => {
   if (!previous && !next) return null;
   if (!previous && next) return { ...next, opacity: next.opacity * t, visible: t > 0 };
@@ -48,11 +46,17 @@ const blendLayer = (previous: Layer | undefined, next: Layer | undefined, t: num
   if (!previous || !next) return null;
   return {
     ...next,
-    x: interpolate(previous.x, next.x, t),
-    y: interpolate(previous.y, next.y, t),
-    x2: previous.x2 !== undefined && next.x2 !== undefined ? interpolate(previous.x2, next.x2, t) : next.x2,
-    y2: previous.y2 !== undefined && next.y2 !== undefined ? interpolate(previous.y2, next.y2, t) : next.y2,
-    opacity: interpolate(previous.opacity, next.opacity, t),
+    x: interpolateNumber(previous.x, next.x, t),
+    y: interpolateNumber(previous.y, next.y, t),
+    x2:
+      previous.x2 !== undefined && next.x2 !== undefined
+        ? interpolateNumber(previous.x2, next.x2, t)
+        : next.x2,
+    y2:
+      previous.y2 !== undefined && next.y2 !== undefined
+        ? interpolateNumber(previous.y2, next.y2, t)
+        : next.y2,
+    opacity: interpolateNumber(previous.opacity, next.opacity, t),
     visible: t < 0.5 ? previous.visible : next.visible,
   };
 };
@@ -75,16 +79,12 @@ export const evaluateProjectAtTime = (project: Project, time: number): RenderedP
       transitionProgress: 0,
     };
   const raw = Math.min(1, (time - segment.holdEnd) / segment.from.transitionDuration);
-  const t = ease(raw, segment.from.transitionPreset);
+  const t = easeCameraProgress(raw, segment.from.transitionPreset);
   const before = new Map(segment.from.layers.map((l) => [l.id, l]));
   const after = new Map(segment.to.layers.map((l) => [l.id, l]));
   const ids = new Set([...before.keys(), ...after.keys()]);
   return {
-    camera: {
-      x: interpolate(segment.from.camera.x, segment.to.camera.x, t),
-      y: interpolate(segment.from.camera.y, segment.to.camera.y, t),
-      zoom: interpolate(segment.from.camera.zoom, segment.to.camera.zoom, t),
-    },
+    camera: interpolateCamera(segment.from.camera, segment.to.camera, raw, segment.from.transitionPreset),
     layers: [...ids]
       .map((id) => blendLayer(before.get(id), after.get(id), t))
       .filter((l): l is Layer => l !== null),

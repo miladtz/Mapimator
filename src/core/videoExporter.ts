@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import type { MapMode } from '../components/OfflineMap';
 import type { Project } from './project';
 import { renderProjectRgbaSequence } from './frameRenderer';
 import { compileViews } from './viewCompiler';
@@ -19,6 +20,7 @@ export interface ExportProgressState {
 export interface ProjectVideoExportOptions {
   encoder?: ReferenceEncoder | 'auto';
   settings?: ExportVideoSettings;
+  mapMode?: MapMode;
   signal?: AbortSignal;
   onProgress?: (progress: ExportProgressState) => void;
 }
@@ -122,6 +124,7 @@ export async function exportProjectVideo(
           settings,
           candidate,
           attempt > 0,
+          options.mapMode ?? 'flat',
           options.signal,
           emit,
         );
@@ -160,6 +163,7 @@ async function runExportAttempt(
   settings: ExportVideoSettings,
   encoder: EncoderProbeResult,
   fallbackUsed: boolean,
+  mapMode: MapMode,
   signal: AbortSignal | undefined,
   emit: (progress: ExportProgressState) => void,
 ): Promise<ProjectVideoExportResult> {
@@ -195,6 +199,7 @@ async function runExportAttempt(
     },
     signal,
     settings,
+    mapMode,
   );
   signal?.throwIfAborted();
   emit({

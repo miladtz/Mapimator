@@ -2,6 +2,7 @@ import { createRoot } from 'react-dom/client';
 import interFontUrl from '@fontsource-variable/inter/files/inter-latin-wght-normal.woff2?url';
 import vazirmatnArabicFontUrl from '@fontsource-variable/vazirmatn/files/vazirmatn-arabic-wght-normal.woff2?url';
 import { MapScene } from '../components/OfflineMap';
+import type { MapMode } from '../components/OfflineMap';
 import { MAP_STYLES, type Project } from './project';
 import { projectExportSettings, validateExportSettings, type ExportVideoSettings } from './exportPresets';
 import { compileViews, evaluateProjectAtTime } from './viewCompiler';
@@ -114,6 +115,7 @@ async function renderProjectFrameCanvas<T>(
   time: number,
   width: number,
   height: number,
+  mapMode: MapMode,
   consumeCanvas: FrameCanvasConsumer<T>,
 ) {
   validateExportSettings({ width, height, fps: 30 });
@@ -143,6 +145,7 @@ async function renderProjectFrameCanvas<T>(
     root.render(
       <MapScene
         style={style}
+        mapMode={mapMode}
         layers={state.layers}
         camera={state.camera}
         labelLanguage={project.mapSettings.labelLanguage}
@@ -170,8 +173,9 @@ export async function renderProjectFrame(
   time: number,
   width = EXPORT_FRAME_WIDTH,
   height = EXPORT_FRAME_HEIGHT,
+  mapMode: MapMode = 'flat',
 ) {
-  return renderProjectFrameCanvas(project, time, width, height, canvasToPng);
+  return renderProjectFrameCanvas(project, time, width, height, mapMode, canvasToPng);
 }
 
 export async function renderProjectFrameRgba(
@@ -179,8 +183,9 @@ export async function renderProjectFrameRgba(
   time: number,
   width = EXPORT_FRAME_WIDTH,
   height = EXPORT_FRAME_HEIGHT,
+  mapMode: MapMode = 'flat',
 ) {
-  return renderProjectFrameCanvas(project, time, width, height, (canvas) => {
+  return renderProjectFrameCanvas(project, time, width, height, mapMode, (canvas) => {
     const context = canvas.getContext('2d', { alpha: false });
     if (!context) throw new Error('Unable to read the deterministic frame canvas.');
     const pixels = context.getImageData(0, 0, width, height).data;
@@ -210,6 +215,7 @@ export async function renderProjectFrameSequence(
   project: Project,
   consumeFrame: (frame: RenderedProjectFrame) => void | Promise<void>,
   settings: ExportVideoSettings = projectExportSettings(project),
+  mapMode: MapMode = 'flat',
 ): Promise<RenderedProjectSequence> {
   validateExportSettings(settings);
 
@@ -217,7 +223,7 @@ export async function renderProjectFrameSequence(
   const totalFrames = Math.ceil(duration * settings.fps);
   for (let index = 0; index < totalFrames; index += 1) {
     const time = index / settings.fps;
-    const blob = await renderProjectFrame(project, time, settings.width, settings.height);
+    const blob = await renderProjectFrame(project, time, settings.width, settings.height, mapMode);
     await consumeFrame({ blob, index, time, totalFrames });
   }
   return { duration, fps: settings.fps, totalFrames };
@@ -230,6 +236,7 @@ export async function renderProjectRgbaSequence(
   ) => void | Promise<void>,
   signal?: AbortSignal,
   settings: ExportVideoSettings = projectExportSettings(project),
+  mapMode: MapMode = 'flat',
 ): Promise<RenderedRgbaSequence> {
   validateExportSettings(settings);
 
@@ -241,7 +248,7 @@ export async function renderProjectRgbaSequence(
     signal?.throwIfAborted();
     const time = index / settings.fps;
     const renderStarted = performance.now();
-    const pixels = await renderProjectFrameRgba(project, time, settings.width, settings.height);
+    const pixels = await renderProjectFrameRgba(project, time, settings.width, settings.height, mapMode);
     const frameRenderMs = performance.now() - renderStarted;
     renderMs += frameRenderMs;
     signal?.throwIfAborted();
