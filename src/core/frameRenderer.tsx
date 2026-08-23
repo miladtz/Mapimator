@@ -108,6 +108,9 @@ const canvasToPng = (canvas: HTMLCanvasElement) =>
     ),
   );
 
+const canvasToJpegDataUrl = (canvas: HTMLCanvasElement, quality = 0.82) =>
+  canvas.toDataURL('image/jpeg', quality);
+
 type FrameCanvasConsumer<T> = (canvas: HTMLCanvasElement) => T | Promise<T>;
 
 async function renderProjectFrameCanvas<T>(
@@ -258,6 +261,92 @@ export async function renderProjectRgbaSequence(
   }
   return { duration, fps: settings.fps, totalFrames, renderMs, consumeMs };
 }
+export const VIEW_THUMBNAIL_WIDTH = 320;
+export const VIEW_THUMBNAIL_HEIGHT = 180;
+
+export interface ViewThumbnailResult {
+  viewId: string;
+  dataUrl: string;
+}
+
+/**
+ * Renders small deterministic map thumbnails for the given Views through the
+ * same project evaluator used by Preview and Export. One hidden scene host is
+ * reused for the whole batch and the loop yields to the main thread between
+ * Views so the editor stays responsive while thumbnails fill in.
+ */
+export async function renderViewThumbnails(
+  project: Project,
+  viewIds: string[],
+  width = VIEW_THUMBNAIL_WIDTH,
+  height = VIEW_THUMBNAIL_HEIGHT,
+  mapMode: MapMode = 'flat',
+  onThumbnail: (result: ViewThumbnailResult) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (viewIds.length === 0) return;
+  const sequence = compileViews(project.views);
+  const style = MAP_STYLES.find((candidate) => candidate.id === project.mapSettings.styleId);
+  if (!style) throw new Error(`Unknown map style: ${project.mapSettings.styleId}`);
+  const assetUrls = await resolveProjectAssetUrls(project);
+  await getEmbeddedFontStyles();
+  await document.fonts.load('400 12px Inter');
+  await document.fonts.load('400 12px Vazirmatn');
+  await document.fonts.ready;
+
+  const host = document.createElement('div');
+  host.className = 'export-frame-scene';
+  Object.assign(host.style, {
+    position: 'fixed',
+    left: '-20000px',
+    top: '0',
+    width: `${width}px`,
+    height: `${height}px`,
+    overflow: 'hidden',
+  });
+  const freezeStyles = document.createElement('style');
+  freezeStyles.textContent =
+    '.export-frame-scene *, .export-frame-scene *::before { animation: none !important; transition: none !important; }';
+  document.head.append(freezeStyles);
+  document.body.append(host);
+  const root = createRoot(host);
+  const indexById = new Map(project.views.map((view, index) => [view.id, index]));
+  try {
+    for (const viewId of viewIds) {
+      signal?.throwIfAborted();
+      const index = indexById.get(viewId);
+      if (index === undefined) continue;
+      const segment = sequence.segments[index];
+      if (!segment) continue;
+      const state = evaluateProjectAtTime(project, segment.start);
+      root.render(
+        <MapScene
+          style={style}
+          mapMode={mapMode}
+          layers={state.layers}
+          camera={state.camera}
+          labelLanguage={project.mapSettings.labelLanguage}
+          width={width}
+          height={height}
+          viewBox={exportViewBox(width, height)}
+          assetUrls={assetUrls}
+        />,
+      );
+      await nextPaint();
+      await document.fonts.ready;
+      const svg = await waitForSceneSvg(host);
+      const canvas = await svgToCanvas(svg, width, height);
+      signal?.throwIfAborted();
+      onThumbnail({ viewId, dataUrl: canvasToJpegDataUrl(canvas) });
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    }
+  } finally {
+    root.unmount();
+    host.remove();
+    freezeStyles.remove();
+  }
+}
+
 const exportViewBox = (width: number, height: number) => {
   const sceneWidth = 1000;
   const sceneHeight = 560;

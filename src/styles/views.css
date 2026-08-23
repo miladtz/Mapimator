@@ -139,13 +139,13 @@
   font-size: 10px;
 }
 .view-card {
-  min-width: 126px;
-  flex: 0 0 126px;
+  min-width: 160px;
+  flex: 0 0 160px;
   position: relative;
   padding: 6px;
   display: grid;
-  grid-template-columns: 28px 1fr;
-  gap: 3px;
+  grid-template-rows: auto auto;
+  gap: 4px;
   text-align: left;
 }
 .view-card:focus-visible {
@@ -157,11 +157,36 @@
   background: #29394b;
 }
 .view-thumb {
-  grid-row: span 2;
+  position: relative;
+  display: block;
+  height: 64px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: #28415a;
+}
+.view-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+.view-thumb-index {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  min-width: 17px;
+  height: 15px;
+  padding: 0 4px;
   display: grid;
   place-items: center;
-  color: #dceaf4;
-  font-size: 9px;
+  border-radius: 3px;
+  background: rgb(8 16 26 / 74%);
+  color: #e4eff7;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  backdrop-filter: blur(2px);
 }
 .view-card strong,
 .view-card small {
@@ -230,9 +255,10 @@
   position: absolute;
   right: 0;
   bottom: 0;
-  height: 3px;
+  height: 5px;
   max-width: 100%;
-  background: #5d87a8;
+  background: linear-gradient(90deg, #e0a34c, #c07f2c);
+  border-radius: 0 0 2px 2px;
   pointer-events: none;
 }
 .add-view {
@@ -240,14 +266,36 @@
   white-space: nowrap;
   flex: 0 0 auto;
 }
-.timeline-zoom-reserve {
-  flex: 0 0 150px;
-  min-height: 42px;
-  border: 1px dashed #304254;
-  color: #526a80;
-  display: grid;
-  place-items: center;
+.timeline-zoom-control {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  border: 1px solid #3b5063;
+  background: #192635;
+  color: #c9d7e2;
+  border-radius: 3px;
+  height: 28px;
+  padding: 0 4px;
+}
+.timeline-zoom-control button {
+  width: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #c9d7e2;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.timeline-zoom-control button:hover {
+  color: #fff;
+  background: #2a3d51;
+}
+.timeline-zoom-control span {
+  min-width: 34px;
+  text-align: center;
   font-size: 9px;
+  color: #9dafbf;
 }
 .view-actions {
   display: flex;

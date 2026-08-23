@@ -31,6 +31,11 @@ import {
   type ExportProgressState,
 } from '../core/videoExporter';
 import {
+  renderViewThumbnails,
+  VIEW_THUMBNAIL_HEIGHT,
+  VIEW_THUMBNAIL_WIDTH,
+} from '../core/frameRenderer';
+import {
   ingestProjectImage,
   resolveProjectAssetUrls,
   validateProjectAssetStorage,
@@ -64,7 +69,7 @@ const geoEffectCycle: { type: GeoEffectType; name: string }[] = [
 type PlaybackState = 'stopped' | 'playing' | 'paused';
 
 const VIEW_PIXELS_PER_SECOND = 36;
-const MIN_VIEW_CARD_WIDTH = 126;
+const MIN_VIEW_CARD_WIDTH = 160;
 const VIEW_CARD_GAP = 9;
 
 export function App() {
@@ -81,6 +86,8 @@ export function App() {
   const [layersPanelOpen, setLayersPanelOpen] = useState(true);
   const [draggedViewId, setDraggedViewId] = useState<string | null>(null);
   const [openViewMenuId, setOpenViewMenuId] = useState<string | null>(null);
+  const [viewThumbnails, setViewThumbnails] = useState<Record<string, string>>({});
+  const [timelineZoom, setTimelineZoom] = useState(1);
   const [exportState, setExportState] = useState<ExportProgressState & { message?: string }>({
     status: 'idle',
     currentFrame: 0,
@@ -93,6 +100,10 @@ export function App() {
   const exportAbort = useRef<AbortController | null>(null);
   const previewTimeRef = useRef(0);
   const timelineScrollRef = useRef<HTMLDivElement | null>(null);
+  const projectRef = useRef(project);
+  projectRef.current = project;
+  const thumbnailRenderIdRef = useRef(0);
+  const renderedThumbnailSignaturesRef = useRef<Record<string, string>>({});
   const exportPreset = EXPORT_PRESETS.find((preset) => preset.id === exportPresetId)!;
   const words = t(language);
   const style = MAP_STYLES.find((item) => item.id === project.mapSettings.styleId)!;
@@ -105,7 +116,21 @@ export function App() {
   const sequence = useMemo(() => compileViews(project.views), [project.views]);
   const previewState = previewTime === null ? null : evaluateProjectAtTime(project, previewTime);
   const previewDisplayTime = previewTime ?? 0;
-  const playheadPosition = timelinePosition(sequence, previewDisplayTime);
+  const playheadPosition = timelinePosition(sequence, previewDisplayTime, timelineZoom);
+  const thumbnailSignatures = useMemo(() => {
+    const global = {
+      mapMode,
+      mapSettings: project.mapSettings,
+      canvasWidth: project.canvas.width,
+      canvasHeight: project.canvas.height,
+    };
+    return Object.fromEntries(
+      project.views.map((view) => [
+        view.id,
+        JSON.stringify({ global, camera: view.camera, layers: view.layers }),
+      ]),
+    );
+  }, [mapMode, project.mapSettings, project.canvas.width, project.canvas.height, project.views]);
   useEffect(() => {
     let active = true;
     resolveProjectAssetUrls(project)
@@ -162,6 +187,62 @@ export function App() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+  useEffect(() => {
+    const removed = Object.keys(renderedThumbnailSignaturesRef.current).filter(
+      (id) => !(id in thumbnailSignatures),
+    );
+    if (removed.length) {
+      for (const id of removed) delete renderedThumbnailSignaturesRef.current[id];
+      setViewThumbnails((previous) => {
+        const next = { ...previous };
+        for (const id of removed) delete next[id];
+        return next;
+      });
+    }
+    if (exportState.status !== 'idle' || projectRef.current.views.length === 0) return;
+    const pending = projectRef.current.views.filter(
+      (view) => renderedThumbnailSignaturesRef.current[view.id] !== thumbnailSignatures[view.id],
+    );
+    if (pending.length === 0) return;
+    const controller = new AbortController();
+    const renderId = ++thumbnailRenderIdRef.current;
+    const timer = window.setTimeout(() => {
+      const latestProject = projectRef.current;
+      void renderViewThumbnails(
+        latestProject,
+        pending.map((view) => view.id),
+        VIEW_THUMBNAIL_WIDTH,
+        VIEW_THUMBNAIL_HEIGHT,
+        mapMode,
+        (result) => {
+          if (renderId !== thumbnailRenderIdRef.current) return;
+          renderedThumbnailSignaturesRef.current[result.viewId] = thumbnailSignatures[result.viewId];
+          setViewThumbnails((previous) => ({ ...previous, [result.viewId]: result.dataUrl }));
+        },
+        controller.signal,
+      ).catch(() => undefined);
+    }, 180);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [exportState.status, mapMode, thumbnailSignatures]);
+  const scrollViewCardIntoView = useCallback((viewId: string) => {
+    const scroller = timelineScrollRef.current;
+    if (!scroller) return;
+    const card = scroller.querySelector<HTMLElement>(`[data-view-id="${viewId}"]`);
+    if (!card) return;
+    const margin = 18;
+    const left = card.offsetLeft - margin;
+    const right = card.offsetLeft + card.offsetWidth + margin;
+    if (left < scroller.scrollLeft) scroller.scrollTo({ left: Math.max(0, left), behavior: 'smooth' });
+    else if (right > scroller.scrollLeft + scroller.clientWidth)
+      scroller.scrollTo({ left: right - scroller.clientWidth, behavior: 'smooth' });
+  }, []);
+  useEffect(() => {
+    if (!activeViewId || playbackState === 'playing') return;
+    scrollViewCardIntoView(activeViewId);
+  }, [activeViewId, playbackState, project.views.length, scrollViewCardIntoView, timelineZoom]);
   const updateProject = (fn: (p: Project) => Project) => setProject(fn);
   const applyCameraEdit = useCallback((next: CameraState) => {
     setCamera(next);
@@ -445,6 +526,8 @@ export function App() {
       views: p.views.map((v) => (v.id === activeViewId ? { ...v, ...patch } : v)),
     }));
   };
+  const zoomTimeline = (factor: number) =>
+    setTimelineZoom((zoom) => Math.max(0.5, Math.min(3, Math.round(zoom * factor * 100) / 100)));
   const setCanvasLayout = (layoutId: Project['canvas']['layoutId']) => {
     if (layoutId === 'custom') {
       const width = Number(window.prompt('Canvas width', String(project.canvas.width)));
@@ -862,7 +945,19 @@ export function App() {
           <button type="button" onClick={() => setLayersPanelOpen((open) => !open)}>
             Layers
           </button>
-          <span className="timeline-future">Future controls</span>
+          <div className="timeline-zoom-control" role="group" aria-label="Timeline zoom">
+            <button
+              onClick={() => zoomTimeline(1 / 1.25)}
+              title="Zoom timeline out"
+              aria-label="Zoom timeline out"
+            >
+              −
+            </button>
+            <span>{Math.round(timelineZoom * 100)}%</span>
+            <button onClick={() => zoomTimeline(1.25)} title="Zoom timeline in" aria-label="Zoom timeline in">
+              +
+            </button>
+          </div>
           {activeView && (
             <div className="timeline-view-fields">
               <label>
@@ -925,11 +1020,11 @@ export function App() {
             className="timeline-scroll"
             onWheel={(event) => {
               event.stopPropagation();
+              event.preventDefault();
               if (event.ctrlKey) {
-                event.preventDefault();
+                zoomTimeline(event.deltaY < 0 ? 1.1 : 1 / 1.1);
                 return;
               }
-              event.preventDefault();
               const horizontalDelta = event.shiftKey ? event.deltaY : event.deltaX || event.deltaY;
               event.currentTarget.scrollLeft += horizontalDelta;
             }}
@@ -944,42 +1039,70 @@ export function App() {
                   <span />
                 </div>
               )}
-              {project.views.map((view, index) => {
-                const segment = sequence.segments[index];
-                const duration = viewDurationSeconds(project.views, index);
-                const cardWidth = viewCardWidth(duration);
-                return (
-                  <div
-                    key={view.id}
-                    className={`view-card ${activeViewId === view.id ? 'active' : ''}`}
-                    style={{ flexBasis: cardWidth }}
-                    draggable
-                    tabIndex={0}
-                    onClick={(event) => {
-                      activateView(view.id);
-                      if (segment) {
-                        const bounds = event.currentTarget.getBoundingClientRect();
-                        const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
-                        seekPreview(segment.start + ratio * (segment.end - segment.start));
-                      }
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Delete' && event.target === event.currentTarget) {
-                        event.preventDefault();
-                        deleteView(view.id);
-                      }
-                    }}
-                    onDragStart={() => setDraggedViewId(view.id)}
-                    onDragOver={(event) => event.preventDefault()}
-                    onDrop={(event) => {
-                      event.preventDefault();
-                      if (draggedViewId) reorderView(draggedViewId, view.id);
-                      setDraggedViewId(null);
-                    }}
-                  >
-                    <span className="view-thumb" style={{ background: view.thumbnailColor }}>
-                      {String(index + 1).padStart(2, '0')}
-                    </span>
+      {project.views.map((view, index) => {
+        const segment = sequence.segments[index];
+        const duration = viewDurationSeconds(project.views, index);
+        const cardWidth = viewCardWidth(duration, timelineZoom);
+        return (
+          <div
+            key={view.id}
+            data-view-id={view.id}
+            className={`view-card ${activeViewId === view.id ? 'active' : ''}`}
+            style={{ flexBasis: cardWidth }}
+            draggable
+            tabIndex={0}
+            onClick={(event) => {
+              activateView(view.id);
+              if (segment) {
+                const bounds = event.currentTarget.getBoundingClientRect();
+                const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
+                seekPreview(segment.start + ratio * (segment.end - segment.start));
+              }
+            }}
+            onKeyDown={(event) => {
+              if (event.target !== event.currentTarget) return;
+              if (event.key === 'Delete') {
+                event.preventDefault();
+                deleteView(view.id);
+                return;
+              }
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                activateView(view.id);
+                return;
+              }
+              const rightwards = language === 'fa' ? -1 : 1;
+              let targetIndex: number | null = null;
+              if (event.key === 'ArrowRight') targetIndex = index + rightwards;
+              else if (event.key === 'ArrowLeft') targetIndex = index - rightwards;
+              else if (event.key === 'Home') targetIndex = 0;
+              else if (event.key === 'End') targetIndex = project.views.length - 1;
+              if (targetIndex === null || targetIndex < 0 || targetIndex >= project.views.length) return;
+              event.preventDefault();
+              const target = project.views[targetIndex];
+              activateView(target.id);
+              requestAnimationFrame(() => {
+                const element = timelineScrollRef.current?.querySelector<HTMLElement>(
+                  `[data-view-id="${target.id}"]`,
+                );
+                element?.focus({ preventScroll: true });
+                scrollViewCardIntoView(target.id);
+              });
+            }}
+            onDragStart={() => setDraggedViewId(view.id)}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault();
+              if (draggedViewId) reorderView(draggedViewId, view.id);
+              setDraggedViewId(null);
+            }}
+          >
+            <span className="view-thumb" style={{ background: view.thumbnailColor }}>
+              {viewThumbnails[view.id] && (
+                <img src={viewThumbnails[view.id]} alt={`${view.name} thumbnail`} draggable={false} />
+              )}
+              <span className="view-thumb-index">{String(index + 1).padStart(2, '0')}</span>
+            </span>
                     <strong>{view.name}</strong>
                     <button
                       className="view-menu-trigger"
@@ -1031,9 +1154,6 @@ export function App() {
               <button className="add-view" onClick={addView}>
                 + Add View
               </button>
-              <div className="timeline-zoom-reserve" aria-hidden="true">
-                Timeline zoom
-              </div>
             </div>
           </div>
         </TimelineViewport>
@@ -1085,17 +1205,17 @@ function viewDurationSeconds(views: View[], index: number) {
   return view.holdDuration + (index < views.length - 1 ? view.transitionDuration : 0);
 }
 
-function viewCardWidth(duration: number) {
-  return Math.max(MIN_VIEW_CARD_WIDTH, duration * VIEW_PIXELS_PER_SECOND);
+function viewCardWidth(duration: number, zoom = 1) {
+  return Math.max(MIN_VIEW_CARD_WIDTH, duration * VIEW_PIXELS_PER_SECOND) * zoom;
 }
 
-function timelinePosition(sequence: ReturnType<typeof compileViews>, time: number) {
+function timelinePosition(sequence: ReturnType<typeof compileViews>, time: number, zoom = 1) {
   if (!sequence.segments.length) return 0;
   const clampedTime = Math.max(0, Math.min(sequence.duration, time));
   let position = 0;
   for (const segment of sequence.segments) {
     const duration = segment.end - segment.start;
-    const width = viewCardWidth(duration);
+    const width = viewCardWidth(duration, zoom);
     if (clampedTime <= segment.end || segment === sequence.segments[sequence.segments.length - 1]) {
       const progress = duration > 0 ? (clampedTime - segment.start) / duration : 0;
       return position + Math.max(0, Math.min(1, progress)) * width;
