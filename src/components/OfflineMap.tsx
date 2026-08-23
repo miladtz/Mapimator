@@ -6,7 +6,6 @@ import React, {
   type KeyboardEvent,
   type PointerEvent,
   type SVGProps,
-  type WheelEvent,
 } from 'react';
 import {
   applyEdgeResistance,
@@ -102,6 +101,10 @@ export function OfflineMap({
   const activePointerId = useRef<number | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const onCameraChangeRef = useRef(onCameraChange);
+  const interactionEnabledRef = useRef(interactionEnabled);
+  const mapModeRef = useRef(mapMode);
+  interactionEnabledRef.current = interactionEnabled;
+  mapModeRef.current = mapMode;
   useEffect(() => {
     onCameraChangeRef.current = onCameraChange;
   }, [onCameraChange]);
@@ -158,6 +161,33 @@ export function OfflineMap({
     () => cancelActiveCameraInteraction(),
     [cancelActiveCameraInteraction, interactionEnabled, mapMode],
   );
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!interactionEnabledRef.current) return;
+      const { x, y } = svgPoint(event, svg);
+      const delta = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+      if (mapModeRef.current === 'globe') {
+        const adaptiveSpeed =
+          CAMERA_SETTINGS.zoomSpeed * (0.72 + Math.log2(Math.max(1, targetCamera.current.zoom)) * 0.14);
+        const zoom = clamp(
+          targetCamera.current.zoom * Math.exp(-delta * CAMERA_SETTINGS.wheelSmoothing * adaptiveSpeed),
+          CAMERA_SETTINGS.minZoom,
+          CAMERA_SETTINGS.maxZoom,
+        );
+        targetCamera.current = roundCamera({ x: 0, y: 0, zoom });
+        if (!animation.current) glideToTarget();
+        return;
+      }
+      targetCamera.current = zoomAtPoint(targetCamera.current, x, y, delta * CAMERA_SETTINGS.wheelSmoothing);
+      if (!animation.current) glideToTarget();
+    };
+    svg.addEventListener('wheel', onWheel, { passive: false });
+    return () => svg.removeEventListener('wheel', onWheel);
+  }, []);
   const animateTo = (target: CameraState, duration = CAMERA_SETTINGS.animatedZoomMs) => {
     cancelCameraFrames();
     const start = constrainCamera(targetCamera.current);
@@ -260,7 +290,7 @@ export function OfflineMap({
     if (moving.current) return;
     cancelActiveCameraInteraction();
     event.currentTarget.focus();
-    const point = svgPoint(event);
+    const point = svgPoint(event, event.currentTarget);
     drag.current = { x: point.x - currentCamera.current.x, y: point.y - currentCamera.current.y };
     lastPan.current = { x: event.clientX, y: event.clientY, time: performance.now() };
     velocity.current = { x: 0, y: 0 };
@@ -269,7 +299,7 @@ export function OfflineMap({
   };
   const onPointerMove = (event: PointerEvent<SVGSVGElement>) => {
     if (moving.current) {
-      const point = svgPoint(event);
+      const point = svgPoint(event, event.currentTarget);
       onMoveLayer(moving.current, point.x, point.y);
     } else if (drag.current) {
       const now = performance.now();
@@ -297,8 +327,8 @@ export function OfflineMap({
       }
       targetCamera.current = applyEdgeResistance({
         ...currentCamera.current,
-        x: svgPoint(event).x - drag.current.x,
-        y: svgPoint(event).y - drag.current.y,
+        x: svgPoint(event, event.currentTarget).x - drag.current.x,
+        y: svgPoint(event, event.currentTarget).y - drag.current.y,
       });
       currentCamera.current = targetCamera.current;
       emitCameraChange(targetCamera.current);
@@ -322,30 +352,9 @@ export function OfflineMap({
       emitCameraChange(targetCamera.current);
     }
   };
-  const onWheel = (event: WheelEvent<SVGSVGElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (!interactionEnabled) return;
-    const { x, y } = svgPoint(event);
-    const delta = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
-    if (mapMode === 'globe') {
-      const adaptiveSpeed =
-        CAMERA_SETTINGS.zoomSpeed * (0.72 + Math.log2(Math.max(1, targetCamera.current.zoom)) * 0.14);
-      const zoom = clamp(
-        targetCamera.current.zoom * Math.exp(-delta * CAMERA_SETTINGS.wheelSmoothing * adaptiveSpeed),
-        CAMERA_SETTINGS.minZoom,
-        CAMERA_SETTINGS.maxZoom,
-      );
-      targetCamera.current = roundCamera({ x: 0, y: 0, zoom });
-      if (!animation.current) glideToTarget();
-      return;
-    }
-    targetCamera.current = zoomAtPoint(targetCamera.current, x, y, delta * CAMERA_SETTINGS.wheelSmoothing);
-    if (!animation.current) glideToTarget();
-  };
   const onDoubleClick = (event: React.MouseEvent<SVGSVGElement>) => {
     if (!interactionEnabled) return;
-    const { x, y } = svgPoint(event);
+    const { x, y } = svgPoint(event, event.currentTarget);
     if (mapMode === 'globe') {
       targetCamera.current = roundCamera({
         x: 0,
@@ -420,7 +429,6 @@ export function OfflineMap({
         onLostPointerCapture: (event) => {
           if (activePointerId.current === event.pointerId) cancelActiveCameraInteraction();
         },
-        onWheel,
         onDoubleClick,
         onKeyDown,
         onKeyUp,
@@ -430,11 +438,11 @@ export function OfflineMap({
   );
 }
 
-function svgPoint(event: { currentTarget: SVGSVGElement; clientX: number; clientY: number }) {
-  const point = event.currentTarget.createSVGPoint();
+function svgPoint(event: { clientX: number; clientY: number }, svg: SVGSVGElement) {
+  const point = svg.createSVGPoint();
   point.x = event.clientX;
   point.y = event.clientY;
-  const transformed = point.matrixTransform(event.currentTarget.getScreenCTM()?.inverse());
+  const transformed = point.matrixTransform(svg.getScreenCTM()?.inverse());
   return { x: transformed.x, y: transformed.y };
 }
 

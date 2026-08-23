@@ -231,6 +231,7 @@ button:disabled {
   min-width: 0;
   background: #101721;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: 43px minmax(0, 1fr) 45px;
 }
 .canvas-head {

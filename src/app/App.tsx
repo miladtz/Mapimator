@@ -471,11 +471,15 @@ export function App() {
     }));
     const next = remaining[Math.min(index, remaining.length - 1)] ?? null;
     setActiveViewId(next?.id ?? null);
-    if (next) setCamera(next.camera);
-    const nextSequence = compileViews(remaining);
-    const nextIndex = next ? remaining.findIndex((view) => view.id === next.id) : 0;
-    const nextTime = nextSequence.segments[Math.max(0, nextIndex)]?.start ?? 0;
-    setPreviewTime(nextTime);
+    if (next) {
+      setCamera(next.camera);
+      const nextSequence = compileViews(remaining);
+      const nextIndex = remaining.findIndex((view) => view.id === next.id);
+      const nextTime = nextSequence.segments[Math.max(0, nextIndex)]?.start ?? 0;
+      setPreviewTime(nextTime);
+    } else {
+      setPreviewTime(null);
+    }
     setPlaybackState('stopped');
     setOpenViewMenuId(null);
     setNotice(next ? `Deleted View; selected ${next.name}` : 'Deleted last View');
@@ -528,6 +532,22 @@ export function App() {
   };
   const zoomTimeline = (factor: number) =>
     setTimelineZoom((zoom) => Math.max(0.5, Math.min(3, Math.round(zoom * factor * 100) / 100)));
+  useEffect(() => {
+    const scroller = timelineScrollRef.current;
+    if (!scroller) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.ctrlKey) {
+        zoomTimeline(event.deltaY < 0 ? 1.1 : 1 / 1.1);
+        return;
+      }
+      const horizontalDelta = event.shiftKey ? event.deltaY : event.deltaX || event.deltaY;
+      scroller.scrollLeft += horizontalDelta;
+    };
+    scroller.addEventListener('wheel', onWheel, { passive: false });
+    return () => scroller.removeEventListener('wheel', onWheel);
+  }, []);
   const setCanvasLayout = (layoutId: Project['canvas']['layoutId']) => {
     if (layoutId === 'custom') {
       const width = Number(window.prompt('Canvas width', String(project.canvas.width)));
@@ -1018,16 +1038,6 @@ export function App() {
           <div
             ref={timelineScrollRef}
             className="timeline-scroll"
-            onWheel={(event) => {
-              event.stopPropagation();
-              event.preventDefault();
-              if (event.ctrlKey) {
-                zoomTimeline(event.deltaY < 0 ? 1.1 : 1 / 1.1);
-                return;
-              }
-              const horizontalDelta = event.shiftKey ? event.deltaY : event.deltaX || event.deltaY;
-              event.currentTarget.scrollLeft += horizontalDelta;
-            }}
           >
             <div className="timeline-track">
               {project.views.length > 0 && (
@@ -1161,7 +1171,7 @@ export function App() {
           <div>
             <strong>{words.views}</strong>
             <span>
-              {project.views.length} view{project.views.length === 1 ? '' : 's'} Â·{' '}
+              {project.views.length} view{project.views.length === 1 ? '' : 's'} ·{' '}
               {activeView ? activeView.name : 'No View selected'}
             </span>
           </div>
