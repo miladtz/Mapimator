@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
 import { OfflineMap } from '../components/OfflineMap';
 import type { MapMode } from '../components/OfflineMap';
@@ -30,11 +30,7 @@ import {
   exportProjectVideo,
   type ExportProgressState,
 } from '../core/videoExporter';
-import {
-  renderViewThumbnails,
-  VIEW_THUMBNAIL_HEIGHT,
-  VIEW_THUMBNAIL_WIDTH,
-} from '../core/frameRenderer';
+import { renderViewThumbnails, VIEW_THUMBNAIL_HEIGHT, VIEW_THUMBNAIL_WIDTH } from '../core/frameRenderer';
 import {
   ingestProjectImage,
   resolveProjectAssetUrls,
@@ -68,8 +64,10 @@ const geoEffectCycle: { type: GeoEffectType; name: string }[] = [
 ];
 type PlaybackState = 'stopped' | 'playing' | 'paused';
 
-const VIEW_PIXELS_PER_SECOND = 36;
+const HOLD_PIXELS_PER_SECOND = 36;
+const TRANSITION_PIXELS_PER_SECOND = 36;
 const MIN_VIEW_CARD_WIDTH = 160;
+const MIN_TRANSITION_WIDTH = 58;
 const VIEW_CARD_GAP = 9;
 
 export function App() {
@@ -77,6 +75,7 @@ export function App() {
   const [language, setLanguage] = useState<AppLanguage>('en');
   const [notice, setNotice] = useState('Offline map data loaded');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedTransitionIndex, setSelectedTransitionIndex] = useState<number | null>(null);
   const [search, setSearch] = useState('');
   const [camera, setCamera] = useState<CameraState>({ x: 0, y: 0, zoom: 1 });
   const [mapMode, setMapMode] = useState<MapMode>('flat');
@@ -117,6 +116,15 @@ export function App() {
   const previewState = previewTime === null ? null : evaluateProjectAtTime(project, previewTime);
   const previewDisplayTime = previewTime ?? 0;
   const playheadPosition = timelinePosition(sequence, previewDisplayTime, timelineZoom);
+  const selectedTransition =
+    selectedTransitionIndex !== null ? (project.views[selectedTransitionIndex] ?? null) : null;
+  const activeTransitionIndex = useMemo(() => {
+    if (previewTime === null) return null;
+    const index = sequence.segments.findIndex(
+      (segment) => previewTime > segment.holdEnd && previewTime < segment.end,
+    );
+    return index >= 0 ? index : null;
+  }, [previewTime, sequence]);
   const thumbnailSignatures = useMemo(() => {
     const global = {
       mapMode,
@@ -244,6 +252,14 @@ export function App() {
     scrollViewCardIntoView(activeViewId);
   }, [activeViewId, playbackState, project.views.length, scrollViewCardIntoView, timelineZoom]);
   const updateProject = (fn: (p: Project) => Project) => setProject(fn);
+  const selectLayer = useCallback((id: string | null) => {
+    setSelectedId(id);
+    setSelectedTransitionIndex(null);
+  }, []);
+  const selectTransition = useCallback((index: number) => {
+    setSelectedTransitionIndex(index);
+    setSelectedId(null);
+  }, []);
   const applyCameraEdit = useCallback((next: CameraState) => {
     setCamera(next);
     setPreviewTime(null);
@@ -295,7 +311,7 @@ export function App() {
         asset && !p.assets.some((candidate) => candidate.id === asset.id) ? [...p.assets, asset] : p.assets,
       layers: [...p.layers, layer],
     }));
-    setSelectedId(layer.id);
+    selectLayer(layer.id);
     setNotice(`${layer.name} added`);
   };
   const save = async () => {
@@ -388,7 +404,7 @@ export function App() {
       y: selected.y + 18,
     };
     updateProject((p) => ({ ...p, layers: [...p.layers, layer] }));
-    setSelectedId(layer.id);
+    selectLayer(layer.id);
   };
   const remove = () => {
     if (!selected) return;
@@ -396,7 +412,7 @@ export function App() {
       ...p,
       layers: p.layers.filter((l) => l.id !== selected.id),
     }));
-    setSelectedId(null);
+    selectLayer(null);
   };
   const move = (direction: -1 | 1) => {
     if (!selected) return;
@@ -423,6 +439,7 @@ export function App() {
     setPreviewTime(null);
     updateProject((p) => ({ ...p, layers: structuredClone(view.layers) }));
     setSelectedId(null);
+    setSelectedTransitionIndex(null);
     setPlaybackState('stopped');
     setNotice(`${view.name} previewed`);
   };
@@ -446,6 +463,7 @@ export function App() {
     };
     updateProject((p) => ({ ...p, views: [...p.views, view] }));
     setActiveViewId(view.id);
+    setSelectedTransitionIndex(null);
     setPlaybackState('stopped');
     setOpenViewMenuId(null);
   };
@@ -481,6 +499,7 @@ export function App() {
       setPreviewTime(null);
     }
     setPlaybackState('stopped');
+    setSelectedTransitionIndex(null);
     setOpenViewMenuId(null);
     setNotice(next ? `Deleted View; selected ${next.name}` : 'Deleted last View');
   };
@@ -497,6 +516,7 @@ export function App() {
     });
     setActiveViewId(fromId);
     setPreviewTime(0);
+    setSelectedTransitionIndex(null);
     setPlaybackState('stopped');
   };
   const playPreview = () => {
@@ -528,6 +548,15 @@ export function App() {
     updateProject((p) => ({
       ...p,
       views: p.views.map((v) => (v.id === activeViewId ? { ...v, ...patch } : v)),
+    }));
+  };
+  const updateSelectedTransition = (
+    patch: Partial<Pick<View, 'transitionDuration' | 'transitionPreset' | 'transitionType'>>,
+  ) => {
+    if (selectedTransitionIndex === null) return;
+    updateProject((p) => ({
+      ...p,
+      views: p.views.map((view, index) => (index === selectedTransitionIndex ? { ...view, ...patch } : view)),
     }));
   };
   const zoomTimeline = (factor: number) =>
@@ -736,7 +765,7 @@ export function App() {
                   <button
                     key={layer.id}
                     className={`layer-row ${selectedId === layer.id ? 'selected' : ''}`}
-                    onClick={() => setSelectedId(layer.id)}
+                    onClick={() => selectLayer(layer.id)}
                   >
                     <span className="layer-icon">{icons[layer.type]}</span>
                     <span className="layer-row-name">
@@ -867,7 +896,7 @@ export function App() {
               interactionEnabled={playbackState !== 'playing'}
               labelLanguage={project.mapSettings.labelLanguage}
               selectedId={selectedId}
-              onSelect={setSelectedId}
+              onSelect={selectLayer}
               onMoveLayer={(id, x, y) => updateLayer(id, { x, y })}
               safeArea={project.canvas.safeArea}
               showSafeArea={project.canvas.showSafeArea}
@@ -903,7 +932,14 @@ export function App() {
           <div className="panel-heading">
             <span>{words.properties}</span>
           </div>
-          {selected ? (
+          {selectedTransition ? (
+            <TransitionInspector
+              transition={selectedTransition}
+              fromName={selectedTransition.name}
+              toName={project.views[selectedTransitionIndex! + 1]?.name ?? ''}
+              onChange={(patch) => updateSelectedTransition(patch)}
+            />
+          ) : selected ? (
             <Inspector
               layer={selected}
               onChange={(patch) => updateLayer(selected.id, patch)}
@@ -992,35 +1028,6 @@ export function App() {
                   onChange={(e) => updateTransition({ holdDuration: Number(e.target.value) })}
                 />
               </label>
-              <label>
-                Transition
-                <input
-                  aria-label="View transition duration"
-                  type="number"
-                  min="0"
-                  max="30"
-                  step="0.5"
-                  value={activeView.transitionDuration}
-                  onChange={(e) => updateTransition({ transitionDuration: Number(e.target.value) })}
-                />
-              </label>
-              <select
-                aria-label="Transition easing"
-                value={activeView.transitionPreset}
-                onChange={(e) =>
-                  updateTransition({
-                    transitionPreset: e.target.value as View['transitionPreset'],
-                  })
-                }
-              >
-                <option value="smooth">Smooth</option>
-                <option value="linear">Linear</option>
-                <option value="ease-in">Ease In</option>
-                <option value="ease-out">Ease Out</option>
-                <option value="ease-in-out">Ease In-Out</option>
-                <option value="cinematic">Cinematic</option>
-                <option value="bezier">Bezier</option>
-              </select>
               <button className="update-view" onClick={updateView} disabled={playbackState === 'playing'}>
                 Update View
               </button>
@@ -1028,17 +1035,18 @@ export function App() {
           )}
           <span className="timeline-preview-state">
             {previewTime !== null
-              ? `${formatTimelineTime(previewDisplayTime)} / ${formatTimelineTime(sequence.duration)} · View ${previewState!.activeViewIndex + 1} · ${playbackState}`
+              ? `${formatTimelineTime(previewDisplayTime)} / ${formatTimelineTime(sequence.duration)} · ${
+                  activeTransitionIndex !== null
+                    ? `Transition ${activeTransitionIndex + 1} → ${activeTransitionIndex + 2}`
+                    : `View ${previewState!.activeViewIndex + 1}`
+                } · ${playbackState}`
               : activeView
                 ? 'Ready to preview'
                 : 'Create a View to preview'}
           </span>
         </TimelineToolbar>
         <TimelineViewport>
-          <div
-            ref={timelineScrollRef}
-            className="timeline-scroll"
-          >
+          <div ref={timelineScrollRef} className="timeline-scroll">
             <div className="timeline-track">
               {project.views.length > 0 && (
                 <div
@@ -1049,116 +1057,135 @@ export function App() {
                   <span />
                 </div>
               )}
-      {project.views.map((view, index) => {
-        const segment = sequence.segments[index];
-        const duration = viewDurationSeconds(project.views, index);
-        const cardWidth = viewCardWidth(duration, timelineZoom);
-        return (
-          <div
-            key={view.id}
-            data-view-id={view.id}
-            className={`view-card ${activeViewId === view.id ? 'active' : ''}`}
-            style={{ flexBasis: cardWidth }}
-            draggable
-            tabIndex={0}
-            onClick={(event) => {
-              activateView(view.id);
-              if (segment) {
-                const bounds = event.currentTarget.getBoundingClientRect();
-                const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
-                seekPreview(segment.start + ratio * (segment.end - segment.start));
-              }
-            }}
-            onKeyDown={(event) => {
-              if (event.target !== event.currentTarget) return;
-              if (event.key === 'Delete') {
-                event.preventDefault();
-                deleteView(view.id);
-                return;
-              }
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                activateView(view.id);
-                return;
-              }
-              const rightwards = language === 'fa' ? -1 : 1;
-              let targetIndex: number | null = null;
-              if (event.key === 'ArrowRight') targetIndex = index + rightwards;
-              else if (event.key === 'ArrowLeft') targetIndex = index - rightwards;
-              else if (event.key === 'Home') targetIndex = 0;
-              else if (event.key === 'End') targetIndex = project.views.length - 1;
-              if (targetIndex === null || targetIndex < 0 || targetIndex >= project.views.length) return;
-              event.preventDefault();
-              const target = project.views[targetIndex];
-              activateView(target.id);
-              requestAnimationFrame(() => {
-                const element = timelineScrollRef.current?.querySelector<HTMLElement>(
-                  `[data-view-id="${target.id}"]`,
-                );
-                element?.focus({ preventScroll: true });
-                scrollViewCardIntoView(target.id);
-              });
-            }}
-            onDragStart={() => setDraggedViewId(view.id)}
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={(event) => {
-              event.preventDefault();
-              if (draggedViewId) reorderView(draggedViewId, view.id);
-              setDraggedViewId(null);
-            }}
-          >
-            <span className="view-thumb" style={{ background: view.thumbnailColor }}>
-              {viewThumbnails[view.id] && (
-                <img src={viewThumbnails[view.id]} alt={`${view.name} thumbnail`} draggable={false} />
-              )}
-              <span className="view-thumb-index">{String(index + 1).padStart(2, '0')}</span>
-            </span>
-                    <strong>{view.name}</strong>
-                    <button
-                      className="view-menu-trigger"
-                      aria-label={`Open actions for ${view.name}`}
-                      aria-expanded={openViewMenuId === view.id}
+              {project.views.map((view, index) => {
+                const segment = sequence.segments[index];
+                const cardWidth = holdCardWidth(view.holdDuration, timelineZoom);
+                const isLast = index === project.views.length - 1;
+                return (
+                  <Fragment key={view.id}>
+                    <div
+                      data-view-id={view.id}
+                      className={`view-card ${activeViewId === view.id ? 'active' : ''}`}
+                      style={{ flexBasis: cardWidth }}
+                      draggable
+                      tabIndex={0}
                       onClick={(event) => {
-                        event.stopPropagation();
-                        setOpenViewMenuId((openId) => (openId === view.id ? null : view.id));
+                        activateView(view.id);
+                        if (segment) {
+                          const bounds = event.currentTarget.getBoundingClientRect();
+                          const ratio = Math.max(
+                            0,
+                            Math.min(1, (event.clientX - bounds.left) / bounds.width),
+                          );
+                          seekPreview(segment.start + ratio * view.holdDuration);
+                        }
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.target !== event.currentTarget) return;
+                        if (event.key === 'Delete') {
+                          event.preventDefault();
+                          deleteView(view.id);
+                          return;
+                        }
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          activateView(view.id);
+                          return;
+                        }
+                        let targetIndex: number | null = null;
+                        if (event.key === 'ArrowRight') targetIndex = index + 1;
+                        else if (event.key === 'ArrowLeft') targetIndex = index - 1;
+                        else if (event.key === 'Home') targetIndex = 0;
+                        else if (event.key === 'End') targetIndex = project.views.length - 1;
+                        if (targetIndex === null || targetIndex < 0 || targetIndex >= project.views.length)
+                          return;
+                        event.preventDefault();
+                        const target = project.views[targetIndex];
+                        activateView(target.id);
+                        requestAnimationFrame(() => {
+                          const element = timelineScrollRef.current?.querySelector<HTMLElement>(
+                            `[data-view-id="${target.id}"]`,
+                          );
+                          element?.focus({ preventScroll: true });
+                          scrollViewCardIntoView(target.id);
+                        });
+                      }}
+                      onDragStart={() => setDraggedViewId(view.id)}
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        if (draggedViewId) reorderView(draggedViewId, view.id);
+                        setDraggedViewId(null);
                       }}
                     >
-                      ⋯
-                    </button>
-                    <small>
-                      <span className="view-duration-exact">{duration.toFixed(1)}s</span>
-                      {view.holdDuration.toFixed(1)}s hold ·{' '}
-                      {index < project.views.length - 1
-                        ? `${view.transitionDuration.toFixed(1)}s transition`
-                        : 'final View'}
-                    </small>
-                    {openViewMenuId === view.id && (
-                      <div
-                        className="view-card-menu"
-                        role="menu"
-                        onClick={(event) => event.stopPropagation()}
-                      >
-                        <button onClick={() => renameView(view.id)} role="menuitem">
-                          Rename
-                        </button>
-                        <button onClick={() => duplicateView(view.id)} role="menuitem">
-                          Duplicate
-                        </button>
-                        <button className="danger" onClick={() => deleteView(view.id)} role="menuitem">
-                          Delete View
-                        </button>
-                      </div>
-                    )}
-                    {index < project.views.length - 1 && segment && (
-                      <span
-                        className="view-transition-band"
-                        style={{
-                          width: `${(view.transitionDuration / Math.max(duration, Number.EPSILON)) * 100}%`,
+                      <span className="view-thumb" style={{ background: view.thumbnailColor }}>
+                        {viewThumbnails[view.id] && (
+                          <img
+                            src={viewThumbnails[view.id]}
+                            alt={`${view.name} thumbnail`}
+                            draggable={false}
+                          />
+                        )}
+                        <span className="view-thumb-index">{String(index + 1).padStart(2, '0')}</span>
+                      </span>
+                      <strong>{view.name}</strong>
+                      <button
+                        className="view-menu-trigger"
+                        aria-label={`Open actions for ${view.name}`}
+                        aria-expanded={openViewMenuId === view.id}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setOpenViewMenuId((openId) => (openId === view.id ? null : view.id));
                         }}
-                        title={`${view.transitionDuration.toFixed(1)}s transition`}
-                      />
+                      >
+                        ⋯
+                      </button>
+                      <small>
+                        <span className="view-duration-exact">Hold {view.holdDuration.toFixed(1)}s</span>
+                        {isLast && 'final View'}
+                      </small>
+                      {openViewMenuId === view.id && (
+                        <div
+                          className="view-card-menu"
+                          role="menu"
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <button onClick={() => renameView(view.id)} role="menuitem">
+                            Rename
+                          </button>
+                          <button onClick={() => duplicateView(view.id)} role="menuitem">
+                            Duplicate
+                          </button>
+                          <button className="danger" onClick={() => deleteView(view.id)} role="menuitem">
+                            Delete View
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    {!isLast && (
+                      <button
+                        type="button"
+                        className={`view-transition ${selectedTransitionIndex === index ? 'selected' : ''} ${activeTransitionIndex === index ? 'active' : ''}`}
+                        style={{ flexBasis: transitionWidth(view.transitionDuration, timelineZoom) }}
+                        data-transition-index={index}
+                        title={`Transition ${view.name} → ${project.views[index + 1].name}: ${view.transitionDuration.toFixed(1)}s ${transitionTypeLabel(view.transitionType)}`}
+                        onClick={(event) => {
+                          selectTransition(index);
+                          if (segment) {
+                            const bounds = event.currentTarget.getBoundingClientRect();
+                            const ratio = Math.max(
+                              0,
+                              Math.min(1, (event.clientX - bounds.left) / bounds.width),
+                            );
+                            seekPreview(segment.holdEnd + ratio * view.transitionDuration);
+                          }
+                        }}
+                      >
+                        <strong>{view.transitionDuration.toFixed(1)}s</strong>
+                        <small>{transitionTypeLabel(view.transitionType)}</small>
+                      </button>
                     )}
-                  </div>
+                  </Fragment>
                 );
               })}
               <button className="add-view" onClick={addView}>
@@ -1209,30 +1236,46 @@ function TimelineStatusBar({ children }: { children: React.ReactNode }) {
   return <div className="timeline-status-bar">{children}</div>;
 }
 
-function viewDurationSeconds(views: View[], index: number) {
-  const view = views[index];
-  if (!view) return 0;
-  return view.holdDuration + (index < views.length - 1 ? view.transitionDuration : 0);
+function holdCardWidth(holdDuration: number, zoom = 1) {
+  return Math.max(MIN_VIEW_CARD_WIDTH, holdDuration * HOLD_PIXELS_PER_SECOND) * zoom;
 }
 
-function viewCardWidth(duration: number, zoom = 1) {
-  return Math.max(MIN_VIEW_CARD_WIDTH, duration * VIEW_PIXELS_PER_SECOND) * zoom;
+function transitionWidth(duration: number, zoom = 1) {
+  return Math.max(MIN_TRANSITION_WIDTH, duration * TRANSITION_PIXELS_PER_SECOND) * zoom;
 }
 
 function timelinePosition(sequence: ReturnType<typeof compileViews>, time: number, zoom = 1) {
   if (!sequence.segments.length) return 0;
   const clampedTime = Math.max(0, Math.min(sequence.duration, time));
   let position = 0;
-  for (const segment of sequence.segments) {
-    const duration = segment.end - segment.start;
-    const width = viewCardWidth(duration, zoom);
-    if (clampedTime <= segment.end || segment === sequence.segments[sequence.segments.length - 1]) {
-      const progress = duration > 0 ? (clampedTime - segment.start) / duration : 0;
+  for (let index = 0; index < sequence.segments.length; index += 1) {
+    const segment = sequence.segments[index];
+    const cardWidth = holdCardWidth(segment.from.holdDuration, zoom);
+    const isLast = index === sequence.segments.length - 1;
+    if (clampedTime <= segment.holdEnd || isLast) {
+      const progress =
+        segment.from.holdDuration > 0 ? (clampedTime - segment.start) / segment.from.holdDuration : 0;
+      return position + Math.max(0, Math.min(1, progress)) * cardWidth;
+    }
+    position += cardWidth + VIEW_CARD_GAP;
+    const width = transitionWidth(segment.from.transitionDuration, zoom);
+    if (clampedTime <= segment.end) {
+      const progress =
+        segment.from.transitionDuration > 0
+          ? (clampedTime - segment.holdEnd) / segment.from.transitionDuration
+          : 0;
       return position + Math.max(0, Math.min(1, progress)) * width;
     }
     position += width + VIEW_CARD_GAP;
   }
   return position;
+}
+
+function transitionTypeLabel(type: View['transitionType']) {
+  if (type === 'pan') return 'Pan';
+  if (type === 'zoom') return 'Zoom';
+  if (type === 'fly-to') return 'Fly To';
+  return 'Smooth';
 }
 
 function formatTimelineTime(time: number) {
@@ -1251,6 +1294,70 @@ const exportStatusLabel = (status: ExportProgressState['status']) => {
   if (status === 'failed') return 'Export failed';
   return 'Video export';
 };
+
+function TransitionInspector({
+  transition,
+  fromName,
+  toName,
+  onChange,
+}: {
+  transition: View;
+  fromName: string;
+  toName: string;
+  onChange: (
+    patch: Partial<Pick<View, 'transitionDuration' | 'transitionPreset' | 'transitionType'>>,
+  ) => void;
+}) {
+  return (
+    <div className="layer-inspector transition-inspector">
+      <span className="type-chip">◈ Transition</span>
+      <div className="transition-context">
+        <span>{fromName}</span>
+        <span className="transition-context-arrow">→</span>
+        <span>{toName}</span>
+      </div>
+      <label>
+        Type
+        <select
+          value={transition.transitionType ?? 'smooth'}
+          onChange={(e) => onChange({ transitionType: e.target.value as View['transitionType'] })}
+        >
+          <option value="smooth">Smooth</option>
+          <option value="pan">Pan</option>
+          <option value="zoom">Zoom</option>
+          <option value="fly-to">Fly To</option>
+        </select>
+      </label>
+      <label>
+        Duration (s)
+        <input
+          type="number"
+          min="0"
+          max="30"
+          step="0.5"
+          value={transition.transitionDuration}
+          onChange={(e) => onChange({ transitionDuration: Number(e.target.value) })}
+        />
+      </label>
+      <label>
+        Easing
+        <select
+          value={transition.transitionPreset}
+          onChange={(e) => onChange({ transitionPreset: e.target.value as View['transitionPreset'] })}
+        >
+          <option value="smooth">Smooth</option>
+          <option value="linear">Linear</option>
+          <option value="ease-in">Ease In</option>
+          <option value="ease-out">Ease Out</option>
+          <option value="ease-in-out">Ease In-Out</option>
+          <option value="cinematic">Cinematic</option>
+          <option value="bezier">Bezier</option>
+        </select>
+      </label>
+      <p className="transition-hint">Applies to the camera and layer motion leaving {fromName}.</p>
+    </div>
+  );
+}
 
 function Inspector({
   layer,

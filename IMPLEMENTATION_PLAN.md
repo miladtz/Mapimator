@@ -223,3 +223,30 @@ Local development uses the current user's Windows environment and does not requi
 **Compatibility and validation:** existing saved and portable projects remain valid because the camera state and package formats are unchanged. Flat/Globe mode selection, Preview, deterministic frame rendering, H.264 export, project-owned images, multilingual labels, Views, transitions, and effects remain integrated. Human acceptance passed, including the camera lifecycle and stuck-zoom regression. Formatting, frontend build, offline map-data validation, portable compatibility validation, Cargo check and tests, and diff validation pass on the native Windows toolchain.
 
 **Known limitation:** Globe mode remains Beta. The current Globe implementation is a deterministic SVG orthographic renderer and is not intended to provide final GPU or Google-Earth-grade rendering and interaction performance. A future GPU-based Globe renderer remains planned behind the existing unified camera and map-mode architecture.
+
+## Phase 10 Milestone 3 COMPLETE — Professional View Transitions & Preview Experience
+
+**Completed:** a professional transition editing system with editable transition bands between View cards, per-transition Type/Duration/Easing controls in a dedicated inspector panel, and four camera transition modes:
+
+- **Smooth** — default cinematic pan + zoom interpolation.
+- **Pan** — geographic movement emphasized; zoom deliberately lags.
+- **Zoom** — zoom emphasized; mid-flight zoom leads position.
+- **Fly To** — cinematic path between geographically distant Views with a smooth zoom-out cruise, no overshoot, and clamped constraints.
+
+**Deterministic Fly To:** `flyToCamera()` in `src/core/camera.ts` produces a deterministic piecewise arc in log-zoom space with smoothstep joins. The camera eases out from the source, dips to a cruise altitude (clamped at `minZoom`), holds steady, then eases into the destination. Both endpoints are exact (no asymptotic approach), velocity is continuous, and world-to-world transitions hold world zoom without pointless dips.
+
+**Easing and endpoints:** all seven easing presets (Smooth, Linear, Ease In, Ease Out, Ease In-Out, Cinematic, Bezier) are exposed in the inspector. A pre-existing bug where the Bezier preset's bisection never evaluated `t=0`/`t=1` exactly (starting at ~0.012 and ending at ~0.988) was fixed — easing endpoints are now exact. A latent persistence bug was also fixed: `projectPersistence.ts` only accepted `smooth|cinematic|linear` for `transitionPreset`; saving a project using Ease In/Out/In-Out/Bezier would fail to reopen. All seven presets now round-trip.
+
+**Schema extension:** `TransitionType` (`'smooth' | 'pan' | 'zoom' | 'fly-to'`) added to the View model as an optional field, defaulting to `'smooth'` in the evaluator for old projects. Old projects remain fully compatible — saving and reopening without migration produces identical behavior.
+
+**Timeline:** View cards are hold-sized (width proportional to hold duration) with deterministic thumbnails, and transition segments are separately sized by their own duration and labeled with type + duration. Clicking a transition segment selects it (showing the inspector) and seeks proportionally into the transition. During playback, the active transition band highlights and the status text reads "Transition N → N+1"; during holds it reads "View N". The timeline strip is forced `direction: ltr` in RTL mode to keep the playhead, cards, and arrow-key navigation aligned.
+
+**Shared evaluator:** all transition behavior flows through `interpolateCamera()` → `evaluateProjectAtTime()` → Preview / Export. No separate cinematic logic exists in the editor. Preview and Export must match exactly by construction.
+
+**Persistence:** `transitionType` validates against the four allowed types and rejects unknown values. `transitionPreset` validates against all seven easing presets. Both fields are optional and backward-compatible for old projects.
+
+**Tests:** `scripts/verify-transitions.mjs` covers: 7 presets × 4 types exact endpoints; monotonic non-decreasing easing; pan/zoom lead-lag assertions; fly-to dip below both endpoints, finite zoom, constrained bounds, world-to-world stability; deterministic evaluator hold-state exactness at sequence start/end; fly-to zoom-out recognized by evaluator mid-transition; legacy project default-to-smooth; persistence round-trip for all presets/types; unknown-type rejection.
+
+**Human acceptance passed:** Smooth/Pan/Zoom/Fly To transitions; duration editing; all easing presets; pause/resume mid-transition; stop; timeline seeking in holds and transitions; Save → close/reopen; transitionType/easing/duration persistence; RTL timeline; short MP4 export; Preview vs Export visual consistency.
+
+**Known limitations:** Globe remains Beta/deferred. Advanced custom curve editing (manual Bezier handles) is not part of this milestone. Transition curve visualization (easing graph preview in the inspector) is not yet implemented. Save/Open/Export in the plain-browser dev server fail on Tauri `invoke` (pre-existing; native WebView2 required).

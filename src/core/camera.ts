@@ -1,5 +1,5 @@
 import { findCountry } from '../data/worldMap';
-import type { CameraState, CanvasLayout, Layer, View } from './project';
+import type { CameraState, CanvasLayout, Layer, TransitionType, View } from './project';
 
 export const CAMERA_VIEWPORT = { width: 1000, height: 560 };
 
@@ -16,6 +16,32 @@ export const CAMERA_SETTINGS = {
 };
 
 export type CameraTransitionPreset = View['transitionPreset'];
+export type CameraTransitionType = TransitionType;
+
+/**
+ * How strongly the zoom curve lags or leads the position curve.
+ * Pan keeps translation dominant (zoom arrives later); Zoom lets the
+ * zoom arrive first while the geographic center drifts smoothly.
+ */
+const PAN_ZOOM_LAG = 1.35;
+const ZOOM_ZOOM_LEAD = 0.75;
+
+/**
+ * Fly To: lift out of the source camera, travel at a comfortable
+ * altitude, then settle into the destination. The path is a deterministic
+ * piecewise arc in log-zoom space with smoothstep joins, so both ends are
+ * exact, the camera never overshoots, and there are no velocity jumps.
+ */
+const FLY_OUT_END = 0.3;
+const FLY_IN_START = 0.7;
+const FLY_CRUISE_FACTOR = 0.62;
+
+const smoothstep01 = (t: number) => {
+  const n = clamp(t, 0, 1);
+  return n * n * (3 - 2 * n);
+};
+
+const expLerp = (a: number, b: number, t: number) => a * Math.pow(b / a, t);
 
 export const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
@@ -73,17 +99,47 @@ export const easeCameraProgress = (t: number, preset: CameraTransitionPreset) =>
 
 export const interpolateNumber = (a: number, b: number, t: number) => a + (b - a) * t;
 
-export const interpolateCamera = (
+export const flyToCamera = (
   from: CameraState,
   to: CameraState,
   progress: number,
   preset: CameraTransitionPreset,
 ): CameraState => {
-  const t = easeCameraProgress(progress, preset);
-  const zoom = from.zoom * Math.pow(to.zoom / from.zoom, t);
+  const t = clamp(progress, 0, 1);
+  const position = easeCameraProgress(t, preset);
+  const cruise = clamp(
+    Math.min(from.zoom, to.zoom) * FLY_CRUISE_FACTOR,
+    CAMERA_SETTINGS.minZoom,
+    CAMERA_SETTINGS.maxZoom,
+  );
+  let zoom: number;
+  if (t <= FLY_OUT_END) zoom = expLerp(from.zoom, cruise, smoothstep01(t / FLY_OUT_END));
+  else if (t <= FLY_IN_START) zoom = cruise;
+  else zoom = expLerp(cruise, to.zoom, smoothstep01((t - FLY_IN_START) / (1 - FLY_IN_START)));
   return roundCamera({
-    x: interpolateNumber(from.x, to.x, t),
-    y: interpolateNumber(from.y, to.y, t),
+    x: interpolateNumber(from.x, to.x, position),
+    y: interpolateNumber(from.y, to.y, position),
+    zoom,
+  });
+};
+
+export const interpolateCamera = (
+  from: CameraState,
+  to: CameraState,
+  progress: number,
+  preset: CameraTransitionPreset,
+  type: CameraTransitionType = 'smooth',
+): CameraState => {
+  const t = clamp(progress, 0, 1);
+  if (type === 'fly-to') return flyToCamera(from, to, t, preset);
+  const position = easeCameraProgress(t, preset);
+  let zoomProgress = position;
+  if (type === 'pan') zoomProgress = Math.pow(position, PAN_ZOOM_LAG);
+  else if (type === 'zoom') zoomProgress = Math.pow(position, ZOOM_ZOOM_LEAD);
+  const zoom = from.zoom * Math.pow(to.zoom / from.zoom, zoomProgress);
+  return roundCamera({
+    x: interpolateNumber(from.x, to.x, position),
+    y: interpolateNumber(from.y, to.y, position),
     zoom,
   });
 };
@@ -189,6 +245,8 @@ const pathBounds = (path: string): Bounds | null => {
 };
 
 const cubicBezierY = (t: number, x1: number, y1: number, x2: number, y2: number) => {
+  if (t <= 0) return 0;
+  if (t >= 1) return 1;
   const sample = (a: number, b: number, u: number) =>
     3 * a * (1 - u) * (1 - u) * u + 3 * b * (1 - u) * u * u + u * u * u;
   let low = 0;

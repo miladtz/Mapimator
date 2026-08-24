@@ -1,5 +1,6 @@
 import type { CameraState, Layer, Project, View } from './project';
 import { easeCameraProgress, interpolateCamera, interpolateNumber } from './camera';
+import type { CameraTransitionType } from './camera';
 
 export type LayerDiff = 'ENTER' | 'EXIT' | 'UPDATE' | 'HOLD' | 'NONE';
 export interface AnimationSegment {
@@ -83,8 +84,15 @@ export const evaluateProjectAtTime = (project: Project, time: number): RenderedP
   const before = new Map(segment.from.layers.map((l) => [l.id, l]));
   const after = new Map(segment.to.layers.map((l) => [l.id, l]));
   const ids = new Set([...before.keys(), ...after.keys()]);
+  const transitionType: CameraTransitionType = segment.from.transitionType ?? 'smooth';
   return {
-    camera: interpolateCamera(segment.from.camera, segment.to.camera, raw, segment.from.transitionPreset),
+    camera: interpolateCamera(
+      segment.from.camera,
+      segment.to.camera,
+      raw,
+      segment.from.transitionPreset,
+      transitionType,
+    ),
     layers: [...ids]
       .map((id) => blendLayer(before.get(id), after.get(id), t))
       .filter((l): l is Layer => l !== null),

@@ -15,6 +15,9 @@ export type GeoEffectType =
   | 'disputed-border'
   | 'influence-zone';
 export type TextLanguage = 'auto' | 'persian' | 'english';
+export type TransitionType = 'smooth' | 'pan' | 'zoom' | 'fly-to';
+export type TransitionPreset =
+  'smooth' | 'cinematic' | 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'bezier';
 export type TextDirection = 'auto' | 'rtl' | 'ltr';
 export type NumberStyle = 'persian' | 'english';
 export type ProjectAssetKind = 'image';
@@ -106,7 +109,9 @@ export interface View {
   name: string;
   holdDuration: number;
   transitionDuration: number;
-  transitionPreset: 'smooth' | 'cinematic' | 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'bezier';
+  transitionPreset: TransitionPreset;
+  /** Outgoing transition camera motion. Older projects omit this and default to 'smooth'. */
+  transitionType?: TransitionType;
   camera: CameraState;
   layers: Layer[];
   thumbnailColor: string;
@@ -302,6 +307,7 @@ export const createView = (name: string, layers: Layer[], camera: CameraState): 
   holdDuration: 3,
   transitionDuration: 2.5,
   transitionPreset: 'smooth',
+  transitionType: 'smooth',
   camera: { ...camera },
   layers: structuredClone(layers),
   thumbnailColor: '#28415a',

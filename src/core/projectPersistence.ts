@@ -85,8 +85,23 @@ const validateView = (value: unknown, index: number): View => {
     value.transitionDuration < 0
   )
     throw new Error(`${path} has invalid timing.`);
-  if (!oneOf(value.transitionPreset, ['smooth', 'cinematic', 'linear'] as const))
+  if (
+    !oneOf(value.transitionPreset, [
+      'smooth',
+      'cinematic',
+      'linear',
+      'ease-in',
+      'ease-out',
+      'ease-in-out',
+      'bezier',
+    ] as const)
+  )
     throw new Error(`${path}.transitionPreset is unsupported.`);
+  if (
+    value.transitionType !== undefined &&
+    !oneOf(value.transitionType, ['smooth', 'pan', 'zoom', 'fly-to'] as const)
+  )
+    throw new Error(`${path}.transitionType is unsupported.`);
   validateCamera(value.camera, `${path}.camera`);
   if (!Array.isArray(value.layers)) throw new Error(`${path}.layers must be an array.`);
   value.layers.forEach((layer, layerIndex) => validateLayer(layer, `${path}.layers[${layerIndex}]`));

@@ -87,6 +87,7 @@
   min-width: 0;
   scrollbar-color: #576a7d #172230;
   scrollbar-width: thin;
+  direction: ltr;
 }
 .timeline-track {
   position: relative;
@@ -96,6 +97,7 @@
   width: max-content;
   min-width: 100%;
   padding-top: 8px;
+  direction: ltr;
 }
 .timeline-playhead {
   position: absolute;
@@ -251,15 +253,95 @@
 .view-card-menu button.danger {
   color: #ff8a79;
 }
-.view-transition-band {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  height: 5px;
-  max-width: 100%;
-  background: linear-gradient(90deg, #e0a34c, #c07f2c);
-  border-radius: 0 0 2px 2px;
-  pointer-events: none;
+.view-transition {
+  align-self: stretch;
+  margin: 6px 0;
+  display: grid;
+  place-content: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 0 6px;
+  border: 1px dashed #3d5267;
+  border-radius: 4px;
+  background: #111b27;
+  color: #7e93a7;
+  cursor: pointer;
+  text-align: center;
+}
+.view-transition:hover {
+  background: #1a2836;
+  border-color: #5a7188;
+}
+.view-transition strong {
+  font-size: 9px;
+  color: #a9bac9;
+  white-space: nowrap;
+}
+.view-transition small {
+  font-size: 8px;
+  color: #6f8498;
+  white-space: nowrap;
+}
+.view-transition.selected {
+  border-style: solid;
+  border-color: #e0a34c;
+  background: #202b1e;
+  box-shadow: inset 0 0 0 1px #e0a34c;
+}
+.view-transition.selected strong,
+.view-transition.selected small {
+  color: #ffd9a0;
+}
+.view-transition.active {
+  border-style: solid;
+  border-color: #ff5f49;
+  background: #3a241f;
+}
+.view-transition.active strong,
+.view-transition.active small {
+  color: #ffb3a6;
+}
+.transition-inspector select {
+  width: 100%;
+  margin-top: 5px;
+  padding: 7px;
+  background: #0f1721;
+  color: #e3ebf2;
+  border: 1px solid #33475a;
+  border-radius: 2px;
+  font-size: 11px;
+}
+.transition-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 16px;
+  padding: 8px 10px;
+  background: #101a26;
+  border: 1px solid #2b3c4e;
+  border-radius: 3px;
+  color: #c9d7e2;
+  font-size: 10px;
+}
+.transition-context > span:first-child,
+.transition-context > span:last-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.transition-context > span:last-child {
+  text-align: right;
+}
+.transition-context-arrow {
+  flex: 0 0 auto;
+  color: #e0a34c;
+}
+.transition-hint {
+  font-size: 9px;
+  line-height: 1.5;
+  color: #8196a9;
 }
 .add-view {
   padding: 10px 13px;
