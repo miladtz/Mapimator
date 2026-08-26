@@ -48,7 +48,7 @@ export function selectMapLabels(camera: CameraState): SelectedMapLabels {
   );
   const countries = resolveCollisions(
     COUNTRIES.map((country) => {
-      const capacity = countryCapacity(country.path);
+      const capacity = COUNTRY_CAPACITIES.get(country.id) ?? { width: 0, height: 0 };
       const textWidth = Math.max(country.name.length, country.nameFa?.length ?? 0) * 4.8;
       const fitScale = clamp(capacity.width / Math.max(1, textWidth), 0, 1);
       const zoomScale = clamp(0.68 + Math.log2(Math.max(1, zoom)) * 0.12, 0.68, 0.98);
@@ -173,6 +173,8 @@ function countryCapacity(path: string) {
     height: Math.max(0, Math.max(...ys) - Math.min(...ys)) * 0.56,
   };
 }
+
+const COUNTRY_CAPACITIES = new Map(COUNTRIES.map((country) => [country.id, countryCapacity(country.path)]));
 
 function fade(zoom: number, start: number, width: number) {
   return clamp((zoom - start) / width, 0, 1);

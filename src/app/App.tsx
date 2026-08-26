@@ -1,9 +1,18 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
+import { invoke } from '@tauri-apps/api/core';
 import { OfflineMap } from '../components/OfflineMap';
 import type { MapMode } from '../components/OfflineMap';
-import { browserFileSystemAdapter } from '../core/adapters';
 import {
   getPinStyles,
   savePinStyle,
@@ -45,6 +54,14 @@ import {
 import { t } from '../core/i18n';
 import { compileTimeline, evaluateProjectAtTime } from '../core/viewCompiler';
 import { resolveEditingScene } from '../core/editingScene';
+import { PreviewClock } from '../core/previewClock';
+import {
+  normalizeDialogPath,
+  parseProjectFile,
+  PROJECT_FILE_EXTENSION,
+  serializeCanonicalProject,
+} from '../core/projectFile';
+import { formatExportDuration } from '../core/exportProgress';
 import { canEditMembership } from '../core/editorPreviewModes';
 import { validateTransitionLayer, validateViewLayer, type SegmentWarning } from '../core/segmentValidation';
 import { autoReframe } from '../core/layout';
@@ -184,7 +201,6 @@ export function App() {
   const [search, setSearch] = useState('');
   const [camera, setCamera] = useState<CameraState>({ x: 0, y: 0, zoom: 1 });
   const [mapMode, setMapMode] = useState<MapMode>('flat');
-  const [previewTime, setPreviewTime] = useState<number | null>(null);
   const [playbackState, setPlaybackState] = useState<PlaybackState>('stopped');
   const [layersPanelOpen, setLayersPanelOpen] = useState(true);
   const [placing, setPlacing] = useState<LayerType | null>(null);
@@ -203,9 +219,10 @@ export function App() {
   });
   const [exportPresetId, setExportPresetId] = useState<ExportPresetId>(DEFAULT_EXPORT_PRESET_ID);
   const [portableBusy, setPortableBusy] = useState(false);
+  const [projectFilePath, setProjectFilePath] = useState<string | null>(null);
   const [assetUrls, setAssetUrls] = useState<Record<string, string>>({});
   const exportAbort = useRef<AbortController | null>(null);
-  const previewTimeRef = useRef(0);
+  const previewClock = useMemo(() => new PreviewClock(), []);
   const timelineScrollRef = useRef<HTMLDivElement | null>(null);
   const globalMembershipRef = useRef<HTMLInputElement | null>(null);
   const projectRef = useRef(project);
@@ -229,26 +246,13 @@ export function App() {
   );
   const sequence = useMemo(() => compileTimeline(project), [project]);
   const selectedTimelineEntity = timelineSelection;
-  const previewState =
-    playbackState === 'stopped' || previewTime === null ? null : evaluateProjectAtTime(project, previewTime);
   const editingScene = useMemo(
     () => resolveEditingScene(project, selectedTimelineEntity, camera),
     [project, selectedTimelineEntity?.kind, selectedTimelineEntity?.id, camera],
   );
-  const previewDisplayTime = previewTime ?? 0;
-  const playheadPosition = timelinePosition(project, previewDisplayTime, timelineZoom);
   const timelineLayout = useMemo(() => buildTimelineLayout(project, timelineZoom), [project, timelineZoom]);
   const selectedTransition =
     selectedTransitionIndex !== null ? (project.transitions[selectedTransitionIndex] ?? null) : null;
-  const activeTransitionIndex = useMemo(() => {
-    if (previewTime === null) return null;
-    const segment = sequence.segments.find(
-      (segment) => segment.kind === 'transition' && previewTime >= segment.start && previewTime < segment.end,
-    );
-    if (!segment || segment.kind !== 'transition') return null;
-    const index = project.transitions.findIndex((transition) => transition.id === segment.id);
-    return index >= 0 ? index : null;
-  }, [previewTime, sequence, project.transitions]);
   const thumbnailSignatures = useMemo(() => {
     const global = {
       mapMode,
@@ -286,47 +290,17 @@ export function App() {
       active = false;
     };
   }, [project.assets]);
-  useEffect(() => {
-    previewTimeRef.current = previewDisplayTime;
-  }, [previewDisplayTime]);
   /** Authoritative Stop semantics shared by the transport and natural completion. */
   const stopPlayback = useCallback(() => {
-    previewTimeRef.current = 0;
-    setPreviewTime(null);
+    previewClock.stop();
     setPlaybackState('stopped');
     setTimelineSelection(null);
     setTransitionPopoverId(null);
-  }, []);
-  useEffect(() => {
-    if (playbackState !== 'playing') return;
-    const startedAt = performance.now() - previewTimeRef.current * 1000;
-    let frame = 0;
-    const tick = () => {
-      const next = (performance.now() - startedAt) / 1000;
-      if (next >= sequence.duration) {
-        stopPlayback();
-        return;
-      }
-      previewTimeRef.current = next;
-      setPreviewTime(next);
-      frame = requestAnimationFrame(tick);
-    };
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [playbackState, sequence.duration, stopPlayback]);
+  }, [previewClock]);
+  useEffect(() => () => previewClock.destroy(), [previewClock]);
   // Preview evaluation must not change the editor's selected segment. In
   // particular, seeking into a Transition must not replace its Layers-panel
   // context with the adjacent View; View/Transition selection is user-owned.
-  useEffect(() => {
-    const scroller = timelineScrollRef.current;
-    if (!scroller || playbackState !== 'playing') return;
-    const edgePadding = 56;
-    const left = playheadPosition;
-    if (left < scroller.scrollLeft + edgePadding)
-      scroller.scrollTo({ left: Math.max(0, left - edgePadding), behavior: 'smooth' });
-    else if (left > scroller.scrollLeft + scroller.clientWidth - edgePadding)
-      scroller.scrollTo({ left: left - scroller.clientWidth + edgePadding, behavior: 'smooth' });
-  }, [playbackState, playheadPosition]);
   useEffect(() => {
     const onKey = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -409,7 +383,7 @@ export function App() {
   }, []);
   const applyCameraEdit = useCallback((next: CameraState) => {
     setCamera(next);
-    setPreviewTime(null);
+    previewClock.stop();
     setPlaybackState('stopped');
   }, []);
   const handleCameraChange = useCallback(
@@ -633,42 +607,76 @@ export function App() {
     setNotice(`${layer.name} added`);
   };
   const save = async () => {
+    if (playbackState !== 'stopped') {
+      setNotice('Stop Preview before saving the project.');
+      return;
+    }
     try {
       const next = {
         ...project,
         metadata: { ...project.metadata, updatedAt: new Date().toISOString() },
       };
       await validateProjectAssetStorage(next);
-      await browserFileSystemAdapter.saveProject(next);
-      setProject(next);
+      const serialized = serializeCanonicalProject(next);
+      const selectedPath =
+        projectFilePath ??
+        normalizeDialogPath(
+          await saveFile({
+            title: 'Save MapMotion Project',
+            defaultPath: `${safeProjectName(project.metadata.name)}.${PROJECT_FILE_EXTENSION}`,
+            filters: [{ name: 'MapMotion project', extensions: [PROJECT_FILE_EXTENSION] }],
+          }),
+        );
+      if (!selectedPath) return;
+      const result = await invoke<{ path: string; bytesWritten: number }>('write_project_file', {
+        outputPath: selectedPath,
+        projectJson: serialized.json,
+      });
+      setProject(serialized.project);
+      setProjectFilePath(result.path);
       setNotice(words.saved);
     } catch (error) {
-      setNotice(`Save failed: ${String(error)}`);
+      if (import.meta.env.DEV) console.error('Project Save failed', { projectFilePath, error });
+      setNotice(`Save failed · ${conciseRuntimeError(error, 'Unable to write the project file.')}`);
     }
   };
   const open = async () => {
+    if (playbackState !== 'stopped') {
+      setNotice('Stop Preview before opening a project.');
+      return;
+    }
     try {
-      const saved = await browserFileSystemAdapter.openProject();
-      if (saved) {
-        await validateProjectAssetStorage(saved);
-        setProject(saved);
-        setSelectedId(null);
-        setTimelineSelection(null);
-        setTransitionPopoverId(null);
-        setCamera(saved.views[0]?.camera ?? { x: 0, y: 0, zoom: 1 });
-        setPreviewTime(null);
-        setPlaybackState('stopped');
-        setNotice(words.opened);
-      } else setNotice('No saved local project yet');
+      const selectedPath = normalizeDialogPath(
+        await openFile({
+          title: 'Open MapMotion Project',
+          multiple: false,
+          directory: false,
+          filters: [{ name: 'MapMotion project', extensions: [PROJECT_FILE_EXTENSION] }],
+        }),
+      );
+      if (!selectedPath) return;
+      const json = await invoke<string>('read_project_file', { inputPath: selectedPath });
+      const saved = parseProjectFile(json);
+      await validateProjectAssetStorage(saved);
+      setProject(saved);
+      setProjectFilePath(selectedPath);
+      setSelectedId(null);
+      setTimelineSelection(null);
+      setTransitionPopoverId(null);
+      setCamera(saved.views[0]?.camera ?? { x: 0, y: 0, zoom: 1 });
+      previewClock.stop();
+      setPlaybackState('stopped');
+      setNotice(words.opened);
     } catch (error) {
-      setNotice(`Open failed: ${String(error)}`);
+      if (import.meta.env.DEV) console.error('Project Open failed', { error });
+      setNotice(`Open failed · ${conciseRuntimeError(error, 'Unable to read the project file.')}`);
     }
   };
   const exportProjectPackage = async () => {
     if (portableBusy) return;
     setPortableBusy(true);
     try {
-      const safeName = project.metadata.name.replace(/[<>:"/\\|?*]+/g, '-').trim() || 'MapMotion project';
+      const safeName = safeProjectName(project.metadata.name);
       const outputPath = await saveFile({
         title: 'Export Portable MapMotion Project',
         defaultPath: `${safeName}.mapmotionpack`,
@@ -696,11 +704,12 @@ export function App() {
       if (typeof inputPath !== 'string') return;
       const { project: imported, compatibility } = await importPortableProjectDetailed(inputPath);
       setProject(imported);
+      setProjectFilePath(null);
       setCamera(imported.views[0]?.camera ?? { x: 0, y: 0, zoom: 1 });
       setSelectedId(null);
       setTimelineSelection(null);
       setTransitionPopoverId(null);
-      setPreviewTime(null);
+      previewClock.stop();
       setPlaybackState('stopped');
       const warningCount = compatibility.diagnostics.filter(
         (diagnostic) => diagnostic.severity === 'warning',
@@ -773,7 +782,7 @@ export function App() {
       };
     });
     setTimelineSelection({ kind: 'view', id: view.id });
-    setPreviewTime(null);
+    previewClock.stop();
     setPlaybackState('stopped');
     setTransitionPopoverId(null);
     setNotice(`${view.name} captured`);
@@ -783,7 +792,7 @@ export function App() {
     if (!view) return;
     setTimelineSelection({ kind: 'view', id });
     setCamera(view.camera);
-    setPreviewTime(null);
+    previewClock.stop();
     // Layer visual properties are project-global, so activating a View does
     // NOT change the editor canvas layers — only camera and the segment
     // context (membership checkboxes / animation editor) change.
@@ -831,7 +840,7 @@ export function App() {
       };
     });
     setTimelineSelection({ kind: 'view', id: view.id });
-    setPreviewTime(null);
+    previewClock.stop();
     setTransitionPopoverId(null);
     setPlaybackState('stopped');
     setOpenViewMenuId(null);
@@ -873,7 +882,7 @@ export function App() {
     if (next) {
       setCamera(next.camera);
     }
-    setPreviewTime(null);
+    previewClock.stop();
     setPlaybackState('stopped');
     setTransitionPopoverId(null);
     setOpenViewMenuId(null);
@@ -899,28 +908,30 @@ export function App() {
       return { ...p, views, transitions };
     });
     setTimelineSelection({ kind: 'view', id: fromId });
-    setPreviewTime(null);
+    previewClock.stop();
     setTransitionPopoverId(null);
     setPlaybackState('stopped');
   };
   const playPreview = () => {
     if (!project.views.length) return;
-    const atEnd = previewTimeRef.current >= sequence.duration - 1 / project.canvas.fps;
-    const nextTime =
-      previewTime === null || atEnd || playbackState === 'stopped' ? 0 : previewTimeRef.current;
-    previewTimeRef.current = nextTime;
-    setPreviewTime(nextTime);
+    const currentTime = previewClock.getSnapshot();
+    const atEnd = currentTime >= sequence.duration - 1 / project.canvas.fps;
+    if (atEnd || playbackState === 'stopped') previewClock.seek(0);
+    previewClock.play(sequence.duration, stopPlayback);
     setPlaybackState('playing');
   };
   const pausePreview = () => {
-    if (playbackState === 'playing') setPlaybackState('paused');
+    if (playbackState === 'playing') {
+      previewClock.pause();
+      setPlaybackState('paused');
+    }
   };
   const toggleProjectMode = (enabled: boolean) => {
     if (playbackState !== 'stopped') return;
     if (enabled) {
       setTimelineSelection(null);
       setTransitionPopoverId(null);
-      setPreviewTime(null);
+      previewClock.stop();
       setNotice('Map Mode â€” editing Project Layers');
       return;
     }
@@ -933,13 +944,12 @@ export function App() {
     setTimelineSelection({ kind: 'view', id: first.id });
     setTransitionPopoverId(null);
     setCamera(first.camera);
-    setPreviewTime(null);
+    previewClock.stop();
     setNotice(`${first.name} selected`);
   };
   const seekPreview = (time: number) => {
     const next = Math.max(0, Math.min(sequence.duration, time));
-    previewTimeRef.current = next;
-    setPreviewTime(next);
+    previewClock.seek(next);
     if (playbackState === 'stopped') setPlaybackState('paused');
   };
   const scrubTimeline = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -1043,7 +1053,7 @@ export function App() {
     try {
       const outputPath = await saveFile({
         title: 'Export MapMotion Video',
-        defaultPath: `${project.metadata.name}.mp4`,
+        defaultPath: `${safeProjectName(project.metadata.name)}.mp4`,
         filters: [{ name: 'MP4 video', extensions: ['mp4'] }],
       });
       if (typeof outputPath !== 'string') {
@@ -1056,11 +1066,68 @@ export function App() {
         signal: controller.signal,
         onProgress: setExportState,
       });
+      if (import.meta.env.DEV) {
+        console.info('Video Export completed', {
+          outputPath,
+          requestedEncoder: result.requestedEncoder,
+          actualEncoder: result.encoder,
+          fallbackUsed: result.fallbackUsed,
+          fallbackReason: result.fallbackReason,
+          frames: result.totalFrames,
+          durationSeconds: result.duration,
+          totalMs: result.elapsedMs,
+          effectiveFps: result.totalFrames / (result.elapsedMs / 1000),
+          realTimeFactor: result.duration / (result.elapsedMs / 1000),
+          prepareMs: result.prepareMs,
+          renderMs: result.renderMs,
+          evaluatorMs: result.evaluateMs,
+          evaluatorMsPerFrame: result.evaluateMs / result.totalFrames,
+          sceneMs: result.sceneMs,
+          sceneMsPerFrame: result.sceneMs / result.totalFrames,
+          serializeMs: result.serializeMs,
+          serializeMsPerFrame: result.serializeMs / result.totalFrames,
+          blobMs: result.blobMs,
+          blobMsPerFrame: result.blobMs / result.totalFrames,
+          imageDecodeMs: result.imageDecodeMs,
+          imageDecodeMsPerFrame: result.imageDecodeMs / result.totalFrames,
+          canvasDrawMs: result.canvasDrawMs,
+          canvasDrawMsPerFrame: result.canvasDrawMs / result.totalFrames,
+          rgbaExtractionMs: result.rgbaMs,
+          rgbaExtractionMsPerFrame: result.rgbaMs / result.totalFrames,
+          ipcAndStdinWriteMs: result.ipcWriteMs,
+          ipcAndStdinWriteMsPerFrame: result.ipcWriteMs / result.totalFrames,
+          finalizationMs: result.finalizationMs,
+          outputBytes: result.native.outputBytes,
+          ffmpegExitCode: result.native.exitCode,
+        });
+        const stages = {
+          prepare: result.prepareMs,
+          evaluator: result.evaluateMs,
+          reactScene: result.sceneMs,
+          svgSerialize: result.serializeMs,
+          blob: result.blobMs,
+          imageDecode: result.imageDecodeMs,
+          canvasDraw: result.canvasDrawMs,
+          rgbaReadback: result.rgbaMs,
+          ipcAndFfmpegWrite: result.ipcWriteMs,
+          finalization: result.finalizationMs,
+        };
+        console.table(
+          Object.entries(stages).map(([stage, totalMs]) => ({
+            stage,
+            totalMs: Number(totalMs.toFixed(2)),
+            msPerFrame: Number((totalMs / result.totalFrames).toFixed(3)),
+            percentOfWallTime: Number(((totalMs / result.elapsedMs) * 100).toFixed(1)),
+          })),
+        );
+      }
       setExportState((state) => ({
         ...state,
         status: 'completed',
         percentage: 100,
-        message: `Saved ${result.totalFrames} frames with ${result.encoderLabel}.`,
+        elapsedMs: result.elapsedMs,
+        etaSeconds: undefined,
+        message: `Saved ${result.totalFrames} frames with ${result.encoderLabel} in ${formatExportDuration(result.elapsedMs)}.`,
       }));
       setNotice('Project video export completed');
     } catch (error) {
@@ -1068,8 +1135,12 @@ export function App() {
       setExportState((state) => ({
         ...state,
         status: cancelled ? 'cancelled' : 'failed',
-        message: cancelled ? 'Export cancelled. Partial output removed.' : String(error),
+        etaSeconds: undefined,
+        message: cancelled
+          ? 'Export cancelled. Partial output removed.'
+          : conciseRuntimeError(error, 'FFmpeg exited unexpectedly.'),
       }));
+      if (!cancelled && import.meta.env.DEV) console.error('Video Export failed', error);
       setNotice(cancelled ? 'Video export cancelled' : 'Video export failed');
     } finally {
       exportAbort.current = null;
@@ -1097,23 +1168,44 @@ export function App() {
             className="quiet"
             onClick={() => {
               setProject(createProject('Untitled documentary'));
+              setProjectFilePath(null);
               setSelectedId(null);
               stopPlayback();
             }}
           >
             {words.new}
           </button>
-          <button className="quiet" onClick={open}>
-            {words.open}
+          <button
+            className="quiet"
+            onClick={open}
+            disabled={playbackState !== 'stopped'}
+            title="Open a saved MapMotion working project."
+          >
+            Open Project
           </button>
-          <button className="quiet" onClick={importProjectPackage} disabled={portableBusy || exportIsActive}>
-            Import Project
+          <button
+            className="quiet"
+            onClick={importProjectPackage}
+            disabled={portableBusy || exportIsActive}
+            title="Open a portable MapMotion package containing a project and its assets."
+          >
+            Import Package
           </button>
-          <button className="quiet" onClick={exportProjectPackage} disabled={portableBusy || exportIsActive}>
-            Export Project
+          <button
+            className="quiet"
+            onClick={exportProjectPackage}
+            disabled={portableBusy || exportIsActive}
+            title="Create a portable package containing the project and its assets for transfer or sharing."
+          >
+            Export Package
           </button>
-          <button className="primary" onClick={save}>
-            {words.save}
+          <button
+            className="primary"
+            onClick={save}
+            disabled={playbackState !== 'stopped'}
+            title={playbackState === 'stopped' ? 'Save Project' : 'Stop Preview before saving'}
+          >
+            Save Project
           </button>
           <label className="export-preset">
             <span>H.264 MP4 · Auto encoder</span>
@@ -1358,34 +1450,34 @@ export function App() {
             </div>
           </div>
           <div className={`map-frame ${placing ? 'placing' : ''}`}>
-            <OfflineMap
-              style={style}
-              mapMode={mapMode}
-              layers={
-                previewState?.layers ??
-                (allEyesHidden
+            <PreviewMap
+              clock={previewClock}
+              playbackState={playbackState}
+              project={project}
+              editingLayers={
+                allEyesHidden
                   ? []
-                  : editingScene.layers.filter((l) => !eyeHidden[l.id]).map((l) => ({ ...l, visible: true })))
+                  : editingScene.layers.filter((l) => !eyeHidden[l.id]).map((l) => ({ ...l, visible: true }))
               }
-              camera={
-                previewState?.camera ??
-                (selectedTimelineEntity?.kind === 'view' ? camera : editingScene.camera)
-              }
-              onCameraChange={handleCameraChange}
-              interactionEnabled={playbackState === 'stopped'}
-              labelLanguage={project.mapSettings.labelLanguage}
-              selectedId={selectedId}
-              onSelect={selectLayer}
-              onMoveLayer={(id, x, y) => updateLayer(id, { x, y })}
-              onDeleteSelected={projectMode ? remove : undefined}
-              onBackgroundClick={(point) => {
-                if (placing && point) placeLayerAt(placing, point);
-                else clearSelection();
+              editingCamera={selectedTimelineEntity?.kind === 'view' ? camera : editingScene.camera}
+              mapProps={{
+                style,
+                mapMode,
+                onCameraChange: handleCameraChange,
+                labelLanguage: project.mapSettings.labelLanguage,
+                selectedId,
+                onSelect: selectLayer,
+                onMoveLayer: (id, x, y) => updateLayer(id, { x, y }),
+                onDeleteSelected: projectMode ? remove : undefined,
+                onBackgroundClick: (point) => {
+                  if (placing && point) placeLayerAt(placing, point);
+                  else clearSelection();
+                },
+                safeArea: project.canvas.safeArea,
+                showSafeArea: project.canvas.showSafeArea,
+                assetUrls,
+                editorMode: true,
               }}
-              safeArea={project.canvas.safeArea}
-              showSafeArea={project.canvas.showSafeArea}
-              assetUrls={assetUrls}
-              editorMode
             />
             <div className="add-toolbar">
               {layerTypes.map((type) => (
@@ -1416,6 +1508,13 @@ export function App() {
                     `Frame ${exportState.currentFrame} / ${exportState.totalFrames} · `}
                   {exportState.percentage}%{exportState.encoderLabel && ` · ${exportState.encoderLabel}`}
                 </span>
+                {exportState.elapsedMs !== undefined && (
+                  <small>
+                    Elapsed {formatExportDuration(exportState.elapsedMs)}
+                    {exportState.etaSeconds !== undefined &&
+                      ` · ~${formatExportDuration(exportState.etaSeconds * 1000)} remaining`}
+                  </small>
+                )}
                 {exportState.message && <small>{exportState.message}</small>}
               </div>
               <progress max="100" value={exportState.percentage} />
@@ -1535,6 +1634,13 @@ export function App() {
         </aside>
       </section>
       <TimelinePanel>
+        <PreviewTimelineRuntime
+          clock={previewClock}
+          playbackState={playbackState}
+          project={project}
+          timelineZoom={timelineZoom}
+          scrollerRef={timelineScrollRef}
+        />
         <TimelineToolbar>
           <label
             className="project-mode-toggle"
@@ -1606,11 +1712,11 @@ export function App() {
             </button>
           </div>
           <span className="timeline-preview-state">
-            {playbackState !== 'stopped' && previewTime !== null
-              ? `${formatTimelineTime(previewDisplayTime)} / ${formatTimelineTime(sequence.duration)} · ${
-                  activeTransitionIndex !== null
-                    ? `Transition ${activeTransitionIndex + 1} → ${activeTransitionIndex + 2}`
-                    : `View ${previewState!.activeViewIndex + 1}`
+            {playbackState !== 'stopped'
+              ? `${formatTimelineTime(previewClock.getSnapshot())} / ${formatTimelineTime(sequence.duration)} · ${
+                  activePreviewTransitionIndex(project, sequence, previewClock.getSnapshot()) !== null
+                    ? `Transition ${activePreviewTransitionIndex(project, sequence, previewClock.getSnapshot())! + 1} → ${activePreviewTransitionIndex(project, sequence, previewClock.getSnapshot())! + 2}`
+                    : `View ${evaluateProjectAtTime(project, previewClock.getSnapshot()).activeViewIndex + 1}`
                 } · ${playbackState}`
               : projectMode
                 ? 'Map Mode Â· Project Layers'
@@ -1630,7 +1736,7 @@ export function App() {
               aria-label="Preview scrub track"
               aria-valuemin={0}
               aria-valuemax={sequence.duration}
-              aria-valuenow={previewDisplayTime}
+              aria-valuenow={previewClock.getSnapshot()}
               onPointerDown={(event) => {
                 event.currentTarget.setPointerCapture(event.pointerId);
                 scrubTimeline(event);
@@ -1640,15 +1746,18 @@ export function App() {
               }}
             >
               {playbackState !== 'stopped' && (
-                <span className="scrub-playhead" style={{ left: playheadPosition }} />
+                <span
+                  className="scrub-playhead"
+                  style={{ left: timelinePosition(project, previewClock.getSnapshot(), timelineZoom) }}
+                />
               )}
             </div>
             <div className="timeline-track">
               {project.views.length > 0 && playbackState !== 'stopped' && (
                 <div
                   className="timeline-playhead"
-                  style={{ left: playheadPosition }}
-                  aria-label={`Playhead at ${formatTimelineTime(previewDisplayTime)}`}
+                  style={{ left: timelinePosition(project, previewClock.getSnapshot(), timelineZoom) }}
+                  aria-label={`Playhead at ${formatTimelineTime(previewClock.getSnapshot())}`}
                 >
                   <span />
                 </div>
@@ -1804,7 +1913,7 @@ export function App() {
                       <div
                         role="button"
                         tabIndex={0}
-                        className={`view-transition ${selectedTransitionId === transition.id ? 'selected' : ''} ${activeTransitionIndex === index ? 'active' : ''}`}
+                        className={`view-transition ${selectedTransitionId === transition.id ? 'selected' : ''}`}
                         style={{ flexBasis: transitionWidth(transition.duration, timelineZoom) }}
                         data-transition-index={index}
                         title={`Transition ${view.name} → ${project.views[index + 1].name}: ${transition.duration.toFixed(1)}s ${transitionTypeLabel(transition.type)} — click to edit`}
@@ -1865,6 +1974,100 @@ export function App() {
         )}
     </main>
   );
+}
+
+function usePreviewClockTime(clock: PreviewClock) {
+  return useSyncExternalStore(clock.subscribe, clock.getSnapshot, clock.getSnapshot);
+}
+
+function activePreviewTransitionIndex(
+  project: Project,
+  sequence: ReturnType<typeof compileTimeline>,
+  time: number,
+) {
+  const segment = sequence.segments.find(
+    (candidate) => candidate.kind === 'transition' && time >= candidate.start && time < candidate.end,
+  );
+  if (!segment || segment.kind !== 'transition') return null;
+  const index = project.transitions.findIndex((transition) => transition.id === segment.id);
+  return index >= 0 ? index : null;
+}
+
+function PreviewMap({
+  clock,
+  playbackState,
+  project,
+  editingLayers,
+  editingCamera,
+  mapProps,
+}: {
+  clock: PreviewClock;
+  playbackState: PlaybackState;
+  project: Project;
+  editingLayers: Layer[];
+  editingCamera: CameraState;
+  mapProps: Omit<React.ComponentProps<typeof OfflineMap>, 'layers' | 'camera' | 'interactionEnabled'>;
+}) {
+  const time = usePreviewClockTime(clock);
+  const previewState = playbackState === 'stopped' ? null : evaluateProjectAtTime(project, Math.max(0, time));
+  return (
+    <OfflineMap
+      {...mapProps}
+      layers={previewState?.layers ?? editingLayers}
+      camera={previewState?.camera ?? editingCamera}
+      interactionEnabled={playbackState === 'stopped'}
+    />
+  );
+}
+
+/** Keeps display-rate timeline work local and uses direct scrolling so rAF ticks
+ * never stack browser smooth-scroll animations. */
+function PreviewTimelineRuntime({
+  clock,
+  playbackState,
+  project,
+  timelineZoom,
+  scrollerRef,
+}: {
+  clock: PreviewClock;
+  playbackState: PlaybackState;
+  project: Project;
+  timelineZoom: number;
+  scrollerRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  const time = usePreviewClockTime(clock);
+  const sequence = useMemo(() => compileTimeline(project), [project]);
+  useLayoutEffect(() => {
+    if (playbackState === 'stopped') return;
+    const position = timelinePosition(project, time, timelineZoom);
+    document.querySelectorAll<HTMLElement>('.scrub-playhead, .timeline-playhead').forEach((element) => {
+      element.style.left = `${position}px`;
+    });
+    const activeTransition = activePreviewTransitionIndex(project, sequence, time);
+    document.querySelectorAll<HTMLElement>('.view-transition.active').forEach((element) => {
+      element.classList.remove('active');
+    });
+    if (activeTransition !== null)
+      document
+        .querySelector<HTMLElement>(`[data-transition-index="${activeTransition}"]`)
+        ?.classList.add('active');
+    const preview = evaluateProjectAtTime(project, time);
+    const status = document.querySelector<HTMLElement>('.timeline-preview-state');
+    if (status)
+      status.textContent = `${formatTimelineTime(time)} / ${formatTimelineTime(sequence.duration)} · ${
+        activeTransition === null
+          ? `View ${preview.activeViewIndex + 1}`
+          : `Transition ${activeTransition + 1} → ${activeTransition + 2}`
+      } · ${playbackState}`;
+    const scroller = scrollerRef.current;
+    if (!scroller || playbackState !== 'playing') return;
+    const edgePadding = 56;
+    if (position < scroller.scrollLeft + edgePadding)
+      scroller.scrollLeft = Math.max(0, position - edgePadding);
+    else if (position > scroller.scrollLeft + scroller.clientWidth - edgePadding)
+      scroller.scrollLeft = position - scroller.clientWidth + edgePadding;
+  }, [playbackState, project, scrollerRef, sequence, time, timelineZoom]);
+  return null;
 }
 
 function TimelinePanel({ children }: { children: React.ReactNode }) {
@@ -2105,6 +2308,16 @@ function formatTimelineTime(time: number) {
   return `${minutes}:${seconds.toFixed(1).padStart(4, '0')}`;
 }
 
+function safeProjectName(name: string) {
+  return name.replace(/[<>:"/\\|?*]+/g, '-').trim() || 'MapMotion project';
+}
+
+function conciseRuntimeError(error: unknown, fallback: string) {
+  const message = error instanceof Error ? error.message : String(error);
+  const firstLine = message.split(/\r?\n/, 1)[0]?.trim();
+  return firstLine && firstLine !== '[object Object]' ? firstLine : fallback;
+}
+
 const exportStatusLabel = (status: ExportProgressState['status']) => {
   if (status === 'preparing') return 'Preparing video';
   if (status === 'rendering') return 'Exporting video';
@@ -2261,9 +2474,8 @@ function Inspector({
     isCustom && layer.pinCustomAssetId != null && assetUrls[layer.pinCustomAssetId] != null;
   /** Open the native picker, ingest into project assets, apply to the Pin. */
   const chooseCustomImage = async (title: string) => {
-    const { open } = await import('@tauri-apps/plugin-dialog');
     try {
-      const sourcePath = await open({
+      const sourcePath = await openFile({
         title,
         multiple: false,
         directory: false,

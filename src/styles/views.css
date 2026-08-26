@@ -16,7 +16,9 @@
   border-bottom: 1px solid #263646;
   color: #9dafbf;
   font-size: 10px;
-  overflow: hidden;
+  overflow: visible;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 .timeline-toolbar {
   position: sticky;
@@ -79,6 +81,9 @@
 }
 .timeline-preview-state {
   margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .view-card .view-duration-exact {
   display: flex;
@@ -115,6 +120,7 @@
   scrollbar-color: #576a7d #172230;
   scrollbar-width: thin;
   direction: ltr;
+  max-width: 100%;
 }
 .timeline-track {
   position: relative;

@@ -444,7 +444,7 @@ const setAll = (project, selection, included) => {
 // Preview and frame-export paths must retain the single evaluator dependency.
 {
   const frameRenderer = readFileSync(join(root, 'src/core/frameRenderer.tsx'), 'utf8');
-  assert.match(frameRenderer, /evaluateProjectAtTime\(project, time\)/);
+  assert.match(frameRenderer, /evaluateProjectAtTime\((?:this\.)?project, time\)/);
   assert.ok(!frameRenderer.includes('viewLayersOf('), 'frame renderer does not bypass temporal evaluation');
 }
 

@@ -2,10 +2,16 @@ import { invoke } from '@tauri-apps/api/core';
 import type { MapMode } from '../components/OfflineMap';
 import type { Project } from './project';
 import { renderProjectRgbaSequence } from './frameRenderer';
-import { compileViews } from './viewCompiler';
 import { projectExportSettings, validateExportSettings, type ExportVideoSettings } from './exportPresets';
+import { ExportProgressEstimator, exportPercentage } from './exportProgress';
+import {
+  createProjectExportPlan,
+  encoderFallbackOrder,
+  verifyNativeExportResult,
+  type H264Encoder,
+} from './exportRuntime';
 
-export type ReferenceEncoder = 'libx264' | 'h264_nvenc';
+export type ReferenceEncoder = H264Encoder;
 export type ExportStatus =
   'idle' | 'preparing' | 'rendering' | 'finalizing' | 'completed' | 'cancelled' | 'failed';
 
@@ -15,6 +21,8 @@ export interface ExportProgressState {
   totalFrames: number;
   percentage: number;
   encoderLabel?: string;
+  elapsedMs?: number;
+  etaSeconds?: number;
 }
 
 export interface ProjectVideoExportOptions {
@@ -30,15 +38,27 @@ export interface ProjectVideoExportResult {
   fps: number;
   totalFrames: number;
   elapsedMs: number;
+  prepareMs: number;
   renderMs: number;
   ipcWriteMs: number;
   finalizationMs: number;
+  evaluateMs: number;
+  sceneMs: number;
+  serializeMs: number;
+  blobMs: number;
+  imageDecodeMs: number;
+  canvasDrawMs: number;
+  rgbaMs: number;
   encoder: ReferenceEncoder;
   encoderLabel: string;
+  requestedEncoder: ReferenceEncoder;
   fallbackUsed: boolean;
+  fallbackReason?: string;
   native: {
     framesWritten: number;
     stderr: string;
+    outputBytes: number;
+    exitCode: number;
   };
 }
 
@@ -54,6 +74,13 @@ class NativeExportError extends Error {
     this.name = 'NativeExportError';
   }
 }
+
+const hasNativeExportCause = (error: unknown): boolean =>
+  error instanceof NativeExportError ||
+  (error instanceof Error &&
+    'cause' in error &&
+    error.cause !== undefined &&
+    hasNativeExportCause(error.cause));
 
 let exportActive = false;
 
@@ -77,12 +104,11 @@ export async function exportProjectVideo(
   options: ProjectVideoExportOptions = {},
 ): Promise<ProjectVideoExportResult> {
   if (exportActive) throw new Error('A video export is already active.');
-  const duration = compileViews(project.views).duration;
-  if (duration <= 0) throw new Error('The project must contain a View sequence with a positive duration.');
-
   const settings = validateExportSettings(options.settings ?? projectExportSettings(project));
+  const plan = createProjectExportPlan(project, settings);
+  const duration = plan.duration;
   exportActive = true;
-  const totalFrames = Math.ceil(duration * settings.fps);
+  const totalFrames = plan.totalFrames;
   let reportedFrame = 0;
   let reportedPercentage = 0;
   const emit = (progress: ExportProgressState) => {
@@ -109,20 +135,25 @@ export async function exportProjectVideo(
             displayName: requestedEncoder === 'h264_nvenc' ? 'NVIDIA NVENC' : 'Software H.264',
             diagnostics: '',
           };
-    const candidates: EncoderProbeResult[] = [probe];
-    if (probe.encoder === 'h264_nvenc')
-      candidates.push({ encoder: 'libx264', displayName: 'Software H.264', diagnostics: probe.diagnostics });
+    const candidates: EncoderProbeResult[] = encoderFallbackOrder(probe.encoder).map((encoder) =>
+      encoder === probe.encoder
+        ? probe
+        : { encoder, displayName: 'Software H.264', diagnostics: probe.diagnostics },
+    );
 
     let lastError: unknown;
     for (let attempt = 0; attempt < candidates.length; attempt += 1) {
       const candidate = candidates[attempt];
       options.signal?.throwIfAborted();
       try {
+        reportedFrame = 0;
+        reportedPercentage = 0;
         return await runExportAttempt(
           project,
           outputPath,
           settings,
           candidate,
+          probe.encoder,
           attempt > 0,
           options.mapMode ?? 'flat',
           options.signal,
@@ -132,8 +163,8 @@ export async function exportProjectVideo(
         await cancelProjectVideoExport();
         if (options.signal?.aborted) throw abortError();
         lastError = error;
-        if (!(error instanceof NativeExportError) || candidate.encoder !== 'h264_nvenc') throw error;
-        console.warn('NVENC export failed; retrying with software H.264.', error.diagnostics);
+        if (!hasNativeExportCause(error) || candidate.encoder !== 'h264_nvenc') throw error;
+        console.warn('NVENC export failed; retrying with software H.264.', error);
         emit({
           status: 'preparing',
           currentFrame: 0,
@@ -162,13 +193,17 @@ async function runExportAttempt(
   outputPath: string,
   settings: ExportVideoSettings,
   encoder: EncoderProbeResult,
+  requestedEncoder: ReferenceEncoder,
   fallbackUsed: boolean,
   mapMode: MapMode,
   signal: AbortSignal | undefined,
   emit: (progress: ExportProgressState) => void,
 ): Promise<ProjectVideoExportResult> {
   const started = performance.now();
-  const totalFrames = Math.ceil(compileViews(project.views).duration * settings.fps);
+  const plan = createProjectExportPlan(project, settings);
+  const totalFrames = plan.totalFrames;
+  const estimator = new ExportProgressEstimator();
+  estimator.start(started);
   await invokeNative<void>('start_project_export', {
     outputPath,
     encoder: encoder.encoder,
@@ -182,19 +217,30 @@ async function runExportAttempt(
     totalFrames,
     percentage: 0,
     encoderLabel: encoder.displayName,
+    ...estimator.measure('rendering', 0, totalFrames, performance.now()),
   });
   const sequence = await renderProjectRgbaSequence(
     project,
-    async ({ pixels, index }) => {
+    async ({ pixels, index, time }) => {
       signal?.throwIfAborted();
-      await invokeNative<void>('write_project_export_frame', pixels);
+      const expectedBytes = plan.bytesPerFrame;
+      if (pixels.byteLength !== expectedBytes)
+        throw new Error(
+          `Frame ${index} at ${time.toFixed(6)}s has ${pixels.byteLength} RGBA bytes; expected ${expectedBytes}.`,
+        );
+      try {
+        await invokeNative<void>('write_project_export_frame', pixels);
+      } catch (error) {
+        throw new Error(`Frame ${index} at ${time.toFixed(6)}s failed: ${String(error)}`, { cause: error });
+      }
       const currentFrame = index + 1;
       emit({
         status: 'rendering',
         currentFrame,
         totalFrames,
-        percentage: Math.min(99, Math.floor((currentFrame / totalFrames) * 100)),
+        percentage: exportPercentage('rendering', currentFrame, totalFrames),
         encoderLabel: encoder.displayName,
+        ...estimator.measure('rendering', currentFrame, totalFrames, performance.now()),
       });
     },
     signal,
@@ -208,9 +254,11 @@ async function runExportAttempt(
     totalFrames,
     percentage: 99,
     encoderLabel: encoder.displayName,
+    ...estimator.measure('finalizing', totalFrames, totalFrames, performance.now()),
   });
   const finalizeStarted = performance.now();
   const native = await invokeNative<ProjectVideoExportResult['native']>('finish_project_export');
+  verifyNativeExportResult(native);
   const finalizationMs = performance.now() - finalizeStarted;
   const result = {
     ...sequence,
@@ -220,7 +268,9 @@ async function runExportAttempt(
     finalizationMs,
     encoder: encoder.encoder,
     encoderLabel: encoder.displayName,
+    requestedEncoder,
     fallbackUsed,
+    fallbackReason: fallbackUsed ? encoder.diagnostics.trim() || 'NVIDIA NVENC startup failed.' : undefined,
     native,
   };
   emit({
@@ -229,6 +279,7 @@ async function runExportAttempt(
     totalFrames,
     percentage: 100,
     encoderLabel: encoder.displayName,
+    elapsedMs: result.elapsedMs,
   });
   return result;
 }

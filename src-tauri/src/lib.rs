@@ -110,6 +110,15 @@ struct ExportSession {
 struct ExportResult {
     frames_written: usize,
     stderr: String,
+    output_bytes: u64,
+    exit_code: i32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectFileWriteResult {
+    path: String,
+    bytes_written: usize,
 }
 
 #[derive(Serialize)]
@@ -149,10 +158,38 @@ pub fn run() {
             read_project_asset,
             commit_imported_assets,
             scan_project_assets,
-            cleanup_project_assets
+            cleanup_project_assets,
+            write_project_file,
+            read_project_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running MapMotion Studio");
+}
+
+#[tauri::command]
+fn write_project_file(output_path: String, project_json: String) -> Result<ProjectFileWriteResult, String> {
+    serde_json::from_str::<serde_json::Value>(&project_json)
+        .map_err(|error| format!("Project serialization is invalid: {error}"))?;
+    let path = PathBuf::from(&output_path);
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Project destination has no parent directory.".to_string())?;
+    if !parent.is_dir() {
+        return Err(format!("Project destination directory does not exist: {}", parent.display()));
+    }
+    fs::write(&path, project_json.as_bytes())
+        .map_err(|error| format!("Unable to write project file '{}': {error}", path.display()))?;
+    Ok(ProjectFileWriteResult {
+        path: path.to_string_lossy().into_owned(),
+        bytes_written: project_json.len(),
+    })
+}
+
+#[tauri::command]
+fn read_project_file(input_path: String) -> Result<String, String> {
+    let path = PathBuf::from(&input_path);
+    fs::read_to_string(&path)
+        .map_err(|error| format!("Unable to read project file '{}': {error}", path.display()))
 }
 
 #[tauri::command]
@@ -1031,6 +1068,18 @@ fn start_project_export(
     if !matches!(encoder.as_str(), "libx264" | "h264_nvenc") {
         return Err(format!("Unsupported milestone encoder: {encoder}"));
     }
+    let output = PathBuf::from(&output_path);
+    let parent = output
+        .parent()
+        .ok_or_else(|| "Video destination has no parent directory.".to_string())?;
+    if !parent.is_dir() {
+        return Err(format!("Video destination directory does not exist: {}", parent.display()));
+    }
+    if output.extension().and_then(|value| value.to_str()).map(str::to_ascii_lowercase).as_deref()
+        != Some("mp4")
+    {
+        return Err("Video destination must use the .mp4 extension.".into());
+    }
     let supported_size = matches!(
         (width, height),
         (1920, 1080) | (1080, 1920) | (1080, 1080) | (1080, 1350) | (1440, 1080)
@@ -1129,14 +1178,31 @@ fn write_project_export_frame(
             bytes.len()
         ));
     }
-    session
+    let write_error = session
         .stdin
         .as_mut()
         .ok_or("FFmpeg frame stream is closed.")?
         .write_all(bytes)
-        .map_err(|error| format!("FFmpeg frame stream failed: {error}"))?;
-    session.frames_written += 1;
-    Ok(())
+        .err();
+    if write_error.is_none() {
+        session.frames_written += 1;
+        return Ok(());
+    }
+    let mut failed = active.take().ok_or("No project export is active.")?;
+    drop(active);
+    drop(failed.stdin.take());
+    let status = failed.child.wait().ok();
+    let diagnostics = join_diagnostics(failed.stderr_reader).unwrap_or_default();
+    let _ = fs::remove_file(&failed.output_path);
+    Err(format!(
+        "FFmpeg frame stream failed after {} frames: {}. Exit status: {}.\n{}",
+        failed.frames_written,
+        write_error.expect("write error checked"),
+        status
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unavailable".into()),
+        diagnostics.trim()
+    ))
 }
 
 #[tauri::command]
@@ -1159,9 +1225,18 @@ fn finish_project_export(state: State<'_, ExportState>) -> Result<ExportResult, 
         let _ = fs::remove_file(&session.output_path);
         return Err("FFmpeg received no project frames.".into());
     }
+    let output_bytes = fs::metadata(&session.output_path)
+        .map_err(|error| format!("FFmpeg completed but output is missing: {error}"))?
+        .len();
+    if output_bytes == 0 {
+        let _ = fs::remove_file(&session.output_path);
+        return Err("FFmpeg completed but produced an empty output file.".into());
+    }
     Ok(ExportResult {
         frames_written: session.frames_written,
         stderr: diagnostics,
+        output_bytes,
+        exit_code: status.code().unwrap_or(0),
     })
 }
 
@@ -1315,6 +1390,23 @@ mod portable_project_tests {
             archive.write_all(contents).expect("write entry");
         }
         archive.finish().expect("finish archive");
+    }
+
+    #[test]
+    fn project_file_native_round_trip_and_invalid_json_rejection() {
+        let path = test_path("project-file").with_extension("mapmotion");
+        let json = r#"{"version":1,"name":"native-save"}"#.to_string();
+        let result = write_project_file(path.to_string_lossy().into_owned(), json.clone())
+            .expect("write project file");
+        assert_eq!(result.bytes_written, json.len());
+        assert_eq!(read_project_file(result.path).expect("read project file"), json);
+        fs::remove_file(&path).expect("remove project file");
+
+        let invalid = test_path("invalid-project").with_extension("mapmotion");
+        assert!(write_project_file(invalid.to_string_lossy().into_owned(), "{broken".into())
+            .expect_err("invalid JSON must fail")
+            .contains("Project serialization is invalid"));
+        assert!(!invalid.exists());
     }
 
     fn image_fixture() -> (ProjectAsset, Vec<u8>) {

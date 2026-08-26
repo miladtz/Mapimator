@@ -13,8 +13,9 @@
 }
 body {
   margin: 0;
-  min-width: 980px;
+  min-width: 0;
   min-height: 100vh;
+  overflow: hidden;
 }
 button,
 input {
@@ -25,6 +26,9 @@ button {
 }
 .studio {
   height: 100vh;
+  min-width: 0;
+  max-width: 100vw;
+  overflow: hidden;
   display: grid;
   grid-template-rows: 54px minmax(0, 1fr) auto;
   background: #111721;
@@ -36,6 +40,7 @@ button {
   padding: 0 18px;
   gap: 25px;
   background: #121924;
+  min-width: 0;
 }
 .brand {
   font-weight: 700;
@@ -68,6 +73,7 @@ button {
   align-items: baseline;
   border-left: 1px solid #293648;
   padding-left: 19px;
+  min-width: 0;
 }
 .eyebrow,
 .panel-heading {
@@ -78,12 +84,16 @@ button {
 }
 .project-title strong {
   font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .top-actions {
   margin-left: auto;
   display: flex;
   gap: 8px;
   align-items: center;
+  min-width: 0;
 }
 .export-preset {
   display: grid;
@@ -129,10 +139,11 @@ button:disabled {
 .workspace {
   min-height: 0;
   display: grid;
-  grid-template-columns: 238px minmax(520px, 1fr) 245px;
+  grid-template-columns: minmax(190px, 238px) minmax(0, 1fr) minmax(200px, 245px);
+  overflow: hidden;
 }
 .workspace.layers-closed {
-  grid-template-columns: minmax(520px, 1fr) 245px;
+  grid-template-columns: minmax(0, 1fr) minmax(200px, 245px);
 }
 .panel {
   background: #151d28;
@@ -233,10 +244,11 @@ button:disabled {
 }
 .canvas-column {
   min-width: 0;
+  min-height: 0;
   background: #101721;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: 43px minmax(0, 1fr) 45px;
+  grid-template-rows: 43px minmax(0, 1fr) auto;
 }
 .canvas-head {
   display: flex;
@@ -559,12 +571,35 @@ button:disabled {
 }
 @media (max-width: 1050px) {
   .workspace {
-    grid-template-columns: 210px minmax(450px, 1fr) 215px;
+    grid-template-columns: 190px minmax(0, 1fr) 200px;
   }
   .topbar {
     gap: 12px;
   }
-  .quiet {
+  .project-title {
     display: none;
+  }
+}
+
+@media (max-height: 760px) {
+  .export-status {
+    min-height: 0;
+    padding-block: 6px;
+  }
+}
+
+@media (max-width: 1200px) {
+  .project-title {
+    display: none;
+  }
+  .topbar {
+    gap: 8px;
+    padding-inline: 10px;
+  }
+  .top-actions {
+    gap: 5px;
+  }
+  .export-preset select {
+    max-width: 170px;
   }
 }
