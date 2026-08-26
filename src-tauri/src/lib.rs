@@ -145,6 +145,7 @@ pub fn run() {
             export_portable_project,
             import_portable_project,
             ingest_project_image,
+            ingest_project_image_bytes,
             read_project_asset,
             commit_imported_assets,
             scan_project_assets,
@@ -479,6 +480,51 @@ fn ingest_project_image(
         .to_owned();
     let bytes =
         fs::read(&source).map_err(|error| format!("Unable to read imported image: {error}"))?;
+    if bytes.is_empty() || bytes.len() as u64 > MAX_PROJECT_ASSET_BYTES {
+        return Err("Imported image exceeds the asset size limit.".into());
+    }
+    let (media_type, extension, width, height) = inspect_image(&bytes)?;
+    let sha256 = sha256_hex(&bytes);
+    let metadata = ProjectAsset {
+        id: format!("asset_{sha256}"),
+        kind: "image".into(),
+        filename,
+        media_type: media_type.into(),
+        sha256: sha256.clone(),
+        size: bytes.len() as u64,
+        width,
+        height,
+        package_path: format!("assets/{sha256}.{extension}"),
+    };
+    validate_asset(&metadata, &bytes)?;
+    commit_assets(
+        &app,
+        &[ImportedAsset {
+            metadata: metadata.clone(),
+            bytes,
+        }],
+    )?;
+    Ok(metadata)
+}
+
+/// Ingest image bytes (already decoded to a PNG/JPEG payload, e.g. from a
+/// reusable app-level Pin Style) into the project-owned asset store. Uses the
+/// exact same content-addressed pipeline as ingest_project_image so project
+/// assets remain portable and deduplicated by hash.
+#[tauri::command]
+fn ingest_project_image_bytes(
+    app: tauri::AppHandle,
+    asset_state: State<'_, AssetStoreState>,
+    bytes: Vec<u8>,
+    filename: String,
+) -> Result<ProjectAsset, String> {
+    let _guard = asset_state
+        .0
+        .lock()
+        .map_err(|_| "Project asset storage lock failed.")?;
+    if filename.is_empty() || Path::new(&filename).components().count() != 1 {
+        return Err("Imported image filename is invalid.".into());
+    }
     if bytes.is_empty() || bytes.len() as u64 > MAX_PROJECT_ASSET_BYTES {
         return Err("Imported image exceeds the asset size limit.".into());
     }

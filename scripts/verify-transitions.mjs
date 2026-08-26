@@ -120,8 +120,9 @@ const worldToWorld = flyToCamera({ x: 0, y: 0, zoom: 1 }, { x: 0, y: 0, zoom: 1 
 assert.equal(worldToWorld.zoom, 1, 'world-to-world fly-to must hold world zoom');
 
 // 6. Deterministic evaluator: hold state, transition path, sequence timing.
-const project = createProject('Transition verification');  const viewA = createView('A', [], { x: 0, y: 0, zoom: 3 });
-  const viewB = createView('B', [], { x: -360, y: -180, zoom: 6 });
+const project = createProject('Transition verification');
+const viewA = createView('A', [], { x: 0, y: 0, zoom: 3 });
+const viewB = createView('B', [], { x: -360, y: -180, zoom: 6 });
 const viewC = createView('C', [], { x: -500, y: -80, zoom: 3 });
 viewA.holdDuration = 2;
 viewA.transitionDuration = 4;
@@ -132,22 +133,27 @@ viewB.transitionDuration = 0.5;
 viewB.transitionPreset = 'linear';
 viewB.transitionType = 'pan';
 project.views = [viewA, viewB, viewC];
+const runtimeProject = validateAndMigrateProject(project);
 
 const sequence = compileViews(project.views);
-assert.equal(sequence.duration, 2 + 4 + 1 + 0.5 + 3, 'sequence duration sums holds and transitions');
+assert.equal(
+  sequence.duration,
+  2 + 4 + 1 + 0.5 + 0,
+  'sequence duration sums holds and transitions (new Views default to 0s hold)',
+);
 
-const atStart = evaluateProjectAtTime(project, 0);
+const atStart = evaluateProjectAtTime(runtimeProject, 0);
 assert.deepEqual(atStart.camera, viewA.camera, 't=0 evaluates the exact first View camera');
 assert.equal(atStart.activeViewIndex, 0);
 
-const midFlyTo = evaluateProjectAtTime(project, 2 + 2);
+const midFlyTo = evaluateProjectAtTime(runtimeProject, 2 + 2);
 assert.ok(
   midFlyTo.camera.zoom < Math.min(viewA.camera.zoom, viewB.camera.zoom),
   'evaluator honors fly-to zoom-out mid-transition',
 );
 assert.equal(midFlyTo.activeViewIndex, 0, 'active View stays on the source during its transition');
 
-const atEnd = evaluateProjectAtTime(project, sequence.duration);
+const atEnd = evaluateProjectAtTime(runtimeProject, sequence.duration);
 assert.deepEqual(atEnd.camera, viewC.camera, 'end evaluates the exact final View camera');
 assert.equal(atEnd.activeViewIndex, 2);
 
@@ -156,14 +162,8 @@ delete viewA.transitionType;
 delete viewB.transitionType;
 const legacyProject = createProject('Legacy');
 legacyProject.views = [viewA, viewB, viewC];
-const legacyMid = evaluateProjectAtTime(legacyProject, 2 + 2);
-const smoothReference = interpolateCamera(
-  viewA.camera,
-  viewB.camera,
-  0.5,
-  viewA.transitionPreset,
-  'smooth',
-);
+const legacyMid = evaluateProjectAtTime(validateAndMigrateProject(legacyProject), 2 + 2);
+const smoothReference = interpolateCamera(viewA.camera, viewB.camera, 0.5, viewA.transitionPreset, 'smooth');
 assert.deepEqual(legacyMid.camera, smoothReference, 'missing transitionType must default to smooth');
 
 // 8. Persistence: all presets and types survive validation; unknown types rejected.
@@ -171,21 +171,21 @@ for (const preset of PRESETS) {
   const candidate = createProject('Preset compatibility');
   const view = createView('V', [], { x: 0, y: 0, zoom: 1 });
   view.transitionPreset = preset;
-  candidate.views = [view];
-  assert.equal(validateAndMigrateProject(candidate).views[0].transitionPreset, preset);
+  candidate.views = [view, createView('Destination', [], { x: 0, y: 0, zoom: 1 })];
+  assert.equal(validateAndMigrateProject(candidate).transitions[0].preset, preset);
 }
 for (const type of TYPES) {
   const candidate = createProject('Type compatibility');
   const view = createView('V', [], { x: 0, y: 0, zoom: 1 });
   view.transitionType = type;
-  candidate.views = [view];
-  assert.equal(validateAndMigrateProject(candidate).views[0].transitionType, type);
+  candidate.views = [view, createView('Destination', [], { x: 0, y: 0, zoom: 1 })];
+  assert.equal(validateAndMigrateProject(candidate).transitions[0].type, type);
 }
 const legacy = createProject('Legacy view');
 const legacyView = createView('V', [], { x: 0, y: 0, zoom: 1 });
 delete legacyView.transitionType;
-legacy.views = [legacyView];
-assert.equal(validateAndMigrateProject(legacy).views[0].transitionType, undefined, 'legacy stays unset');
+legacy.views = [legacyView, createView('Destination', [], { x: 0, y: 0, zoom: 1 })];
+assert.equal(validateAndMigrateProject(legacy).transitions[0].type, 'smooth', 'legacy defaults to smooth');
 const badType = createProject('Bad type');
 const badView = createView('V', [], { x: 0, y: 0, zoom: 1 });
 badView.transitionType = 'orbit';

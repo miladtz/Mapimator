@@ -17,7 +17,16 @@ import {
   roundCamera,
   zoomAtPoint,
 } from '../core/camera';
-import type { CameraState, Layer, MapStylePreset, Project } from '../core/project';
+import {
+  PIN_DEFAULTS,
+  pinSizeOf,
+  pinStyleOf,
+  type CameraState,
+  type Layer,
+  type MapStylePreset,
+  type PinStyle,
+  type Project,
+} from '../core/project';
 import { selectMapLabels } from '../core/mapLabels';
 import { formatNumbers, resolveTextDirection, resolveTextLanguage } from '../core/text';
 import {
@@ -42,9 +51,13 @@ interface Props {
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onMoveLayer: (id: string, x: number, y: number) => void;
+  onDeleteSelected?: () => void;
+  onBackgroundClick?: (point: { x: number; y: number }) => void;
   safeArea: number;
   showSafeArea: boolean;
   assetUrls?: Readonly<Record<string, string>>;
+  /** Render editor-only placeholders (e.g. custom pin with no image yet). */
+  editorMode?: boolean;
 }
 
 export type MapMode = 'flat' | 'globe';
@@ -62,10 +75,11 @@ export interface MapSceneProps {
   safeArea?: number;
   showSafeArea?: boolean;
   svgProps?: SVGProps<SVGSVGElement>;
-  onBackgroundClick?: () => void;
+  onBackgroundClick?: (point: { x: number; y: number }) => void;
   onLayerPointerDown?: (event: PointerEvent<SVGGElement>, layer: Layer) => void;
   assetUrls?: Readonly<Record<string, string>>;
   globeRotation?: GlobeRotation;
+  editorMode?: boolean;
 }
 
 interface GlobeRotation {
@@ -83,9 +97,12 @@ export function OfflineMap({
   selectedId,
   onSelect,
   onMoveLayer,
+  onDeleteSelected,
+  onBackgroundClick,
   safeArea,
   showSafeArea,
   assetUrls,
+  editorMode = true,
 }: Props) {
   const drag = useRef<{ x: number; y: number } | null>(null);
   const lastPan = useRef<{ x: number; y: number; time: number } | null>(null);
@@ -98,6 +115,7 @@ export function OfflineMap({
   const currentCamera = useRef(constrainCamera(camera));
   const spacePan = useRef(false);
   const moving = useRef<string | null>(null);
+  const movedSinceDown = useRef(false);
   const activePointerId = useRef<number | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const onCameraChangeRef = useRef(onCameraChange);
@@ -294,13 +312,24 @@ export function OfflineMap({
     drag.current = { x: point.x - currentCamera.current.x, y: point.y - currentCamera.current.y };
     lastPan.current = { x: event.clientX, y: event.clientY, time: performance.now() };
     velocity.current = { x: 0, y: 0 };
+    movedSinceDown.current = false;
     activePointerId.current = event.pointerId;
     event.currentTarget.setPointerCapture(event.pointerId);
   };
   const onPointerMove = (event: PointerEvent<SVGSVGElement>) => {
+    movedSinceDown.current = true;
     if (moving.current) {
       const point = svgPoint(event, event.currentTarget);
-      onMoveLayer(moving.current, point.x, point.y);
+      // Convert the cursor's screen-space point to the layer's geographic
+      // (world) coordinate so the graphic tracks the cursor at any zoom.
+      const world =
+        mapMode === 'globe'
+          ? point
+          : {
+              x: (point.x - currentCamera.current.x) / currentCamera.current.zoom,
+              y: (point.y - currentCamera.current.y) / currentCamera.current.zoom,
+            };
+      onMoveLayer(moving.current, world.x, world.y);
     } else if (drag.current) {
       const now = performance.now();
       const previous = lastPan.current;
@@ -352,6 +381,28 @@ export function OfflineMap({
       emitCameraChange(targetCamera.current);
     }
   };
+  /**
+   * Handle pointerup with background click detection.
+   * This is the primary mechanism for pin placement: when the user clicks
+   * the map (no drag), we forward the event to onBackgroundClick. This
+   * bypasses the rect onClick which is unreliable in Tauri WebView2 due
+   * to setPointerCapture stealing events from child elements.
+   */
+  const onPointerUpHandler = (event: PointerEvent<SVGSVGElement>) => {
+    const wasClick = drag.current !== null && !movedSinceDown.current && !moving.current;
+    end();
+    if (wasClick && onBackgroundClick) {
+      const svgCoords = svgPoint(event, event.currentTarget);
+      const worldPoint =
+        mapModeRef.current === 'globe'
+          ? svgCoords
+          : {
+              x: (svgCoords.x - currentCamera.current.x) / currentCamera.current.zoom,
+              y: (svgCoords.y - currentCamera.current.y) / currentCamera.current.zoom,
+            };
+      onBackgroundClick(worldPoint);
+    }
+  };
   const onDoubleClick = (event: React.MouseEvent<SVGSVGElement>) => {
     if (!interactionEnabled) return;
     const { x, y } = svgPoint(event, event.currentTarget);
@@ -368,6 +419,13 @@ export function OfflineMap({
   };
   const onKeyDown = (event: KeyboardEvent<SVGSVGElement>) => {
     if (!interactionEnabled) return;
+    if (event.key === 'Delete' || event.key === 'Backspace') {
+      if (onDeleteSelected) {
+        event.preventDefault();
+        onDeleteSelected();
+      }
+      return;
+    }
     if (event.code === 'Space') spacePan.current = true;
     if (event.key === 'Home') {
       event.preventDefault();
@@ -417,13 +475,14 @@ export function OfflineMap({
       showSafeArea={showSafeArea}
       assetUrls={assetUrls}
       globeRotation={globeRotation.current}
-      onBackgroundClick={() => onSelect(null)}
+      onBackgroundClick={onBackgroundClick ?? (() => onSelect(null))}
+      editorMode={editorMode}
       onLayerPointerDown={beginLayerMove}
       svgProps={{
         ref: svgRef,
         onPointerDown,
         onPointerMove,
-        onPointerUp: end,
+        onPointerUp: onPointerUpHandler,
         onPointerLeave: end,
         onPointerCancel: cancelActiveCameraInteraction,
         onLostPointerCapture: (event) => {
@@ -463,10 +522,19 @@ export function MapScene({
   onLayerPointerDown,
   assetUrls = {},
   globeRotation = { lon: 0, lat: 0 },
+  editorMode = false,
 }: MapSceneProps) {
   const globe = globeProjection(camera, globeRotation);
   const transform =
     mapMode === 'globe' ? undefined : `translate(${camera.x} ${camera.y}) scale(${camera.zoom})`;
+  const backgroundClick = (event: React.MouseEvent<SVGElement>) => {
+    const point = svgPoint(event, event.currentTarget.ownerSVGElement as SVGSVGElement);
+    onBackgroundClick?.(
+      mapMode === 'globe'
+        ? point
+        : { x: (point.x - camera.x) / camera.zoom, y: (point.y - camera.y) / camera.zoom },
+    );
+  };
   const labels = useMemo(() => selectMapLabels(camera), [camera.x, camera.y, camera.zoom]);
   const projectedMap = useMemo(
     () =>
@@ -534,11 +602,11 @@ export function MapScene({
           <path d="M0,0 L8,4 L0,8Z" fill="context-stroke" />
         </marker>
       </defs>
-      <rect width="1000" height="560" fill={style.backgroundColor} onClick={onBackgroundClick} />
+      <rect width="1000" height="560" fill={style.backgroundColor} onClick={backgroundClick} />
       {mapMode === 'flat' ? (
         <>
-          <rect width="1000" height="560" fill={style.waterColor} onClick={onBackgroundClick} />
-          <rect width="1000" height="560" fill="url(#grid)" onClick={onBackgroundClick} />
+          <rect width="1000" height="560" fill={style.waterColor} onClick={backgroundClick} />
+          <rect width="1000" height="560" fill="url(#grid)" onClick={backgroundClick} />
         </>
       ) : (
         <ellipse
@@ -549,7 +617,7 @@ export function MapScene({
           fill="url(#globe-water)"
           filter="url(#globe-shadow)"
           className="globe-shell"
-          onClick={onBackgroundClick}
+          onClick={backgroundClick}
         />
       )}
       {showSafeArea && (
@@ -669,16 +737,25 @@ export function MapScene({
             ))}
           {layers
             .filter((l) => l.visible)
-            .map((layer) => (
-              <LayerGraphic
-                key={layer.id}
-                layer={layer}
-                selected={layer.id === selectedId}
-                onPointerDown={(event) => onLayerPointerDown?.(event, layer)}
-                assetUrl={layer.assetId ? assetUrls[layer.assetId] : undefined}
-                globe={mapMode === 'globe' ? globe : undefined}
-              />
-            ))}
+            .map((layer) => {
+              const customIconUrl =
+                layer.type === 'pin' && layer.pinCustomAssetId
+                  ? assetUrls[layer.pinCustomAssetId]
+                  : undefined;
+              const imageUrl = layer.assetId ? assetUrls[layer.assetId] : undefined;
+              return (
+                <LayerGraphic
+                  key={layer.id}
+                  layer={layer}
+                  selected={layer.id === selectedId}
+                  onPointerDown={(event) => onLayerPointerDown?.(event, layer)}
+                  assetUrl={customIconUrl ?? imageUrl}
+                  globe={mapMode === 'globe' ? globe : undefined}
+                  screenScale={mapMode === 'globe' ? globe.symbolScale : 1 / camera.zoom}
+                  editorMode={editorMode}
+                />
+              );
+            })}
         </g>
       </g>
       <text x="26" y="526" fill={style.countryLabelColor} opacity=".52" className="map-credit">
@@ -913,18 +990,310 @@ function CityLabel({
     </g>
   );
 }
+interface PinBounds {
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+}
+
+/**
+ * Screen-space bounding box of a pin glyph, anchored so the stored
+ * geographic point is the visual anchor: centered for point styles,
+ * at the tip for pin shapes.
+ */
+const pinBounds = (style: PinStyle, s: number): PinBounds => {
+  if (style === 'location' || style === 'map-pin')
+    return { top: -1.35 * s, bottom: 0.05 * s, left: -0.85 * s, right: 0.85 * s };
+  return { top: -s, bottom: s, left: -s, right: s };
+};
+
+const starPath = (s: number) => {
+  const points: string[] = [];
+  for (let i = 0; i < 10; i += 1) {
+    const r = i % 2 === 0 ? s : s * 0.42;
+    const angle = -Math.PI / 2 + (Math.PI / 5) * i;
+    points.push(`${(r * Math.cos(angle)).toFixed(3)} ${(r * Math.sin(angle)).toFixed(3)}`);
+  }
+  return `M ${points.join(' L ')} Z`;
+};
+
+const locationPinPath = (s: number) => {
+  const r = 0.8 * s;
+  const cy = -0.5 * s;
+  const attach = -0.5 * s + Math.sqrt(r * r - 0.16 * s * s);
+  return [
+    `M 0 ${cy - r}`,
+    `A ${r} ${r} 0 1 1 ${-0.001} ${cy - r}`,
+    `M ${-0.4 * s} ${attach}`,
+    `Q ${-0.06 * s} ${0.34 * s} 0 ${0.98 * s}`,
+    `Q ${0.06 * s} ${0.34 * s} ${0.4 * s} ${attach}`,
+    'Z',
+  ].join(' ');
+};
+
+const mapPinPath = (s: number) => {
+  const teardrop = locationPinPath(s);
+  const holeR = 0.26 * s;
+  const holeCy = -0.5 * s;
+  return `${teardrop} M 0 ${holeCy} a ${holeR} ${holeR} 0 1 0 ${0.001} ${holeCy}`;
+};
+
+function PinGraphic({
+  layer,
+  selected,
+  onPointerDown,
+  point,
+  screenScale,
+  assetUrl,
+  editorMode = false,
+}: {
+  layer: Layer;
+  selected: boolean;
+  onPointerDown: (event: PointerEvent<SVGGElement>) => void;
+  point: { x: number; y: number };
+  screenScale: number;
+  assetUrl?: string;
+  editorMode?: boolean;
+}) {
+  const style = pinStyleOf(layer);
+  const size = pinSizeOf(layer);
+  const popScale = layer.pinPopScale ?? 1;
+  const dropOffsetY = layer.pinDropOffsetY ?? 0;
+  const scale = screenScale * popScale;
+  const fill = layer.color;
+  const border = layer.pinBorderColor ?? PIN_DEFAULTS.borderColor;
+  const borderWidth = layer.pinBorderWidth ?? PIN_DEFAULTS.borderWidth;
+  const text = formatNumbers(layer.text ?? '', layer.numberStyle);
+  const showLabel = (layer.pinLabelVisible ?? PIN_DEFAULTS.labelVisible) && text.length > 0;
+  const labelSize = layer.pinLabelSize ?? PIN_DEFAULTS.labelSize;
+  const labelColor = layer.pinLabelColor ?? PIN_DEFAULTS.labelColor;
+  const labelPosition = layer.pinLabelPosition ?? PIN_DEFAULTS.labelPosition;
+  const labelGap = layer.pinLabelGap ?? PIN_DEFAULTS.labelGap;
+  const bounds = pinBounds(style, size);
+  const centerX = (bounds.left + bounds.right) / 2;
+  const centerY = (bounds.top + bounds.bottom) / 2;
+  const isPersian = resolveTextLanguage(layer.text ?? '', layer.textLanguage) === 'persian';
+  const glyph = (() => {
+    switch (style) {
+      case 'map-pin':
+        return (
+          <path
+            d={mapPinPath(size)}
+            fill={fill}
+            fillRule="evenodd"
+            stroke={border}
+            strokeWidth={borderWidth}
+            strokeLinejoin="round"
+          />
+        );
+      case 'location':
+        return (
+          <path
+            d={locationPinPath(size)}
+            fill={fill}
+            stroke={border}
+            strokeWidth={borderWidth}
+            strokeLinejoin="round"
+          />
+        );
+      case 'target':
+        return (
+          <>
+            <circle r={size} fill="none" stroke={border} strokeWidth={Math.max(1.5, borderWidth)} />
+            <circle r={size * 0.6} fill="none" stroke={fill} strokeWidth={Math.max(1.2, borderWidth * 0.8)} />
+            <circle
+              r={size * 0.26}
+              fill={fill}
+              stroke={border}
+              strokeWidth={Math.max(1, borderWidth * 0.6)}
+            />
+          </>
+        );
+      case 'star':
+        return (
+          <path
+            d={starPath(size)}
+            fill={fill}
+            stroke={border}
+            strokeWidth={borderWidth}
+            strokeLinejoin="round"
+          />
+        );
+      case 'circle':
+        return <circle r={size} fill={fill} fillOpacity=".9" stroke={border} strokeWidth={borderWidth} />;
+      case 'custom':
+        if (assetUrl) {
+          // Render the custom icon image, anchored at bottom-center by default.
+          // The geographic anchor is always the stored pin coordinate; the
+          // image box is positioned relative to it and never re-projected.
+          const anchor = layer.pinCustomAnchor ?? 'bottom-center';
+          const imgW = size * 2;
+          const imgH = size * 2;
+          const imgX = -imgW / 2;
+          const imgY = anchor === 'bottom-center' ? -imgH : -imgH / 2;
+          const tintEnabled = layer.pinTintEnabled ?? false;
+          const tintColor = layer.pinTintColor ?? PIN_DEFAULTS.tintColor;
+          const filterId = `pin-tint-${layer.id}`;
+          return (
+            <>
+              {tintEnabled && (
+                <defs>
+                  <filter id={filterId} colorInterpolationFilters="sRGB">
+                    {/* Flat tint color masked by the image's own alpha… */}
+                    <feFlood floodColor={tintColor} result="flood" />
+                    <feComposite in="flood" in2="SourceGraphic" operator="in" result="tinted" />
+                    {/* …multiplied with the original pixels (deterministic duotone). */}
+                    <feComposite
+                      in="tinted"
+                      in2="SourceGraphic"
+                      operator="arithmetic"
+                      k1="1"
+                      k2="0"
+                      k3="0"
+                      k4="0"
+                    />
+                  </filter>
+                </defs>
+              )}
+              <image
+                href={assetUrl}
+                x={imgX}
+                y={imgY}
+                width={imgW}
+                height={imgH}
+                preserveAspectRatio="xMidYMid meet"
+                pointerEvents="none"
+                filter={tintEnabled ? `url(#${filterId})` : undefined}
+              />
+              {borderWidth > 0.5 && (
+                <rect
+                  x={imgX}
+                  y={imgY}
+                  width={imgW}
+                  height={imgH}
+                  rx={Math.max(1, imgW * 0.06)}
+                  fill="none"
+                  stroke={border}
+                  strokeWidth={Math.max(0.5, borderWidth)}
+                  pointerEvents="none"
+                />
+              )}
+            </>
+          );
+        }
+        // No image chosen yet: show a restrained editor-only placeholder so
+        // the pin stays selectable on the canvas. It never renders in
+        // Preview/Export (those paths render without editorMode).
+        if (editorMode)
+          return (
+            <>
+              <circle
+                r={size}
+                fill="none"
+                stroke={fill}
+                strokeWidth={Math.max(1, borderWidth * 0.5)}
+                strokeDasharray="4 3"
+              />
+              <circle r={Math.max(1.5, size * 0.12)} fill={fill} />
+            </>
+          );
+        return null;
+      case 'dot':
+      default:
+        return (
+          <>
+            <circle r={size} fill={fill} stroke={border} strokeWidth={borderWidth} />
+            <circle r={Math.max(2.2, size * 0.3)} fill="#17202d" />
+          </>
+        );
+    }
+  })();
+  const labelX =
+    labelPosition === 'right'
+      ? bounds.right + labelGap
+      : labelPosition === 'left'
+        ? bounds.left - labelGap
+        : centerX;
+  const labelY =
+    labelPosition === 'top'
+      ? bounds.top - labelGap
+      : labelPosition === 'bottom'
+        ? bounds.bottom + labelGap
+        : centerY;
+  const label = showLabel ? (
+    <text
+      x={labelX}
+      y={labelY}
+      fill={labelColor}
+      className={`pin-label ${isPersian ? 'persian-text' : ''}`}
+      style={{ fontSize: labelSize }}
+      textAnchor={labelPosition === 'left' ? 'end' : labelPosition === 'right' ? 'start' : 'middle'}
+      dominantBaseline={
+        labelPosition === 'top'
+          ? 'text-before-edge'
+          : labelPosition === 'bottom'
+            ? 'text-after-edge'
+            : 'central'
+      }
+      direction={resolveTextDirection(layer.text ?? '', layer.textDirection)}
+      unicodeBidi="plaintext"
+    >
+      {text}
+    </text>
+  ) : null;
+  return (
+    <g {...commonProps(layer, selected, onPointerDown)}>
+      <g transform={`translate(${point.x} ${point.y + dropOffsetY}) scale(${scale})`}>
+        {glyph}
+        {label}
+        {selected && (
+          <g className="pin-selection" pointerEvents="none">
+            <ellipse
+              cx={centerX}
+              cy={centerY}
+              rx={(bounds.right - bounds.left) / 2 + 5}
+              ry={(bounds.bottom - bounds.top) / 2 + 5}
+              fill="none"
+              stroke="#7fd4ff"
+              strokeWidth="1.4"
+              strokeDasharray="4 3"
+              opacity=".95"
+            />
+            <circle cx={0} cy={0} r="2.4" fill="#7fd4ff" opacity=".95" />
+          </g>
+        )}
+      </g>
+    </g>
+  );
+}
+
+const commonProps = (
+  layer: Layer,
+  selected: boolean,
+  onPointerDown: (event: PointerEvent<SVGGElement>) => void,
+) => ({
+  opacity: layer.opacity,
+  onPointerDown,
+  className: `layer-graphic ${selected ? 'selected-layer' : ''}`,
+});
+
 function LayerGraphic({
   layer,
   selected,
   onPointerDown,
   assetUrl,
   globe,
+  screenScale = 1,
+  editorMode = false,
 }: {
   layer: Layer;
   selected: boolean;
   onPointerDown: (event: PointerEvent<SVGGElement>) => void;
   assetUrl?: string;
   globe?: GlobeProjection;
+  screenScale?: number;
+  editorMode?: boolean;
 }) {
   const common = {
     opacity: layer.opacity,
@@ -952,27 +1321,15 @@ function LayerGraphic({
   }
   if (layer.type === 'pin')
     return (
-      <g {...common}>
-        <circle
-          cx={point.x}
-          cy={point.y}
-          r={13 * (globe?.symbolScale ?? 1)}
-          fill={layer.color}
-          stroke="#fff"
-          strokeWidth="3"
-        />
-        <circle cx={point.x} cy={point.y} r={4 * (globe?.symbolScale ?? 1)} fill="#17202d" />
-        <text
-          x={point.x + 18 * (globe?.symbolScale ?? 1)}
-          y={point.y + 4}
-          fill="#fff"
-          className="layer-text"
-          direction={resolveTextDirection(layer.text ?? '', layer.textDirection)}
-          unicodeBidi="plaintext"
-        >
-          {formatNumbers(layer.text ?? '', layer.numberStyle)}
-        </text>
-      </g>
+      <PinGraphic
+        layer={layer}
+        selected={selected}
+        onPointerDown={onPointerDown}
+        point={point}
+        screenScale={screenScale}
+        assetUrl={assetUrl}
+        editorMode={editorMode}
+      />
     );
   if (layer.type === 'text') {
     const text = formatNumbers(layer.text ?? '', layer.numberStyle);

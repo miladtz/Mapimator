@@ -1,4 +1,23 @@
-import type { CameraState, Layer, Project, ProjectAsset, View } from './project';
+import type {
+  CameraState,
+  Layer,
+  Project,
+  ProjectAsset,
+  SegmentLayerAnimation,
+  TransitionLayerConfig,
+  Transition,
+  View,
+  ViewLayerConfig,
+} from './project';
+import { normalizeSegmentAnimation } from './project';
+
+type LegacyView = Omit<View, 'layerConfigs' | 'transitionLayerConfigs'> & {
+  layerConfigs?: Record<string, ViewLayerConfig>;
+  transitionLayerConfigs?: Record<string, TransitionLayerConfig>;
+  layers?: Layer[];
+  transitionLayers?: Layer[];
+  layerAnimations?: Record<string, SegmentLayerAnimation>;
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -32,8 +51,32 @@ const optionalStrings = [
   'numberStyle',
   'geoEffectType',
   'assetId',
+  'pinStyle',
+  'pinBorderColor',
+  'pinLabelColor',
+  'pinLabelPosition',
+  'pinAppear',
+  'pinAppearType',
+  'pinCustomAssetId',
+  'pinCustomAnchor',
+  'pinTintColor',
 ] as const;
-const optionalNumbers = ['x2', 'y2', 'width', 'height', 'fontSize', 'effectSize', 'effectDuration'] as const;
+const optionalNumbers = [
+  'x2',
+  'y2',
+  'width',
+  'height',
+  'fontSize',
+  'effectSize',
+  'effectDuration',
+  'pinSize',
+  'pinBorderWidth',
+  'pinLabelSize',
+  'pinLabelGap',
+  'pinAppearDelay',
+  'pinAppearDuration',
+] as const;
+const optionalBooleans = ['effectRepeat', 'pinLabelVisible', 'pinAppearEnabled', 'pinTintEnabled'] as const;
 
 const validateCamera = (value: unknown, path: string): CameraState => {
   if (!isRecord(value) || !isFiniteNumber(value.x) || !isFiniteNumber(value.y) || !isFiniteNumber(value.zoom))
@@ -60,8 +103,34 @@ const validateLayer = (value: unknown, path: string): Layer => {
   for (const key of optionalNumbers)
     if (value[key] !== undefined && !isFiniteNumber(value[key]))
       throw new Error(`${path}.${key} must be a finite number.`);
-  if (value.effectRepeat !== undefined && !isBoolean(value.effectRepeat))
-    throw new Error(`${path}.effectRepeat must be a boolean.`);
+  for (const key of optionalBooleans)
+    if (value[key] !== undefined && !isBoolean(value[key]))
+      throw new Error(`${path}.${key} must be a boolean.`);
+  if (
+    value.pinStyle !== undefined &&
+    !oneOf(value.pinStyle, ['dot', 'map-pin', 'location', 'target', 'star', 'circle', 'custom'] as const)
+  )
+    throw new Error(`${path}.pinStyle is unsupported.`);
+  if (
+    value.pinLabelPosition !== undefined &&
+    !oneOf(value.pinLabelPosition, ['top', 'bottom', 'left', 'right'] as const)
+  )
+    throw new Error(`${path}.pinLabelPosition is unsupported.`);
+  if (value.pinAppear !== undefined && !oneOf(value.pinAppear, ['none', 'fade', 'pop'] as const))
+    throw new Error(`${path}.pinAppear is unsupported.`);
+  if (value.pinAppearType !== undefined && !oneOf(value.pinAppearType, ['fade', 'pop', 'drop'] as const))
+    throw new Error(`${path}.pinAppearType is unsupported.`);
+  if (
+    value.pinCustomAnchor !== undefined &&
+    !oneOf(value.pinCustomAnchor, ['bottom-center', 'center'] as const)
+  )
+    throw new Error(`${path}.pinCustomAnchor is unsupported.`);
+  if (value.pinAppearDelay !== undefined && (value.pinAppearDelay as number) < 0)
+    throw new Error(`${path}.pinAppearDelay must be >= 0.`);
+  if (value.pinAppearDuration !== undefined && (value.pinAppearDuration as number) <= 0)
+    throw new Error(`${path}.pinAppearDuration must be > 0.`);
+  if (value.pinSize !== undefined && (value.pinSize as number) <= 0)
+    throw new Error(`${path}.pinSize must be > 0.`);
   if (value.textLanguage !== undefined && !oneOf(value.textLanguage, ['auto', 'persian', 'english'] as const))
     throw new Error(`${path}.textLanguage is unsupported.`);
   if (value.textDirection !== undefined && !oneOf(value.textDirection, ['auto', 'rtl', 'ltr'] as const))
@@ -73,19 +142,43 @@ const validateLayer = (value: unknown, path: string): Layer => {
   return value as unknown as Layer;
 };
 
-const validateView = (value: unknown, index: number): View => {
+const validateSegmentLayerAnimation = (value: unknown, path: string): SegmentLayerAnimation => {
+  if (!isRecord(value)) throw new Error(`${path} must be an object.`);
+  for (const key of ['appearDelay', 'appearDuration', 'layerHoldDuration', 'wipeDuration'] as const)
+    if (value[key] !== undefined && !isFiniteNumber(value[key]))
+      throw new Error(`${path}.${key} must be a finite number.`);
+  for (const key of ['appearEnabled', 'wipeEnabled'] as const)
+    if (value[key] !== undefined && !isBoolean(value[key]))
+      throw new Error(`${path}.${key} must be a boolean.`);
+  if (value.appearType !== undefined && !oneOf(value.appearType, ['fade', 'pop', 'drop'] as const))
+    throw new Error(`${path}.appearType is unsupported.`);
+  if (value.wipeType !== undefined && !oneOf(value.wipeType, ['fade-out'] as const))
+    throw new Error(`${path}.wipeType is unsupported.`);
+  if (value.appearDelay !== undefined && (value.appearDelay as number) < 0)
+    throw new Error(`${path}.appearDelay must be >= 0.`);
+  if (value.appearDuration !== undefined && (value.appearDuration as number) <= 0)
+    throw new Error(`${path}.appearDuration must be > 0.`);
+  if (value.layerHoldDuration !== undefined && (value.layerHoldDuration as number) < 0)
+    throw new Error(`${path}.layerHoldDuration must be >= 0.`);
+  if (value.wipeDuration !== undefined && (value.wipeDuration as number) <= 0)
+    throw new Error(`${path}.wipeDuration must be > 0.`);
+  return value as unknown as SegmentLayerAnimation;
+};
+
+const validateView = (value: unknown, index: number): LegacyView => {
   const path = `project.views[${index}]`;
   if (!isRecord(value)) throw new Error(`${path} must be an object.`);
   if (!isString(value.id) || !isString(value.name) || !isString(value.thumbnailColor))
     throw new Error(`${path} has invalid identity fields.`);
-  if (
-    !isFiniteNumber(value.holdDuration) ||
-    value.holdDuration < 0 ||
-    !isFiniteNumber(value.transitionDuration) ||
-    value.transitionDuration < 0
-  )
+  if (!isFiniteNumber(value.holdDuration) || value.holdDuration < 0)
     throw new Error(`${path} has invalid timing.`);
   if (
+    value.transitionDuration !== undefined &&
+    (!isFiniteNumber(value.transitionDuration) || value.transitionDuration < 0)
+  )
+    throw new Error(`${path}.transitionDuration is invalid.`);
+  if (
+    value.transitionPreset !== undefined &&
     !oneOf(value.transitionPreset, [
       'smooth',
       'cinematic',
@@ -103,9 +196,76 @@ const validateView = (value: unknown, index: number): View => {
   )
     throw new Error(`${path}.transitionType is unsupported.`);
   validateCamera(value.camera, `${path}.camera`);
-  if (!Array.isArray(value.layers)) throw new Error(`${path}.layers must be an array.`);
-  value.layers.forEach((layer, layerIndex) => validateLayer(layer, `${path}.layers[${layerIndex}]`));
-  return value as unknown as View;
+  const validateViewLayerConfig = (config: unknown, configPath: string): ViewLayerConfig => {
+    if (!isRecord(config) || typeof config.included !== 'boolean')
+      throw new Error(`${configPath} must contain an included boolean.`);
+    if (config.animation !== undefined)
+      validateSegmentLayerAnimation(config.animation, `${configPath}.animation`);
+    return config as unknown as ViewLayerConfig;
+  };
+  const validateTransitionLayerConfig = (config: unknown, configPath: string): TransitionLayerConfig => {
+    if (!isRecord(config) || typeof config.included !== 'boolean')
+      throw new Error(`${configPath} must contain an included boolean.`);
+    if (config.animation !== undefined)
+      validateSegmentLayerAnimation(config.animation, `${configPath}.animation`);
+    return config as unknown as TransitionLayerConfig;
+  };
+  if (value.layers !== undefined) {
+    if (!Array.isArray(value.layers)) throw new Error(`${path}.layers must be an array.`);
+    value.layers.forEach((layer, layerIndex) => validateLayer(layer, `${path}.layers[${layerIndex}]`));
+  }
+  if (value.layerConfigs !== undefined) {
+    if (!isRecord(value.layerConfigs)) throw new Error(`${path}.layerConfigs must be an object.`);
+    for (const [layerId, config] of Object.entries(value.layerConfigs as Record<string, unknown>))
+      validateViewLayerConfig(config, `${path}.layerConfigs[${layerId}]`);
+  }
+  if (value.transitionLayers !== undefined) {
+    if (!Array.isArray(value.transitionLayers)) throw new Error(`${path}.transitionLayers must be an array.`);
+    (value.transitionLayers as unknown[]).forEach((layer, layerIndex) =>
+      validateLayer(layer, `${path}.transitionLayers[${layerIndex}]`),
+    );
+  }
+  if (value.layerAnimations !== undefined) {
+    if (!isRecord(value.layerAnimations)) throw new Error(`${path}.layerAnimations must be an object.`);
+    for (const [layerId, anim] of Object.entries(value.layerAnimations as Record<string, unknown>))
+      validateSegmentLayerAnimation(anim, `${path}.layerAnimations[${layerId}]`);
+  }
+  if (value.transitionLayerConfigs !== undefined) {
+    if (!isRecord(value.transitionLayerConfigs))
+      throw new Error(`${path}.transitionLayerConfigs must be an object.`);
+    for (const [layerId, config] of Object.entries(value.transitionLayerConfigs as Record<string, unknown>))
+      validateTransitionLayerConfig(config, `${path}.transitionLayerConfigs[${layerId}]`);
+  }
+  return value as unknown as LegacyView;
+};
+
+const validateTransition = (value: unknown, index: number): Transition => {
+  const path = `project.transitions[${index}]`;
+  if (!isRecord(value) || !isString(value.id) || !isString(value.fromViewId) || !isString(value.toViewId))
+    throw new Error(`${path} has invalid identity fields.`);
+  if (!isFiniteNumber(value.duration) || value.duration < 0) throw new Error(`${path}.duration is invalid.`);
+  if (
+    !oneOf(value.preset, [
+      'smooth',
+      'cinematic',
+      'linear',
+      'ease-in',
+      'ease-out',
+      'ease-in-out',
+      'bezier',
+    ] as const)
+  )
+    throw new Error(`${path}.preset is unsupported.`);
+  if (!oneOf(value.type, ['smooth', 'pan', 'zoom', 'fly-to'] as const))
+    throw new Error(`${path}.type is unsupported.`);
+  if (!isRecord(value.layerConfigs)) throw new Error(`${path}.layerConfigs must be an object.`);
+  for (const [layerId, config] of Object.entries(value.layerConfigs)) {
+    if (!isRecord(config) || typeof config.included !== 'boolean')
+      throw new Error(`${path}.layerConfigs[${layerId}] is invalid.`);
+    if (config.animation !== undefined)
+      validateSegmentLayerAnimation(config.animation, `${path}.layerConfigs[${layerId}].animation`);
+  }
+  return value as unknown as Transition;
 };
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -191,8 +351,14 @@ export function validateAndMigrateProject(value: unknown): Project {
     throw new Error('Project map settings are malformed.');
   if (!Array.isArray(value.layers)) throw new Error('Project layers must be an array.');
   value.layers.forEach((layer, index) => validateLayer(layer, `project.layers[${index}]`));
+  const projectLayerIds = new Set<string>();
+  for (const layer of value.layers as Layer[])
+    if (!projectLayerIds.add(layer.id)) throw new Error(`Duplicate project Layer ID: ${layer.id}.`);
   if (!Array.isArray(value.views)) throw new Error('Project views must be an array.');
   value.views.forEach(validateView);
+  if (value.transitions !== undefined && !Array.isArray(value.transitions))
+    throw new Error('Project transitions must be an array.');
+  (value.transitions as unknown[] | undefined)?.forEach(validateTransition);
   if (!Array.isArray(value.assets) || !isRecord(value.animation) || !isRecord(value.exportSettings))
     throw new Error('Project assets, animation, or export settings are malformed.');
   const assetIds = new Set<string>();
@@ -210,12 +376,170 @@ export function validateAndMigrateProject(value: unknown): Project {
         if (!assetIds.has(layer.assetId))
           throw new Error(`${path}[${index}] references nonexistent asset ID: ${layer.assetId}.`);
       }
+      if (layer.type === 'pin' && layer.pinCustomAssetId !== undefined) {
+        if (!assetIds.has(layer.pinCustomAssetId))
+          throw new Error(
+            `${path}[${index}] references nonexistent custom icon asset ID: ${layer.pinCustomAssetId}.`,
+          );
+      }
     });
   validateReferences(value.layers as Layer[], 'project.layers');
-  (value.views as View[]).forEach((view, index) =>
-    validateReferences(view.layers, `project.views[${index}].layers`),
-  );
-  return value as unknown as Project;
+  (value.views as LegacyView[]).forEach((view, index) => {
+    const viewPath = `project.views[${index}]`;
+    if (view.layers) validateReferences(view.layers, `${viewPath}.layers`);
+    if (view.transitionLayers) validateReferences(view.transitionLayers, `${viewPath}.transitionLayers`);
+  });
+  // --- Migration: normalize legacy views to the canonical usage model ---
+  // The canonical model stores per-segment USAGE + ANIMATION only, keyed by
+  // project layer id; Layer visual state lives in `project.layers`.  Legacy
+  // views store full clones in `layers` (membership = `visible`), plus
+  // `transitionLayers`/`layerAnimations`.  Derive usage configs so every
+  // consumer (evaluator, Layers panel, timeline) reads one shape.  Legacy
+  // fields are consumed here and removed from the returned runtime Project.
+  const legacyViews = value.views as LegacyView[];
+  // Project.layers wins for an existing identity. If a malformed-but-readable
+  // legacy project contains a View-only Layer identity, retain the first
+  // deterministic snapshot as a canonical Project Layer so migration never
+  // loses an object.
+  const registry = structuredClone(value.layers as Layer[]).map((layer) => ({ ...layer, visible: true }));
+  const registryIds = new Set(registry.map((layer) => layer.id));
+  for (const view of legacyViews) {
+    for (const layer of [...(view.layers ?? []), ...(view.transitionLayers ?? [])]) {
+      if (registryIds.has(layer.id)) continue;
+      registryIds.add(layer.id);
+      registry.push({ ...structuredClone(layer), visible: true });
+    }
+  }
+  const viewsWithUsage = legacyViews.map((view) => {
+    const legacyViewConfigs = Object.fromEntries(
+      (view.layers ?? []).map((layer) => [layer.id, { included: layer.visible }]),
+    ) as Record<string, ViewLayerConfig>;
+    const layerConfigs = view.layerConfigs ?? legacyViewConfigs;
+    const legacyTransitionConfigs = Object.fromEntries(
+      (view.transitionLayers ?? []).map((layer) => [
+        layer.id,
+        {
+          included: layer.visible,
+          animation: normalizeSegmentAnimation(view.layerAnimations?.[layer.id]),
+        },
+      ]),
+    ) as Record<string, TransitionLayerConfig>;
+    const hadTransitionUsage =
+      view.transitionLayers !== undefined || view.transitionLayerConfigs !== undefined;
+    const transitionLayerConfigs = hadTransitionUsage
+      ? view.transitionLayers !== undefined
+        ? legacyTransitionConfigs
+        : view.transitionLayerConfigs
+      : undefined;
+    const {
+      layers: _legacyLayers,
+      transitionLayers: _legacyTransitionLayers,
+      layerAnimations: _legacyAnimations,
+      transitionLayerConfigs: _legacyTransitionConfigs,
+      transitionDuration: _legacyTransitionDuration,
+      transitionPreset: _legacyTransitionPreset,
+      transitionType: _legacyTransitionType,
+      ...runtimeView
+    } = view;
+    return {
+      runtimeView,
+      layerConfigs,
+      transitionLayerConfigs,
+      legacyTransitionDuration: view.transitionDuration,
+      legacyTransitionPreset: view.transitionPreset,
+      legacyTransitionType: view.transitionType,
+    };
+  });
+  // Committed projects have NO transition layer data at all — the old
+  // evaluator interpolated the union of source/destination View layers during
+  // the camera transition.  Synthesize transition usages as that union so
+  // membership (and therefore rendered presence) is preserved as closely as
+  // practical.  Per-view visual positions are intentionally NOT preserved:
+  // Layer visual state is now canonical in `project.layers`.
+  const viewMemberOf = (configs: Record<string, ViewLayerConfig>): Set<string> =>
+    new Set(
+      Object.entries(configs)
+        .filter(([, config]) => config.included)
+        .map(([id]) => id),
+    );
+  const unioned = viewsWithUsage.map((entry, index) => {
+    if (entry.transitionLayerConfigs !== undefined || index >= viewsWithUsage.length - 1) return entry;
+    const destMembers = viewMemberOf(viewsWithUsage[index + 1].layerConfigs);
+    const sourceMembers = viewMemberOf(entry.layerConfigs);
+    const members = new Set([...sourceMembers, ...destMembers]);
+    return {
+      ...entry,
+      transitionLayerConfigs: Object.fromEntries(
+        registry.map((layer) => [layer.id, { included: members.has(layer.id) }]),
+      ),
+    };
+  });
+  // --- Backfill: every View's configs have entries for ALL project layers ---
+  // Each segment config must have an explicit `included` flag for every
+  // project layer.  Layers missing from a config default to included=false
+  // (absent from that segment).  This makes the checkbox state fully
+  // deterministic and keeps the sidebar listing complete.
+  const backfilled = unioned.map(({ runtimeView, layerConfigs, transitionLayerConfigs }) => {
+    const vc = Object.fromEntries(
+      registry.map((layer) => {
+        const config = layerConfigs[layer.id];
+        return [
+          layer.id,
+          {
+            included: config?.included ?? false,
+            animation: normalizeSegmentAnimation(config?.animation),
+          },
+        ];
+      }),
+    );
+    return { ...runtimeView, layerConfigs: vc } as View;
+  });
+  const viewIds = new Set(backfilled.map((view) => view.id));
+  const existingTransitions = (value.transitions as Transition[] | undefined) ?? [];
+  const transitions: Transition[] = existingTransitions.length
+    ? existingTransitions.map((transition) => ({
+        ...structuredClone(transition),
+        layerConfigs: Object.fromEntries(
+          registry.map((layer) => {
+            const config = transition.layerConfigs[layer.id];
+            return [
+              layer.id,
+              {
+                included: config?.included ?? false,
+                animation: normalizeSegmentAnimation(config?.animation),
+              },
+            ];
+          }),
+        ),
+      }))
+    : unioned.slice(0, -1).map((entry, index) => ({
+        id: `transition-${entry.runtimeView.id}-${viewsWithUsage[index + 1].runtimeView.id}`,
+        fromViewId: entry.runtimeView.id,
+        toViewId: viewsWithUsage[index + 1].runtimeView.id,
+        duration: entry.legacyTransitionDuration ?? 0,
+        preset: entry.legacyTransitionPreset ?? 'smooth',
+        type: entry.legacyTransitionType ?? 'smooth',
+        layerConfigs: Object.fromEntries(
+          registry.map((layer) => {
+            const config = entry.transitionLayerConfigs?.[layer.id] as TransitionLayerConfig | undefined;
+            return [
+              layer.id,
+              {
+                included: config?.included ?? false,
+                animation: normalizeSegmentAnimation(config?.animation),
+              },
+            ];
+          }),
+        ),
+      }));
+  const transitionIds = new Set<string>();
+  for (const transition of transitions) {
+    if (!transitionIds.add(transition.id)) throw new Error(`Duplicate Transition ID: ${transition.id}.`);
+    if (!viewIds.has(transition.fromViewId) || !viewIds.has(transition.toViewId))
+      throw new Error(`Transition ${transition.id} references a missing View.`);
+  }
+  const { transitions: _inputTransitions, ...projectInput } = value;
+  return { ...(projectInput as unknown as Project), layers: registry, views: backfilled, transitions };
 }
 
 const canonicalize = (value: unknown): unknown => {
@@ -228,4 +552,5 @@ const canonicalize = (value: unknown): unknown => {
   );
 };
 
-export const canonicalProjectJson = (project: Project) => JSON.stringify(canonicalize(project), null, 2);
+export const canonicalProjectJson = (project: Project) =>
+  JSON.stringify(canonicalize(validateAndMigrateProject(project)), null, 2);

@@ -5,7 +5,7 @@ import { MapScene } from '../components/OfflineMap';
 import type { MapMode } from '../components/OfflineMap';
 import { MAP_STYLES, type Project } from './project';
 import { projectExportSettings, validateExportSettings, type ExportVideoSettings } from './exportPresets';
-import { compileViews, evaluateProjectAtTime } from './viewCompiler';
+import { compileTimeline, evaluateProjectAtTime } from './viewCompiler';
 import { resolveProjectAssetUrls } from './projectAssets';
 
 export const EXPORT_FRAME_WIDTH = 1920;
@@ -222,7 +222,7 @@ export async function renderProjectFrameSequence(
 ): Promise<RenderedProjectSequence> {
   validateExportSettings(settings);
 
-  const duration = compileViews(project.views).duration;
+  const duration = compileTimeline(project).duration;
   const totalFrames = Math.ceil(duration * settings.fps);
   for (let index = 0; index < totalFrames; index += 1) {
     const time = index / settings.fps;
@@ -243,7 +243,7 @@ export async function renderProjectRgbaSequence(
 ): Promise<RenderedRgbaSequence> {
   validateExportSettings(settings);
 
-  const duration = compileViews(project.views).duration;
+  const duration = compileTimeline(project).duration;
   const totalFrames = Math.ceil(duration * settings.fps);
   let renderMs = 0;
   let consumeMs = 0;
@@ -285,7 +285,7 @@ export async function renderViewThumbnails(
   signal?: AbortSignal,
 ): Promise<void> {
   if (viewIds.length === 0) return;
-  const sequence = compileViews(project.views);
+  const sequence = compileTimeline(project);
   const style = MAP_STYLES.find((candidate) => candidate.id === project.mapSettings.styleId);
   if (!style) throw new Error(`Unknown map style: ${project.mapSettings.styleId}`);
   const assetUrls = await resolveProjectAssetUrls(project);

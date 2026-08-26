@@ -1,0 +1,22 @@
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { join } from 'node:path';
+import { build } from 'vite';
+const root=fileURLToPath(new URL('..',import.meta.url)); const out=mkdtempSync(join(tmpdir(),'mapmotion-entities-')); const entry=join(out,'entry.ts');
+writeFileSync(entry,[`export * from '${join(root,'src/core/project').replaceAll('\\','/')}';`,`export * from '${join(root,'src/core/viewCompiler').replaceAll('\\','/')}';`,`export * from '${join(root,'src/core/projectPersistence').replaceAll('\\','/')}';`].join('\n'));
+let m; try { await build({configFile:false,logLevel:'silent',build:{outDir:out,emptyOutDir:false,minify:false,lib:{entry,formats:['es'],fileName:()=> 'core.mjs'}}}); m=await import(pathToFileURL(join(out,'core.mjs')).href); } finally { rmSync(out,{recursive:true,force:true}); }
+const {createProject,createLayer,createView,createTransition,compileTimeline,evaluateProjectAtTime,validateAndMigrateProject,deleteProjectLayer}=m;
+const p=createProject('Timeline entities'); const layers=['a','b','c','d'].map(id=>({...createLayer('pin'),id})); p.layers=layers;
+const patterns=[[1,0,1,0],[1,1,0,0],[0,0,1,1]]; p.views=patterns.map((pattern,i)=>{const v=createView(`V${i+1}`,layers.filter((_,j)=>pattern[j]),{x:i*100,y:0,zoom:1},layers);v.id=`v${i+1}`;v.holdDuration=i===2?5:0;return v;});
+p.transitions=[createTransition('v1','v2',layers),createTransition('v2','v3',layers)]; p.transitions[0].id='t1';p.transitions[0].duration=3;p.transitions[1].id='t2';p.transitions[1].duration=2;
+p.transitions[0].layerConfigs=Object.fromEntries(layers.map((l,i)=>[l.id,{included:Boolean([0,1,0,1][i])}]));p.transitions[1].layerConfigs=Object.fromEntries(layers.map((l,i)=>[l.id,{included:Boolean([1,0,1,1][i])}]));
+const before=structuredClone(p);p.transitions[0].layerConfigs.a={included:true};assert.deepEqual(p.views,before.views);assert.deepEqual(p.transitions[1],before.transitions[1]);assert.notEqual(p.views[0].layerConfigs,p.transitions[0].layerConfigs);assert.notEqual(p.transitions[0].layerConfigs,p.transitions[1].layerConfigs);
+const seq=compileTimeline(p);assert.equal(seq.duration,10);assert.deepEqual(seq.segments.map(s=>s.kind),['transition','transition','view']);assert.equal(evaluateProjectAtTime(p,3).layers.some(l=>l.id==='b'),false,'zero-hold View does not flash');
+p.views[1].layerConfigs.a.animation={appearEnabled:true,appearType:'fade'};assert.equal(compileTimeline(p).segments.some(s=>s.kind==='view'&&s.id==='v2'),false);p.views[1].holdDuration=4;assert.equal(compileTimeline(p).segments.some(s=>s.kind==='view'&&s.id==='v2'),true);
+const round=validateAndMigrateProject(p);assert.equal(round.transitions.length,2);assert.equal(round.views[0].holdDuration,0);assert.ok(!('transitionDuration' in round.views[0]));
+const zeroTransition=createTransition('v1','v2',p.layers);zeroTransition.id='zero-transition';zeroTransition.duration=0;const zeroProject={...p,transitions:[zeroTransition,p.transitions[1]]};assert.ok(!compileTimeline(zeroProject).segments.some(s=>s.id==='zero-transition'),'zero-duration Transition is not emitted');
+const finalZero=structuredClone(p);finalZero.views.at(-1).holdDuration=0;finalZero.views.at(-1).layerConfigs.a.included=true;finalZero.transitions.at(-1).layerConfigs.a.included=false;const terminal=evaluateProjectAtTime(finalZero,compileTimeline(finalZero).duration);assert.ok(!terminal.layers.some(l=>l.id==='a'),'final zero-Hold View does not inject terminal Layers');assert.deepEqual(terminal.camera,finalZero.views.at(-1).camera,'final zero-Hold camera anchor is retained');
+const deleted=deleteProjectLayer(round,'a');assert.ok(deleted.views.every(v=>!v.layerConfigs.a));assert.ok(deleted.transitions.every(t=>!t.layerConfigs.a));
+console.log('Timeline entities: stable standalone transitions, isolation, zero-hold compilation/no-flash, persistence and delete cascade passed.');

@@ -1,7 +1,26 @@
 import assert from 'node:assert/strict';
-import { BASEMAP_CAPABILITIES, createProject, MAP_STYLES } from '../src/core/project.ts';
-import { validateAndMigrateProject } from '../src/core/projectPersistence.ts';
-import {
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { join } from 'node:path';
+import { build } from 'vite';
+
+const root = fileURLToPath(new URL('..', import.meta.url));
+const outDir = mkdtempSync(join(tmpdir(), 'mapmotion-world-map-'));
+const entryFile = join(outDir, 'entry.ts');
+writeFileSync(entryFile, [
+  `export * from '${join(root, 'src/core/project').replaceAll('\\', '/')}';`,
+  `export * from '${join(root, 'src/core/projectPersistence').replaceAll('\\', '/')}';`,
+  `export * from '${join(root, 'src/data/worldMap').replaceAll('\\', '/')}';`,
+].join('\n'));
+let mod;
+try {
+  await build({ configFile: false, logLevel: 'silent', build: { outDir, emptyOutDir: false, minify: false, lib: { entry: entryFile, formats: ['es'], fileName: () => 'world.mjs' } } });
+  mod = await import(pathToFileURL(join(outDir, 'world.mjs')).href);
+} finally {
+  rmSync(outDir, { recursive: true, force: true });
+}
+const { BASEMAP_CAPABILITIES, createProject, MAP_STYLES, validateAndMigrateProject,
   CITY_LABELS,
   COASTLINE_PATH,
   CONTINENT_LABELS,
@@ -12,7 +31,7 @@ import {
   MARINE_LABELS,
   RIVER_PATHS,
   WORLD_MAP_DATASET,
-} from '../src/data/worldMap.ts';
+} = mod;
 
 assert.equal(WORLD_MAP_DATASET.id, 'mapmotion-natural-earth-world');
 assert.equal(WORLD_MAP_DATASET.scale, '1:50m');

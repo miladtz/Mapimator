@@ -15,7 +15,46 @@ export type GeoEffectType =
   | 'disputed-border'
   | 'influence-zone';
 export type TextLanguage = 'auto' | 'persian' | 'english';
+export type PinStyle = 'dot' | 'map-pin' | 'location' | 'target' | 'star' | 'circle' | 'custom';
+export type PinLabelPosition = 'top' | 'bottom' | 'left' | 'right';
+export type PinAppear = 'none' | 'fade' | 'pop';
+export type PinAppearType = 'fade' | 'pop' | 'drop';
+export type PinCustomAnchor = 'bottom-center' | 'center';
 export type TransitionType = 'smooth' | 'pan' | 'zoom' | 'fly-to';
+export type WipeType = 'fade-out';
+/**
+ * Per-layer animation configuration owned by a View OR Transition segment.
+ * Segment animations are independent from the camera motion and from each
+ * other: the same project Layer may Fade in one View, Drop in a Transition,
+ * and have no animation in another.
+ *
+ * Lifecycle within the segment (segment starts at T):
+ *   appear:     [T + appearDelay, T + appearDelay + appearDuration)
+ *   layer hold: [appearEnd, appearEnd + layerHoldDuration)
+ *   wipe out:   [layerHoldEnd, layerHoldEnd + wipeDuration)
+ *
+ * All durations are independent of the camera transition duration.
+ */
+export interface SegmentLayerAnimation {
+  /** Enable the entering appear animation. Only meaningful when the layer
+   *  is entering this segment (absent from the previous segment); a layer
+   *  that is continuously present never replays appear. */
+  appearEnabled?: boolean;
+  /** Appear animation type (fade/pop/drop). */
+  appearType?: PinAppearType;
+  /** Delay in seconds before the appear animation starts. */
+  appearDelay?: number;
+  /** Duration in seconds of the appear animation. */
+  appearDuration?: number;
+  /** Hold at full state after appear completes, in seconds. */
+  layerHoldDuration?: number;
+  /** Enable fade-out at the end of the layer lifecycle. */
+  wipeEnabled?: boolean;
+  /** Wipe animation type. */
+  wipeType?: WipeType;
+  /** Duration in seconds of the wipe. */
+  wipeDuration?: number;
+}
 export type TransitionPreset =
   'smooth' | 'cinematic' | 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'bezier';
 export type TextDirection = 'auto' | 'rtl' | 'ltr';
@@ -98,23 +137,110 @@ export interface Layer {
   effectDuration?: number;
   effectRepeat?: boolean;
   assetId?: string;
+  // Pin-specific appearance. Older projects omit these and inherit deterministic defaults.
+  pinStyle?: PinStyle;
+  pinSize?: number;
+  pinBorderColor?: string;
+  pinBorderWidth?: number;
+  pinLabelVisible?: boolean;
+  pinLabelSize?: number;
+  pinLabelColor?: string;
+  pinLabelPosition?: PinLabelPosition;
+  pinLabelGap?: number;
+  pinAppear?: PinAppear;
+  /** Enable appear animation. When false/undefined, pin appears instantly. */
+  pinAppearEnabled?: boolean;
+  /** Appear animation type. */
+  pinAppearType?: PinAppearType;
+  /** Delay in seconds before appear animation starts. */
+  pinAppearDelay?: number;
+  /** Duration in seconds of the appear animation. */
+  pinAppearDuration?: number;
+  /** Custom icon asset ID (content-addressed project asset). */
+  pinCustomAssetId?: string;
+  /** Anchor point for custom icon. */
+  pinCustomAnchor?: PinCustomAnchor;
+  /** Apply a deterministic color tint to the custom icon image. */
+  pinTintEnabled?: boolean;
+  /** Tint color applied to the custom icon image. */
+  pinTintColor?: string;
+  /** Transient evaluator output (appear/pop scale). Never persisted. */
+  pinPopScale?: number;
+  /** Transient evaluator output (drop Y offset in screen px). Never persisted. */
+  pinDropOffsetY?: number;
 }
 export interface CameraState {
   x: number;
   y: number;
   zoom: number;
 }
+/**
+ * A View's own configuration for one project Layer, keyed by the stable
+ * project layer id. It stores ONLY usage + animation — never copied Layer
+ * visual state. Layer visual properties are read from `Project.layers`
+ * (the single canonical definition), so changing a Project Layer changes it
+ * everywhere it is used.
+ */
+export interface ViewLayerConfig {
+  /** Whether this project Layer is used in this View Hold. */
+  included: boolean;
+  /** Optional per-layer animation lifecycle during this View Hold. */
+  animation?: SegmentLayerAnimation;
+}
+/**
+ * A Transition's own configuration for one project Layer, keyed by the stable
+ * project layer id. It stores ONLY usage + animation — never copied Layer
+ * visual state. Layer visual properties come from `Project.layers`.
+ */
+export interface TransitionLayerConfig {
+  /** Whether this project Layer exists in this Transition. */
+  included: boolean;
+  /** Per-layer animation lifecycle config (independent per segment). */
+  animation?: SegmentLayerAnimation;
+}
 export interface View {
   id: string;
   name: string;
   holdDuration: number;
-  transitionDuration: number;
-  transitionPreset: TransitionPreset;
-  /** Outgoing transition camera motion. Older projects omit this and default to 'smooth'. */
-  transitionType?: TransitionType;
   camera: CameraState;
-  layers: Layer[];
+  /**
+   * NEW MODEL: the View's own per-layer configuration, keyed by project layer id.
+   * New projects store membership + animation here. Legacy projects omit this
+   * and keep `layers` (full clones); helpers below normalize both forms.
+   */
+  layerConfigs: Record<string, ViewLayerConfig>;
+  /**
+   * NEW MODEL: the outgoing transition's per-layer configuration, keyed by
+   * project layer id. Legacy projects omit this and keep `transitionLayers` +
+   * `layerAnimations`.
+   */
+  /** LEGACY INPUT ONLY: outgoing transition state migrated to Project.transitions. */
+  transitionLayerConfigs?: Record<string, TransitionLayerConfig>;
+  transitionDuration?: number;
+  transitionPreset?: TransitionPreset;
+  transitionType?: TransitionType;
+  /**
+   * LEGACY INPUT ONLY: accepted and removed by project migration. Runtime
+   * projects and newly persisted projects never contain Layer snapshots.
+   */
+  layers?: Layer[];
+  /**
+   * LEGACY: the outgoing transition's OWN layer membership/state as full
+   * Layer clones (committed schema). Kept for migration.
+   */
+  transitionLayers?: Layer[];
+  /** LEGACY: per-layer animation config for the outgoing transition. */
+  layerAnimations?: Record<string, SegmentLayerAnimation>;
   thumbnailColor: string;
+}
+export interface Transition {
+  id: string;
+  fromViewId: string;
+  toViewId: string;
+  duration: number;
+  preset: TransitionPreset;
+  type: TransitionType;
+  layerConfigs: Record<string, TransitionLayerConfig>;
 }
 export interface Project {
   version: 1;
@@ -130,6 +256,7 @@ export interface Project {
   mapSettings: { styleId: MapStyleId; labelLanguage: 'en' | 'fa' | 'both' | 'none' };
   layers: Layer[];
   views: View[];
+  transitions: Transition[];
   assets: ProjectAsset[];
   animation: Record<string, never>;
   exportSettings: Record<string, never>;
@@ -248,7 +375,26 @@ export const createLayer = (type: LayerType, offset = 0): Layer => {
   const y = 260 + offset * 15;
   const defaults: Record<LayerType, Partial<Layer>> = {
     region: { name: 'Iran highlight', color: '#e8533e', countryId: 'iran', x: 650, y: 292 },
-    pin: { name: 'Capital pin', color: '#f3b43f', text: 'Tehran' },
+    pin: {
+      name: 'Pin',
+      color: '#f3b43f',
+      text: '',
+      pinStyle: 'location',
+      pinSize: 15,
+      pinBorderColor: '#ffffff',
+      pinBorderWidth: 2.5,
+      pinLabelVisible: true,
+      pinLabelSize: 12,
+      pinLabelColor: '#ffffff',
+      pinLabelPosition: 'right',
+      pinLabelGap: 6,
+      pinAppearEnabled: true,
+      pinAppearType: 'fade',
+      pinAppearDelay: 0,
+      pinAppearDuration: 0.6,
+      pinTintEnabled: false,
+      pinTintColor: '#e8533e',
+    },
     text: {
       name: 'Map headline',
       color: '#ffffff',
@@ -287,6 +433,33 @@ export const createLayer = (type: LayerType, offset = 0): Layer => {
     ...defaults[type],
   } as Layer;
 };
+/**
+ * Deterministic defaults for Pin layers. Legacy pins (and any pin missing a
+ * field) render exactly as the historical pin: a dot with a white border and
+ * a right-side label, screen-relative size.
+ */
+export const PIN_DEFAULTS = {
+  style: 'dot' as PinStyle,
+  size: 13,
+  borderColor: '#ffffff',
+  borderWidth: 3,
+  labelVisible: true,
+  labelSize: 11,
+  labelColor: '#ffffff',
+  labelPosition: 'right' as PinLabelPosition,
+  labelGap: 5,
+  appear: 'fade' as PinAppear,
+  appearEnabled: true,
+  appearType: 'fade' as PinAppearType,
+  appearDelay: 0,
+  appearDuration: 0.6,
+  tintEnabled: false,
+  tintColor: '#e8533e',
+};
+
+export const pinStyleOf = (layer: Layer): PinStyle => layer.pinStyle ?? PIN_DEFAULTS.style;
+export const pinSizeOf = (layer: Layer): number => layer.pinSize ?? PIN_DEFAULTS.size;
+export const pinAppearOf = (layer: Layer): PinAppear => layer.pinAppear ?? PIN_DEFAULTS.appear;
 export const createProject = (name = 'Untitled map'): Project => {
   const now = new Date().toISOString();
   return {
@@ -296,19 +469,269 @@ export const createProject = (name = 'Untitled map'): Project => {
     mapSettings: { styleId: 'documentary-dark', labelLanguage: 'en' },
     layers: [],
     views: [],
+    transitions: [],
     assets: [],
     animation: {},
     exportSettings: {},
   };
 };
-export const createView = (name: string, layers: Layer[], camera: CameraState): View => ({
-  id: `view-${crypto.randomUUID()}`,
-  name,
-  holdDuration: 3,
-  transitionDuration: 2.5,
-  transitionPreset: 'smooth',
-  transitionType: 'smooth',
-  camera: { ...camera },
-  layers: structuredClone(layers),
-  thumbnailColor: '#28415a',
+export const createView = (
+  name: string,
+  layers: Layer[],
+  camera: CameraState,
+  /** When provided, configs are created for ALL project layers (the master
+   *  registry).  Layers present in `layers` are marked included=true; all
+   *  others included=false.  This guarantees every segment config has an
+   *  entry for every project layer ID — the checkbox state is fully explicit. */
+  allLayers?: Layer[],
+): View => {
+  const registry = allLayers ?? layers;
+  // Backward compatibility: without allLayers, included = layer.visible
+  // (old tests and legacy code rely on this).  With allLayers, included
+  // means the layer is present in the `layers` array (visible flag ignored).
+  const includedIds = allLayers ? new Set(layers.map((l) => l.id)) : undefined;
+  return {
+    id: `view-${crypto.randomUUID()}`,
+    name,
+    holdDuration: 0,
+    camera: { ...camera },
+    // Usages only — no Layer visual state is copied.  Visual state is read
+    // from Project.layers at render time.
+    layerConfigs: Object.fromEntries(
+      registry.map((layer) => [
+        layer.id,
+        { included: includedIds ? includedIds.has(layer.id) : layer.visible },
+      ]),
+    ),
+    thumbnailColor: '#28415a',
+  };
+};
+/**
+ * Normalized View layer configuration: prefers the new `layerConfigs` model,
+ * otherwise derives an equivalent usage record from legacy `layers` clones
+ * (included = visible). Returns a fresh record so callers may mutate entries
+ * safely. No Layer visual state is stored — only usage + animation.
+ */
+export const viewLayerConfigsOf = (view: View): Record<string, ViewLayerConfig> => {
+  return { ...view.layerConfigs };
+};
+/**
+ * Effective render layer list for a View Hold: the PROJECT definitions of the
+ * layers this View includes.  Visual state is resolved from the canonical
+ * `Project.layers` registry — never from View snapshots.
+ */
+export const viewLayersOf = (project: Project, view: View): Layer[] => {
+  return project.layers
+    .map((layer) => resolveSegmentLayer(project, { kind: 'view', id: view.id }, layer.id))
+    .filter((layer): layer is Layer => layer !== null);
+};
+/** Set of project layer ids allocated to this View. */
+export const viewMemberIds = (view: View): Set<string> =>
+  new Set(
+    Object.entries(viewLayerConfigsOf(view))
+      .filter(([, config]) => config.included)
+      .map(([id]) => id),
+  );
+/** View-hold animation config for a layer (or undefined). */
+export const viewAnimOf = (view: View, layerId: string): SegmentLayerAnimation | undefined =>
+  view.layerConfigs[layerId]?.animation;
+/**
+ * Normalized transition layer configuration: prefers the new
+ * `transitionLayerConfigs` model, otherwise derives an equivalent record from
+ * legacy `transitionLayers` + `layerAnimations`. Returns a fresh record.
+ */
+export const transitionLayerConfigsOf = (transition: Transition): Record<string, TransitionLayerConfig> => {
+  return { ...transition.layerConfigs };
+};
+/**
+ * Effective render layer list for a Transition segment: the PROJECT
+ * definitions of the layers this transition includes.  Visual state comes
+ * from the canonical `Project.layers` registry.
+ */
+export const transitionLayersOf = (project: Project, transition: Transition): Layer[] => {
+  return project.layers
+    .map((layer) => resolveSegmentLayer(project, { kind: 'transition', id: transition.id }, layer.id))
+    .filter((layer): layer is Layer => layer !== null);
+};
+/** Set of project layer ids allocated to the outgoing transition. */
+export const transitionMemberIds = (transition: Transition): Set<string> =>
+  new Set(
+    Object.entries(transitionLayerConfigsOf(transition))
+      .filter(([, config]) => config.included)
+      .map(([id]) => id),
+  );
+/**
+ * Normalize a stored animation config: map legacy field names
+ * (`holdDuration` → `layerHoldDuration`, drop `wipeDelay`) so consumers read
+ * one shape regardless of which milestone wrote the file.
+ */
+export const normalizeSegmentAnimation = (
+  anim: SegmentLayerAnimation | undefined,
+): SegmentLayerAnimation | undefined => {
+  if (!anim) return undefined;
+  const out = { ...anim } as Record<string, unknown>;
+  if (out.layerHoldDuration === undefined && out.holdDuration !== undefined) {
+    out.layerHoldDuration = out.holdDuration;
+    delete out.holdDuration;
+  }
+  delete out.wipeDelay;
+  return out as SegmentLayerAnimation;
+};
+/** Animation config for a transition-owned layer (new or legacy model). */
+export const transitionAnimOf = (
+  transition: Transition,
+  layerId: string,
+): SegmentLayerAnimation | undefined =>
+  normalizeSegmentAnimation(transition.layerConfigs[layerId]?.animation);
+
+export type SegmentRef = { kind: 'view' | 'transition'; id: string };
+
+/** Resolve a canonical Project Layer by stable identity. */
+export function getProjectLayer(project: Project, layerId: string): Layer | undefined {
+  return project.layers.find((layer) => layer.id === layerId);
+}
+
+/** Resolve one segment's usage record without reading visual Layer state. */
+export function getSegmentLayerUsage(
+  project: Project,
+  segment: SegmentRef,
+  layerId: string,
+): ViewLayerConfig | TransitionLayerConfig | undefined {
+  return segment.kind === 'view'
+    ? project.views.find((view) => view.id === segment.id)?.layerConfigs[layerId]
+    : project.transitions.find((transition) => transition.id === segment.id)?.layerConfigs[layerId];
+}
+
+/** Immutably update exactly one View usage. Editor selection/mode state is intentionally outside this model. */
+export function setViewLayerIncluded(
+  project: Project,
+  viewId: string,
+  layerId: string,
+  included: boolean,
+): Project {
+  const viewIndex = project.views.findIndex((view) => view.id === viewId);
+  if (viewIndex < 0) return project;
+  const view = project.views[viewIndex];
+  const current = view.layerConfigs[layerId] ?? { included: false };
+  if (current.included === included) return project;
+  const views = [...project.views];
+  views[viewIndex] = {
+    ...view,
+    layerConfigs: {
+      ...view.layerConfigs,
+      [layerId]: { ...current, included },
+    },
+  };
+  return { ...project, views };
+}
+
+/** Immutably update exactly one Transition usage by stable Transition id. */
+export function setTransitionLayerIncluded(
+  project: Project,
+  transitionId: string,
+  layerId: string,
+  included: boolean,
+): Project {
+  const transitionIndex = project.transitions.findIndex((transition) => transition.id === transitionId);
+  if (transitionIndex < 0) return project;
+  const transition = project.transitions[transitionIndex];
+  const current = transition.layerConfigs[layerId] ?? { included: false };
+  if (current.included === included) return project;
+  const transitions = [...project.transitions];
+  transitions[transitionIndex] = {
+    ...transition,
+    layerConfigs: {
+      ...transition.layerConfigs,
+      [layerId]: { ...current, included },
+    },
+  };
+  return { ...project, transitions };
+}
+
+/** Combine a canonical Project Layer with segment membership for rendering. */
+export function resolveSegmentLayer(project: Project, segment: SegmentRef, layerId: string): Layer | null {
+  const usage = getSegmentLayerUsage(project, segment, layerId);
+  const layer = usage?.included ? getProjectLayer(project, layerId) : undefined;
+  return layer ? { ...structuredClone(layer), visible: true } : null;
+}
+/**
+ * Initialize a Transition's layer configs from a source View's configs,
+ * covering the full project layer registry.  Layers that the source View
+ * includes are carried into the transition as included; all others are
+ * included=false.  Existing animation configs on the View's transition
+ * are preserved.  Call once when creating a new View (its outgoing
+ * transition is the previous View's transition).
+ */
+export const initTransitionConfigsFromView = (
+  sourceView: View,
+  allLayers: Layer[],
+): Record<string, TransitionLayerConfig> => {
+  const viewConfigs = viewLayerConfigsOf(sourceView);
+  return Object.fromEntries(
+    allLayers.map((layer) => {
+      const viewInc = viewConfigs[layer.id]?.included ?? false;
+      return [layer.id, { included: viewInc }];
+    }),
+  );
+};
+export const createTransition = (
+  fromViewId: string,
+  toViewId: string,
+  layers: Layer[],
+  source?: View,
+): Transition => ({
+  id: `transition-${crypto.randomUUID()}`,
+  fromViewId,
+  toViewId,
+  duration: 2.5,
+  preset: 'smooth',
+  type: 'smooth',
+  layerConfigs: source
+    ? initTransitionConfigsFromView(source, layers)
+    : Object.fromEntries(layers.map((layer) => [layer.id, { included: false }])),
+});
+
+/** Add one canonical Project Layer and initialize every segment usage as excluded. */
+export const addProjectLayer = (project: Project, layer: Layer): Project => ({
+  ...project,
+  layers: [...project.layers, { ...layer, visible: true }],
+  views: project.views.map((view) => ({
+    ...view,
+    layerConfigs: { ...view.layerConfigs, [layer.id]: { included: false } },
+  })),
+  transitions: project.transitions.map((transition) => ({
+    ...transition,
+    layerConfigs: { ...transition.layerConfigs, [layer.id]: { included: false } },
+  })),
+});
+/**
+ * Centralized Project-layer deletion.  Removes the layer from the registry
+ * and from EVERY View and Transition usage (including animation configs), so
+ * Preview/Export never reference a missing layer id.
+ */
+export const deleteProjectLayer = (project: Project, layerId: string): Project => ({
+  ...project,
+  layers: project.layers.filter((l) => l.id !== layerId),
+  assets: project.assets.filter((asset) =>
+    project.layers.some(
+      (layer) =>
+        layer.id !== layerId &&
+        ((layer.type === 'image' && layer.assetId === asset.id) ||
+          (layer.type === 'pin' && layer.pinCustomAssetId === asset.id)),
+    ),
+  ),
+  views: project.views.map((view) => {
+    const next: View = { ...view };
+    if (next.layerConfigs) {
+      const layerConfigs = { ...next.layerConfigs };
+      delete layerConfigs[layerId];
+      next.layerConfigs = layerConfigs;
+    }
+    return next;
+  }),
+  transitions: project.transitions.map((transition) => {
+    const layerConfigs = { ...transition.layerConfigs };
+    delete layerConfigs[layerId];
+    return { ...transition, layerConfigs };
+  }),
 });

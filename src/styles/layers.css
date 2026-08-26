@@ -59,6 +59,119 @@
   font-size: 10px;
   color: #8da4b6;
 }
+.segment-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 12px 2px;
+  padding: 5px 7px;
+  border: 1px solid #2b3c4e;
+  border-radius: 3px;
+  background: #111b27;
+  font-size: 9px;
+  color: #9db0c1;
+}
+.segment-eye {
+  width: 22px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #3b5063;
+  border-radius: 3px;
+  background: #192635;
+  color: #c9d7e2;
+  font-size: 11px;
+}
+.segment-eye.off,
+.layer-eye.off {
+  opacity: 0.45;
+  color: #7e93a7;
+}
+.segment-all {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.segment-all.presentation-only,
+.layer-member:disabled {
+  opacity: 0.48;
+  cursor: default;
+}
+.segment-all input[type='checkbox'],
+.layer-member {
+  accent-color: #e8533e;
+  margin: 0;
+}
+.segment-hint {
+  margin-left: auto;
+  font-size: 8px;
+  color: #6f8498;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.layer-row {
+  cursor: default;
+}
+.layer-eye {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: #9db0c1;
+  font-size: 10px;
+  padding: 0;
+}
+.layer-eye:hover {
+  background: #26394b;
+  border-radius: 3px;
+}
+.layer-member {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+}
+.pin-section-sub {
+  display: block;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: #8fa6ba;
+  margin: 12px 0 6px;
+  text-transform: uppercase;
+}
+.transition-layer-section {
+  border-top: 1px dashed #3b5063;
+  padding-top: 14px;
+}
+.transition-section-context {
+  display: block;
+  font-style: normal;
+  color: #7e93a7;
+  font-size: 8px;
+  text-transform: none;
+  letter-spacing: 0.3px;
+  margin-top: 3px;
+}
+.segment-warning {
+  font-size: 9px;
+  line-height: 1.45;
+  margin: 7px 0 2px;
+  padding: 6px 8px;
+  border-radius: 3px;
+  color: #f2c98a;
+  background: #2a2417;
+  border: 1px solid #4a3a1d;
+}
+.segment-warning.info {
+  color: #a9c6de;
+  background: #16222e;
+  border-color: #2b4a63;
+}
 .add-toolbar {
   position: absolute;
   top: 14px;
@@ -81,11 +194,39 @@
 .add-toolbar button:hover {
   background: #2a3d51;
 }
+.add-toolbar button.active-tool {
+  background: #2a3d51;
+  box-shadow: inset 0 0 0 1px #71cbe9;
+  color: #fff;
+}
 .add-toolbar b {
   display: block;
   color: #71cbe9;
   font-size: 13px;
   margin-bottom: 2px;
+}
+.pin-label {
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: #182334;
+  stroke-width: 3px;
+  pointer-events: none;
+  user-select: none;
+}
+.pin-section {
+  margin: 2px 0 18px;
+}
+.pin-section-title {
+  display: block;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1.1px;
+  color: #ffd9a0;
+  margin-bottom: 12px;
+  text-transform: uppercase;
+}
+.pin-section .toggle {
+  margin: 4px 0 13px;
 }
 .layer-graphic {
   cursor: move;
@@ -288,4 +429,126 @@
     opacity: 0;
     transform: scale(2);
   }
+}
+.pin-style-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.pin-style-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+  padding: 6px 2px 4px;
+  border: 1px solid #2d3c4c;
+  border-radius: 5px;
+  background: #182331;
+  color: #c8d6e2;
+  font-size: 9px;
+  cursor: pointer;
+}
+.pin-style-tile:hover {
+  border-color: #4a6278;
+}
+.pin-style-tile.active {
+  border-color: #7fd4ff;
+  box-shadow: 0 0 0 1px #7fd4ff inset;
+  color: #fff;
+}
+.pin-style-tile svg {
+  color: #c8d6e2;
+  display: block;
+}
+.pin-style-tile.my-style-tile {
+  position: relative;
+  padding: 0;
+  overflow: visible;
+}
+.pin-style-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 100%;
+  padding: 6px 2px 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 9px;
+  cursor: pointer;
+  min-width: 0;
+}
+.pin-style-main img {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+  border-radius: 3px;
+  background: #101a26;
+}
+.pin-style-main span {
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pin-style-tile-actions {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  display: flex;
+  gap: 1px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.pin-style-tile.my-style-tile:hover .pin-style-tile-actions {
+  opacity: 1;
+}
+.pin-style-action {
+  font-size: 9px;
+  line-height: 1;
+  padding: 1px 3px;
+  border: 0;
+  border-radius: 2px;
+  background: #101a26;
+  color: #9dafbf;
+  cursor: pointer;
+}
+.pin-style-action:hover {
+  background: #2a3d51;
+  color: #fff;
+}
+.pin-style-action.danger {
+  color: #f08072;
+}
+.pin-style-tile.add {
+  border-style: dashed;
+  color: #7a8fa0;
+}
+.pin-style-add-icon {
+  font-size: 15px;
+  line-height: 1;
+  color: #7a8fa0;
+}
+.pin-size-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pin-size-control input {
+  flex: 1;
+  min-width: 0;
+}
+.pin-size-control b {
+  font-size: 9px;
+  color: #9dafbf;
+  white-space: nowrap;
+}
+.custom-icon-preview {
+  display: flex;
+  justify-content: center;
+  padding: 6px 0;
 }

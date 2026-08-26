@@ -1,26 +1,52 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
 import { OfflineMap } from '../components/OfflineMap';
 import type { MapMode } from '../components/OfflineMap';
 import { browserFileSystemAdapter } from '../core/adapters';
 import {
+  getPinStyles,
+  savePinStyle,
+  renamePinStyle,
+  deletePinStyle,
+  type PinStyleEntry,
+} from '../core/pinStyleLibrary';
+import {
   BASEMAP_CAPABILITIES,
   MAP_STYLES,
   CANVAS_LAYOUTS,
+  addProjectLayer,
   createLayer,
   createProject,
+  createTransition,
   createView,
+  deleteProjectLayer,
   layerLabel,
+  setTransitionLayerIncluded,
+  setViewLayerIncluded,
+  transitionAnimOf,
+  transitionLayerConfigsOf,
+  transitionMemberIds,
+  viewAnimOf,
+  viewLayerConfigsOf,
+  viewLayersOf,
+  viewMemberIds,
   type AppLanguage,
   type CameraState,
   type GeoEffectType,
   type Layer,
   type LayerType,
   type Project,
+  type SegmentRef,
+  type Transition,
   type View,
+  type ViewLayerConfig,
 } from '../core/project';
 import { t } from '../core/i18n';
-import { compileViews, evaluateProjectAtTime } from '../core/viewCompiler';
+import { compileTimeline, evaluateProjectAtTime } from '../core/viewCompiler';
+import { resolveEditingScene } from '../core/editingScene';
+import { canEditMembership } from '../core/editorPreviewModes';
+import { validateTransitionLayer, validateViewLayer, type SegmentWarning } from '../core/segmentValidation';
 import { autoReframe } from '../core/layout';
 import { fitCountryCamera, fitLayerCamera, fitSelectionCamera, fitWorldCamera } from '../core/camera';
 import { exportPortableProject, importPortableProjectDetailed } from '../core/portableProject';
@@ -33,9 +59,86 @@ import {
 import { renderViewThumbnails, VIEW_THUMBNAIL_HEIGHT, VIEW_THUMBNAIL_WIDTH } from '../core/frameRenderer';
 import {
   ingestProjectImage,
+  ingestProjectImageBytes,
+  cleanupProjectAssets,
   resolveProjectAssetUrls,
   validateProjectAssetStorage,
 } from '../core/projectAssets';
+
+const BUILTIN_PIN_STYLES: { id: NonNullable<Layer['pinStyle']>; label: string }[] = [
+  { id: 'location', label: 'Location' },
+  { id: 'map-pin', label: 'Map Pin' },
+  { id: 'dot', label: 'Dot' },
+  { id: 'target', label: 'Target' },
+  { id: 'star', label: 'Star' },
+  { id: 'circle', label: 'Circle' },
+];
+
+function PinStyleGlyph({ id, color }: { id: NonNullable<Layer['pinStyle']>; color: string }) {
+  const stroke = 'currentColor';
+  switch (id) {
+    case 'dot':
+      return (
+        <svg viewBox="-8 -8 16 16" width="20" height="20" aria-hidden="true">
+          <circle r="6.5" fill={color} stroke={stroke} strokeWidth="1.5" />
+          <circle r="2.6" fill="#17202d" stroke="none" />
+        </svg>
+      );
+    case 'location':
+      return (
+        <svg viewBox="-10 -20 20 20" width="20" height="20" aria-hidden="true">
+          <path
+            d="M0 -16.8 A 8.4 8.4 0 1 1 -0.01 -16.8 M -4.3 1.2 Q -0.7 3.6 0 9.8 Q 0.7 3.6 4.3 1.2 Z"
+            fill={color}
+            stroke={stroke}
+            strokeWidth="1.5"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
+    case 'map-pin':
+      return (
+        <svg viewBox="-10 -20 20 20" width="20" height="20" aria-hidden="true">
+          <path
+            d="M0 -16.8 A 8.4 8.4 0 1 1 -0.01 -16.8 M -4.3 1.2 Q -0.7 3.6 0 9.8 Q 0.7 3.6 4.3 1.2 Z M0 -8.6 a 2.6 2.6 0 1 0 0.01 -8.6"
+            fill={color}
+            fillRule="evenodd"
+            stroke={stroke}
+            strokeWidth="1.5"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
+    case 'target':
+      return (
+        <svg viewBox="-8 -8 16 16" width="20" height="20" aria-hidden="true">
+          <circle r="6.5" fill="none" stroke={stroke} strokeWidth="1.5" />
+          <circle r="4" fill="none" stroke={stroke} strokeWidth="1.2" />
+          <circle r="1.7" fill={color} stroke="none" />
+        </svg>
+      );
+    case 'star':
+      return (
+        <svg viewBox="-9 -9 18 18" width="20" height="20" aria-hidden="true">
+          <path
+            d="M0 -8 L2.2 -2.4 L8 -2.4 L3.4 1.4 L4.9 7 L0 3.6 L-4.9 7 L-3.4 1.4 L-8 -2.4 L-2.2 -2.4 Z"
+            fill={color}
+            stroke={stroke}
+            strokeWidth="1.2"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
+    case 'circle':
+      return (
+        <svg viewBox="-8 -8 16 16" width="20" height="20" aria-hidden="true">
+          <circle r="6.5" fill={color} stroke={stroke} strokeWidth="1.5" />
+        </svg>
+      );
+    default:
+      return null;
+  }
+}
 
 const layerTypes: LayerType[] = ['pin', 'route', 'text', 'image', 'shape', 'region', 'arrow', 'geo-effect'];
 const icons: Record<LayerType, string> = {
@@ -75,15 +178,20 @@ export function App() {
   const [language, setLanguage] = useState<AppLanguage>('en');
   const [notice, setNotice] = useState('Offline map data loaded');
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [selectedTransitionIndex, setSelectedTransitionIndex] = useState<number | null>(null);
+  /** The sole authoritative stable-ID View/Transition selection. Null means Map Mode while stopped. */
+  const [timelineSelection, setTimelineSelection] = useState<SegmentRef | null>(null);
+  const [transitionPopoverId, setTransitionPopoverId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [camera, setCamera] = useState<CameraState>({ x: 0, y: 0, zoom: 1 });
   const [mapMode, setMapMode] = useState<MapMode>('flat');
-  const [activeViewId, setActiveViewId] = useState<string | null>(null);
   const [previewTime, setPreviewTime] = useState<number | null>(null);
   const [playbackState, setPlaybackState] = useState<PlaybackState>('stopped');
   const [layersPanelOpen, setLayersPanelOpen] = useState(true);
+  const [placing, setPlacing] = useState<LayerType | null>(null);
   const [draggedViewId, setDraggedViewId] = useState<string | null>(null);
+  /** Editor-only temporary layer hiding (eye). Never persisted, never affects Preview/Export. */
+  const [eyeHidden, setEyeHidden] = useState<Record<string, boolean>>({});
+  const [allEyesHidden, setAllEyesHidden] = useState(false);
   const [openViewMenuId, setOpenViewMenuId] = useState<string | null>(null);
   const [viewThumbnails, setViewThumbnails] = useState<Record<string, string>>({});
   const [timelineZoom, setTimelineZoom] = useState(1);
@@ -99,6 +207,7 @@ export function App() {
   const exportAbort = useRef<AbortController | null>(null);
   const previewTimeRef = useRef(0);
   const timelineScrollRef = useRef<HTMLDivElement | null>(null);
+  const globalMembershipRef = useRef<HTMLInputElement | null>(null);
   const projectRef = useRef(project);
   projectRef.current = project;
   const thumbnailRenderIdRef = useRef(0);
@@ -107,24 +216,39 @@ export function App() {
   const words = t(language);
   const style = MAP_STYLES.find((item) => item.id === project.mapSettings.styleId)!;
   const selected = project.layers.find((l) => l.id === selectedId) ?? null;
+  const projectMode = timelineSelection === null;
+  const selectedTransitionId = timelineSelection?.kind === 'transition' ? timelineSelection.id : null;
+  const activeViewId = timelineSelection?.kind === 'view' ? timelineSelection.id : null;
+  const selectedTransitionIndex = selectedTransitionId
+    ? project.transitions.findIndex((transition) => transition.id === selectedTransitionId)
+    : null;
   const activeView = project.views.find((view) => view.id === activeViewId) ?? null;
   const visibleLayers = useMemo(
     () => project.layers.filter((l) => l.name.toLowerCase().includes(search.toLowerCase())),
     [project.layers, search],
   );
-  const sequence = useMemo(() => compileViews(project.views), [project.views]);
-  const previewState = previewTime === null ? null : evaluateProjectAtTime(project, previewTime);
+  const sequence = useMemo(() => compileTimeline(project), [project]);
+  const selectedTimelineEntity = timelineSelection;
+  const previewState =
+    playbackState === 'stopped' || previewTime === null ? null : evaluateProjectAtTime(project, previewTime);
+  const editingScene = useMemo(
+    () => resolveEditingScene(project, selectedTimelineEntity, camera),
+    [project, selectedTimelineEntity?.kind, selectedTimelineEntity?.id, camera],
+  );
   const previewDisplayTime = previewTime ?? 0;
-  const playheadPosition = timelinePosition(sequence, previewDisplayTime, timelineZoom);
+  const playheadPosition = timelinePosition(project, previewDisplayTime, timelineZoom);
+  const timelineLayout = useMemo(() => buildTimelineLayout(project, timelineZoom), [project, timelineZoom]);
   const selectedTransition =
-    selectedTransitionIndex !== null ? (project.views[selectedTransitionIndex] ?? null) : null;
+    selectedTransitionIndex !== null ? (project.transitions[selectedTransitionIndex] ?? null) : null;
   const activeTransitionIndex = useMemo(() => {
     if (previewTime === null) return null;
-    const index = sequence.segments.findIndex(
-      (segment) => previewTime > segment.holdEnd && previewTime < segment.end,
+    const segment = sequence.segments.find(
+      (segment) => segment.kind === 'transition' && previewTime >= segment.start && previewTime < segment.end,
     );
+    if (!segment || segment.kind !== 'transition') return null;
+    const index = project.transitions.findIndex((transition) => transition.id === segment.id);
     return index >= 0 ? index : null;
-  }, [previewTime, sequence]);
+  }, [previewTime, sequence, project.transitions]);
   const thumbnailSignatures = useMemo(() => {
     const global = {
       mapMode,
@@ -132,13 +256,27 @@ export function App() {
       canvasWidth: project.canvas.width,
       canvasHeight: project.canvas.height,
     };
+    // Layer visual state is canonical in project.layers, so a global Layer
+    // change updates every View thumbnail that uses it (see section: global
+    // property behavior).  Membership changes update each View's signature.
     return Object.fromEntries(
       project.views.map((view) => [
         view.id,
-        JSON.stringify({ global, camera: view.camera, layers: view.layers }),
+        JSON.stringify({
+          global,
+          camera: view.camera,
+          layers: viewLayersOf(project, view),
+        }),
       ]),
     );
-  }, [mapMode, project.mapSettings, project.canvas.width, project.canvas.height, project.views]);
+  }, [
+    mapMode,
+    project.mapSettings,
+    project.canvas.width,
+    project.canvas.height,
+    project.views,
+    project.layers,
+  ]);
   useEffect(() => {
     let active = true;
     resolveProjectAssetUrls(project)
@@ -151,6 +289,14 @@ export function App() {
   useEffect(() => {
     previewTimeRef.current = previewDisplayTime;
   }, [previewDisplayTime]);
+  /** Authoritative Stop semantics shared by the transport and natural completion. */
+  const stopPlayback = useCallback(() => {
+    previewTimeRef.current = 0;
+    setPreviewTime(null);
+    setPlaybackState('stopped');
+    setTimelineSelection(null);
+    setTransitionPopoverId(null);
+  }, []);
   useEffect(() => {
     if (playbackState !== 'playing') return;
     const startedAt = performance.now() - previewTimeRef.current * 1000;
@@ -158,9 +304,7 @@ export function App() {
     const tick = () => {
       const next = (performance.now() - startedAt) / 1000;
       if (next >= sequence.duration) {
-        previewTimeRef.current = sequence.duration;
-        setPreviewTime(sequence.duration);
-        setPlaybackState('paused');
+        stopPlayback();
         return;
       }
       previewTimeRef.current = next;
@@ -169,12 +313,10 @@ export function App() {
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [playbackState, sequence.duration]);
-  useEffect(() => {
-    if (!previewState) return;
-    const current = project.views[previewState.activeViewIndex];
-    if (current && current.id !== activeViewId) setActiveViewId(current.id);
-  }, [activeViewId, previewState?.activeViewIndex, project.views]);
+  }, [playbackState, sequence.duration, stopPlayback]);
+  // Preview evaluation must not change the editor's selected segment. In
+  // particular, seeking into a Transition must not replace its Layers-panel
+  // context with the adjacent View; View/Transition selection is user-owned.
   useEffect(() => {
     const scroller = timelineScrollRef.current;
     if (!scroller || playbackState !== 'playing') return;
@@ -188,6 +330,7 @@ export function App() {
   useEffect(() => {
     const onKey = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape') {
+        setPlacing(null);
         setLayersPanelOpen(false);
         setOpenViewMenuId(null);
       }
@@ -252,12 +395,16 @@ export function App() {
     scrollViewCardIntoView(activeViewId);
   }, [activeViewId, playbackState, project.views.length, scrollViewCardIntoView, timelineZoom]);
   const updateProject = (fn: (p: Project) => Project) => setProject(fn);
+  /** Select a layer. A selected Transition stays selected so the layer can be
+   *  configured for that transition (the Layers panel keeps its segment context). */
   const selectLayer = useCallback((id: string | null) => {
     setSelectedId(id);
-    setSelectedTransitionIndex(null);
   }, []);
-  const selectTransition = useCallback((index: number) => {
-    setSelectedTransitionIndex(index);
+  const selectTransition = (transitionId: string) => {
+    setTimelineSelection({ kind: 'transition', id: transitionId });
+    setTransitionPopoverId(transitionId);
+  };
+  const clearSelection = useCallback(() => {
     setSelectedId(null);
   }, []);
   const applyCameraEdit = useCallback((next: CameraState) => {
@@ -267,7 +414,7 @@ export function App() {
   }, []);
   const handleCameraChange = useCallback(
     (next: CameraState) => {
-      if (playbackState === 'playing') return;
+      if (playbackState !== 'stopped') return;
       applyCameraEdit(next);
     },
     [applyCameraEdit, playbackState],
@@ -277,7 +424,172 @@ export function App() {
       ...p,
       layers: p.layers.map((l) => (l.id === id ? { ...l, ...patch } : l)),
     }));
+  /** Which segment the Layers panel currently edits: a Transition or the active View. */
+  const editingTransitionIndex =
+    selectedTransitionIndex !== null && project.transitions[selectedTransitionIndex]
+      ? selectedTransitionIndex
+      : null;
+  const editingViewIndex =
+    editingTransitionIndex === null && activeView
+      ? project.views.findIndex((v) => v.id === activeView.id)
+      : -1;
+  /**
+   * The selected segment's layer membership (checkbox state), derived from the
+   * segment's own per-layer configuration keyed by project layer id. The
+   * Layers panel always lists the full project registry; only the checkboxes
+   * change with the selected View/Transition.
+   */
+  const segmentVisibleIds = useMemo(() => {
+    if (editingTransitionIndex !== null)
+      return transitionMemberIds(project.transitions[editingTransitionIndex]);
+    if (editingViewIndex >= 0) return viewMemberIds(project.views[editingViewIndex]);
+    return new Set<string>();
+  }, [editingTransitionIndex, editingViewIndex, project.views, project.transitions]);
+  /**
+   * Update the selected segment's layer membership (checkbox) immediately.
+   * This is an explicit View/Transition configuration edit and does NOT
+   * require Update View.  Only the segment's usage config changes — Layer
+   * visual properties are project-global and never touched here.
+   */
+  const setSegmentMembership = (layerId: string, checked: boolean) => {
+    if (projectMode) return;
+    if (selectedTransitionId) {
+      updateProject((p) => setTransitionLayerIncluded(p, selectedTransitionId, layerId, checked));
+      return;
+    }
+    if (activeViewId) updateProject((p) => setViewLayerIncluded(p, activeViewId, layerId, checked));
+  };
+  /** Patch the selected Transition's per-layer animation config. */
+  const patchTransitionAnim = (
+    layerId: string,
+    patch: Partial<import('../core/project').SegmentLayerAnimation>,
+  ) => {
+    if (!selectedTransitionId) return;
+    updateProject((p) => ({
+      ...p,
+      transitions: p.transitions.map((transition) =>
+        transition.id === selectedTransitionId
+          ? {
+              ...transition,
+              layerConfigs: {
+                ...transition.layerConfigs,
+                [layerId]: {
+                  ...(transition.layerConfigs[layerId] ?? { included: false }),
+                  animation: {
+                    ...(transition.layerConfigs[layerId]?.animation ?? {}),
+                    ...patch,
+                  },
+                },
+              },
+            }
+          : transition,
+      ),
+    }));
+  };
+  /** Patch the active View's per-layer animation config (View-hold lifecycle). */
+  const patchViewAnim = (
+    layerId: string,
+    patch: Partial<import('../core/project').SegmentLayerAnimation>,
+  ) => {
+    if (!activeViewId) return;
+    updateProject((p) => ({
+      ...p,
+      views: p.views.map((v) =>
+        v.id === activeViewId
+          ? {
+              ...v,
+              layerConfigs: {
+                ...viewLayerConfigsOf(v),
+                [layerId]: {
+                  included: viewLayerConfigsOf(v)[layerId]?.included ?? false,
+                  animation: {
+                    ...(viewLayerConfigsOf(v)[layerId]?.animation ?? {}),
+                    ...patch,
+                  },
+                },
+              },
+            }
+          : v,
+      ),
+    }));
+  };
+  const segmentAllChecked =
+    project.layers.length > 0 && (projectMode || project.layers.every((l) => segmentVisibleIds.has(l.id)));
+  const segmentSomeChecked = projectMode || project.layers.some((l) => segmentVisibleIds.has(l.id));
+  const allocationCheckboxDisabled = !canEditMembership(playbackState, selectedTimelineEntity);
+  const segmentContextLabel = projectMode
+    ? 'Project Layers'
+    : editingTransitionIndex !== null
+      ? `Editing Transition ${editingTransitionIndex + 1} → ${editingTransitionIndex + 2}`
+      : editingViewIndex >= 0
+        ? `Editing View ${editingViewIndex + 1}`
+        : words.layers;
+  useEffect(() => {
+    if (globalMembershipRef.current)
+      globalMembershipRef.current.indeterminate = !projectMode && segmentSomeChecked && !segmentAllChecked;
+  }, [projectMode, segmentSomeChecked, segmentAllChecked]);
+  /** Global membership checkbox: check/uncheck every layer for the selected segment. */
+  const toggleAllMembership = () => {
+    if (projectMode) return;
+    const target = !segmentAllChecked;
+    if (selectedTransitionId) {
+      updateProject((p) => ({
+        ...p,
+        transitions: p.transitions.map((transition) =>
+          transition.id === selectedTransitionId
+            ? {
+                ...transition,
+                layerConfigs: Object.fromEntries(
+                  p.layers.map((l) => {
+                    const existing = transition.layerConfigs[l.id];
+                    return [l.id, { included: target, animation: existing?.animation }];
+                  }),
+                ),
+              }
+            : transition,
+        ),
+      }));
+      return;
+    }
+    if (activeViewId) {
+      updateProject((p) => ({
+        ...p,
+        views: p.views.map((v) =>
+          v.id === activeViewId
+            ? {
+                ...v,
+                layerConfigs: Object.fromEntries(
+                  p.layers.map((l) => {
+                    const existing = viewLayerConfigsOf(v)[l.id];
+                    return [l.id, { included: target, animation: existing?.animation }];
+                  }),
+                ),
+              }
+            : v,
+        ),
+      }));
+    }
+  };
+  const placeLayerAt = (type: LayerType, point: { x: number; y: number }) => {
+    const layer = createLayer(type, project.layers.length);
+    layer.x = point.x;
+    layer.y = point.y;
+    if (type === 'pin') {
+      const pinCount = project.layers.filter((l) => l.type === 'pin').length;
+      layer.name = `Pin ${pinCount + 1}`;
+    }
+    updateProject((p) => addProjectLayer(p, layer));
+    selectLayer(layer.id);
+    setPlacing(null);
+    setNotice(`${layer.name} added — click its Properties to style it`);
+  };
   const addLayer = async (type: LayerType) => {
+    setPlacing(null);
+    if (type === 'pin') {
+      setPlacing('pin');
+      setNotice('Click the map to place the Pin — Esc to cancel');
+      return;
+    }
     const layer = createLayer(type, project.layers.length);
     let asset = null;
     if (type === 'image') {
@@ -305,12 +617,18 @@ export function App() {
       layer.geoEffectType = effect.type;
       layer.name = effect.name;
     }
-    updateProject((p) => ({
-      ...p,
-      assets:
-        asset && !p.assets.some((candidate) => candidate.id === asset.id) ? [...p.assets, asset] : p.assets,
-      layers: [...p.layers, layer],
-    }));
+    updateProject((p) =>
+      addProjectLayer(
+        {
+          ...p,
+          assets:
+            asset && !p.assets.some((candidate) => candidate.id === asset.id)
+              ? [...p.assets, asset]
+              : p.assets,
+        },
+        layer,
+      ),
+    );
     selectLayer(layer.id);
     setNotice(`${layer.name} added`);
   };
@@ -335,9 +653,10 @@ export function App() {
         await validateProjectAssetStorage(saved);
         setProject(saved);
         setSelectedId(null);
-        setActiveViewId(saved.views[0]?.id ?? null);
+        setTimelineSelection(null);
+        setTransitionPopoverId(null);
         setCamera(saved.views[0]?.camera ?? { x: 0, y: 0, zoom: 1 });
-        setPreviewTime(0);
+        setPreviewTime(null);
         setPlaybackState('stopped');
         setNotice(words.opened);
       } else setNotice('No saved local project yet');
@@ -379,8 +698,9 @@ export function App() {
       setProject(imported);
       setCamera(imported.views[0]?.camera ?? { x: 0, y: 0, zoom: 1 });
       setSelectedId(null);
-      setActiveViewId(imported.views[0]?.id ?? null);
-      setPreviewTime(0);
+      setTimelineSelection(null);
+      setTransitionPopoverId(null);
+      setPreviewTime(null);
       setPlaybackState('stopped');
       const warningCount = compatibility.diagnostics.filter(
         (diagnostic) => diagnostic.severity === 'warning',
@@ -403,16 +723,28 @@ export function App() {
       x: selected.x + 22,
       y: selected.y + 18,
     };
-    updateProject((p) => ({ ...p, layers: [...p.layers, layer] }));
+    updateProject((p) => addProjectLayer(p, layer));
     selectLayer(layer.id);
   };
-  const remove = () => {
+  const remove = async () => {
     if (!selected) return;
-    updateProject((p) => ({
-      ...p,
-      layers: p.layers.filter((l) => l.id !== selected.id),
-    }));
+    const name = selected.name;
+    const ok = window.confirm(
+      `Delete ${name} from the project?\nIt will be removed from all Views and Transitions.`,
+    );
+    if (!ok) return;
+    // Centralized project-level cascade: removes the Layer from the registry
+    // and from every View/Transition usage.
+    const deleted = deleteProjectLayer(project, selected.id);
+    setProject(deleted);
     selectLayer(null);
+    try {
+      const cleaned = await cleanupProjectAssets(deleted);
+      setProject(cleaned.project);
+      setNotice(`${name} deleted from project and all segments`);
+    } catch (error) {
+      setNotice(`${name} deleted; asset cleanup will retry later: ${String(error)}`);
+    }
   };
   const move = (direction: -1 | 1) => {
     if (!selected) return;
@@ -425,34 +757,61 @@ export function App() {
     });
   };
   const addView = () => {
-    const view = createView(`View ${project.views.length + 1}`, project.layers, camera);
-    updateProject((p) => ({ ...p, views: [...p.views, view] }));
-    setActiveViewId(view.id);
+    const view = createView(`View ${project.views.length + 1}`, project.layers, camera, project.layers);
+    updateProject((p) => {
+      const views = [...p.views];
+      // Initialize the previous View's outgoing transition membership from its
+      // own config (convenience only — after creation the states are independent).
+      const last = views.at(-1);
+      views.push(view);
+      return {
+        ...p,
+        views,
+        transitions: last
+          ? [...p.transitions, createTransition(last.id, view.id, p.layers, last)]
+          : p.transitions,
+      };
+    });
+    setTimelineSelection({ kind: 'view', id: view.id });
+    setPreviewTime(null);
     setPlaybackState('stopped');
+    setTransitionPopoverId(null);
     setNotice(`${view.name} captured`);
   };
   const activateView = (id: string) => {
     const view = project.views.find((v) => v.id === id);
     if (!view) return;
-    setActiveViewId(id);
+    setTimelineSelection({ kind: 'view', id });
     setCamera(view.camera);
     setPreviewTime(null);
-    updateProject((p) => ({ ...p, layers: structuredClone(view.layers) }));
-    setSelectedId(null);
-    setSelectedTransitionIndex(null);
+    // Layer visual properties are project-global, so activating a View does
+    // NOT change the editor canvas layers — only camera and the segment
+    // context (membership checkboxes / animation editor) change.
+    setTransitionPopoverId(null);
     setPlaybackState('stopped');
     setNotice(`${view.name} previewed`);
   };
+  /**
+   * With the normalized model, Layer properties are project-global, so
+   * "Update View" now saves only the View-owned state that remains — the
+   * camera.  Layer membership/animation are timeline config edits applied
+   * immediately from the Layers panel / segment editor.
+   */
   const updateView = () => {
     if (!activeViewId) return;
     updateProject((p) => ({
       ...p,
-      views: p.views.map((v) =>
-        v.id === activeViewId ? { ...v, camera: { ...camera }, layers: structuredClone(p.layers) } : v,
-      ),
+      views: p.views.map((v) => (v.id === activeViewId ? { ...v, camera: { ...camera } } : v)),
     }));
     setNotice('View updated — project not saved yet');
   };
+  /** True when the active View's camera no longer matches the working camera. */
+  const activeViewStale = useMemo(() => {
+    const active = project.views.find((v) => v.id === activeViewId);
+    if (!active) return false;
+    return JSON.stringify(active.camera) !== JSON.stringify(camera);
+  }, [project.views, activeViewId, camera]);
+
   const duplicateView = (viewId = activeViewId) => {
     const source = project.views.find((v) => v.id === viewId);
     if (!source) return addView();
@@ -461,9 +820,19 @@ export function App() {
       id: `view-${crypto.randomUUID()}`,
       name: `${source.name} copy`,
     };
-    updateProject((p) => ({ ...p, views: [...p.views, view] }));
-    setActiveViewId(view.id);
-    setSelectedTransitionIndex(null);
+    updateProject((p) => {
+      const last = p.views.at(-1);
+      return {
+        ...p,
+        views: [...p.views, view],
+        transitions: last
+          ? [...p.transitions, createTransition(last.id, view.id, p.layers, last)]
+          : p.transitions,
+      };
+    });
+    setTimelineSelection({ kind: 'view', id: view.id });
+    setPreviewTime(null);
+    setTransitionPopoverId(null);
     setPlaybackState('stopped');
     setOpenViewMenuId(null);
   };
@@ -483,23 +852,30 @@ export function App() {
     const index = project.views.findIndex((view) => view.id === viewId);
     if (index < 0) return;
     const remaining = project.views.filter((view) => view.id !== viewId);
-    updateProject((p) => ({
-      ...p,
-      views: p.views.filter((v) => v.id !== viewId),
-    }));
+    updateProject((p) => {
+      const views = p.views.filter((v) => v.id !== viewId);
+      const transitions = p.transitions.filter(
+        (transition) => transition.fromViewId !== viewId && transition.toViewId !== viewId,
+      );
+      const previous = p.views[index - 1];
+      const following = p.views[index + 1];
+      return {
+        ...p,
+        views,
+        transitions:
+          previous && following
+            ? [...transitions, createTransition(previous.id, following.id, p.layers, previous)]
+            : transitions,
+      };
+    });
     const next = remaining[Math.min(index, remaining.length - 1)] ?? null;
-    setActiveViewId(next?.id ?? null);
+    setTimelineSelection(next ? { kind: 'view', id: next.id } : null);
     if (next) {
       setCamera(next.camera);
-      const nextSequence = compileViews(remaining);
-      const nextIndex = remaining.findIndex((view) => view.id === next.id);
-      const nextTime = nextSequence.segments[Math.max(0, nextIndex)]?.start ?? 0;
-      setPreviewTime(nextTime);
-    } else {
-      setPreviewTime(null);
     }
+    setPreviewTime(null);
     setPlaybackState('stopped');
-    setSelectedTransitionIndex(null);
+    setTransitionPopoverId(null);
     setOpenViewMenuId(null);
     setNotice(next ? `Deleted View; selected ${next.name}` : 'Deleted last View');
   };
@@ -512,17 +888,26 @@ export function App() {
       const views = [...p.views];
       const [moved] = views.splice(from, 1);
       views.splice(to, 0, moved);
-      return { ...p, views };
+      const transitions = views.slice(0, -1).map((view, index) => {
+        const next = views[index + 1];
+        return (
+          p.transitions.find(
+            (transition) => transition.fromViewId === view.id && transition.toViewId === next.id,
+          ) ?? createTransition(view.id, next.id, p.layers, view)
+        );
+      });
+      return { ...p, views, transitions };
     });
-    setActiveViewId(fromId);
-    setPreviewTime(0);
-    setSelectedTransitionIndex(null);
+    setTimelineSelection({ kind: 'view', id: fromId });
+    setPreviewTime(null);
+    setTransitionPopoverId(null);
     setPlaybackState('stopped');
   };
   const playPreview = () => {
     if (!project.views.length) return;
     const atEnd = previewTimeRef.current >= sequence.duration - 1 / project.canvas.fps;
-    const nextTime = previewTime === null || atEnd ? 0 : previewTimeRef.current;
+    const nextTime =
+      previewTime === null || atEnd || playbackState === 'stopped' ? 0 : previewTimeRef.current;
     previewTimeRef.current = nextTime;
     setPreviewTime(nextTime);
     setPlaybackState('playing');
@@ -530,10 +915,26 @@ export function App() {
   const pausePreview = () => {
     if (playbackState === 'playing') setPlaybackState('paused');
   };
-  const stopPreview = () => {
-    previewTimeRef.current = 0;
-    setPreviewTime(0);
-    setPlaybackState('stopped');
+  const toggleProjectMode = (enabled: boolean) => {
+    if (playbackState !== 'stopped') return;
+    if (enabled) {
+      setTimelineSelection(null);
+      setTransitionPopoverId(null);
+      setPreviewTime(null);
+      setNotice('Map Mode â€” editing Project Layers');
+      return;
+    }
+    const first = project.views[0];
+    if (!first) {
+      setTimelineSelection(null);
+      setNotice('Add a View before leaving Map Mode.');
+      return;
+    }
+    setTimelineSelection({ kind: 'view', id: first.id });
+    setTransitionPopoverId(null);
+    setCamera(first.camera);
+    setPreviewTime(null);
+    setNotice(`${first.name} selected`);
   };
   const seekPreview = (time: number) => {
     const next = Math.max(0, Math.min(sequence.duration, time));
@@ -541,22 +942,24 @@ export function App() {
     setPreviewTime(next);
     if (playbackState === 'stopped') setPlaybackState('paused');
   };
-  const updateTransition = (
-    patch: Partial<Pick<View, 'holdDuration' | 'transitionDuration' | 'transitionPreset'>>,
-  ) => {
+  const scrubTimeline = (event: React.PointerEvent<HTMLDivElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    seekPreview(timelineTimeAtPosition(project, event.clientX - bounds.left, timelineZoom));
+  };
+  const updateTransition = (patch: Partial<Pick<View, 'holdDuration'>>) => {
     if (!activeViewId) return;
     updateProject((p) => ({
       ...p,
       views: p.views.map((v) => (v.id === activeViewId ? { ...v, ...patch } : v)),
     }));
   };
-  const updateSelectedTransition = (
-    patch: Partial<Pick<View, 'transitionDuration' | 'transitionPreset' | 'transitionType'>>,
-  ) => {
-    if (selectedTransitionIndex === null) return;
+  const updateSelectedTransition = (patch: Partial<Pick<Transition, 'duration' | 'preset' | 'type'>>) => {
+    if (!selectedTransitionId) return;
     updateProject((p) => ({
       ...p,
-      views: p.views.map((view, index) => (index === selectedTransitionIndex ? { ...view, ...patch } : view)),
+      transitions: p.transitions.map((transition) =>
+        transition.id === selectedTransitionId ? { ...transition, ...patch } : transition,
+      ),
     }));
   };
   const zoomTimeline = (factor: number) =>
@@ -695,7 +1098,7 @@ export function App() {
             onClick={() => {
               setProject(createProject('Untitled documentary'));
               setSelectedId(null);
-              setActiveViewId(null);
+              stopPlayback();
             }}
           >
             {words.new}
@@ -750,8 +1153,44 @@ export function App() {
               </div>
             </div>
             <div className="panel-heading layers-heading">
-              <span>{words.layers}</span>
+              <span>{segmentContextLabel}</span>
               <span className="layer-count">{project.layers.length}</span>
+            </div>
+            <div className="segment-toolbar">
+              <button
+                type="button"
+                className={`segment-eye ${allEyesHidden ? 'off' : ''}`}
+                title="Temporarily hide/show all layers on the editing canvas (never affects Preview/Export)"
+                onClick={() => setAllEyesHidden((v) => !v)}
+              >
+                {allEyesHidden ? '◌' : '👁'}
+              </button>
+              <label
+                className={`segment-all ${projectMode ? 'presentation-only' : ''}`}
+                title={
+                  projectMode
+                    ? 'All Project Layers are available in Map Mode. Select a View or Transition to configure playback usage.'
+                    : 'Check/uncheck every layer for the selected segment'
+                }
+              >
+                <input
+                  type="checkbox"
+                  ref={globalMembershipRef}
+                  checked={segmentAllChecked}
+                  disabled={allocationCheckboxDisabled}
+                  onChange={toggleAllMembership}
+                />
+                All
+              </label>
+              <span className="segment-hint">
+                {projectMode
+                  ? 'Map Mode'
+                  : editingTransitionIndex !== null
+                    ? '☑ layers in this transition'
+                    : editingViewIndex >= 0
+                      ? '☑ layers in this View'
+                      : 'select a View or Transition'}
+              </span>
             </div>
             <input
               className="search"
@@ -762,18 +1201,50 @@ export function App() {
             <div className="layer-list">
               {visibleLayers.length ? (
                 visibleLayers.map((layer) => (
-                  <button
+                  <div
                     key={layer.id}
                     className={`layer-row ${selectedId === layer.id ? 'selected' : ''}`}
                     onClick={() => selectLayer(layer.id)}
                   >
+                    <button
+                      type="button"
+                      className={`layer-eye ${eyeHidden[layer.id] || allEyesHidden ? 'off' : ''}`}
+                      title={
+                        eyeHidden[layer.id] || allEyesHidden
+                          ? 'Show on editing canvas'
+                          : 'Hide on editing canvas'
+                      }
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setEyeHidden((h) => ({ ...h, [layer.id]: !h[layer.id] }));
+                      }}
+                    >
+                      {eyeHidden[layer.id] || allEyesHidden ? '◌' : '👁'}
+                    </button>
+                    <input
+                      type="checkbox"
+                      className="layer-member"
+                      checked={projectMode || segmentVisibleIds.has(layer.id)}
+                      disabled={allocationCheckboxDisabled}
+                      title={
+                        projectMode
+                          ? 'All Project Layers are available in Map Mode. Select a View or Transition to configure playback usage.'
+                          : editingTransitionIndex !== null
+                            ? 'Layer exists in this transition'
+                            : editingViewIndex >= 0
+                              ? 'Layer is shown in this View'
+                              : 'Select a View or Transition'
+                      }
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={(event) => setSegmentMembership(layer.id, event.target.checked)}
+                    />
                     <span className="layer-icon">{icons[layer.type]}</span>
                     <span className="layer-row-name">
                       <strong>{layer.name}</strong>
                       <small>{layerLabel[layer.type].toUpperCase()}</small>
                     </span>
-                    <span className="row-status">{layer.locked ? '▣' : layer.visible ? '◉' : '○'}</span>
-                  </button>
+                    <span className="row-status">{layer.locked ? '▣' : '◉'}</span>
+                  </div>
                 ))
               ) : (
                 <div className="empty-state">
@@ -886,30 +1357,54 @@ export function App() {
               </label>
             </div>
           </div>
-          <div className="map-frame">
+          <div className={`map-frame ${placing ? 'placing' : ''}`}>
             <OfflineMap
               style={style}
               mapMode={mapMode}
-              layers={previewState?.layers ?? project.layers}
-              camera={previewState?.camera ?? camera}
+              layers={
+                previewState?.layers ??
+                (allEyesHidden
+                  ? []
+                  : editingScene.layers.filter((l) => !eyeHidden[l.id]).map((l) => ({ ...l, visible: true })))
+              }
+              camera={
+                previewState?.camera ??
+                (selectedTimelineEntity?.kind === 'view' ? camera : editingScene.camera)
+              }
               onCameraChange={handleCameraChange}
-              interactionEnabled={playbackState !== 'playing'}
+              interactionEnabled={playbackState === 'stopped'}
               labelLanguage={project.mapSettings.labelLanguage}
               selectedId={selectedId}
               onSelect={selectLayer}
               onMoveLayer={(id, x, y) => updateLayer(id, { x, y })}
+              onDeleteSelected={projectMode ? remove : undefined}
+              onBackgroundClick={(point) => {
+                if (placing && point) placeLayerAt(placing, point);
+                else clearSelection();
+              }}
               safeArea={project.canvas.safeArea}
               showSafeArea={project.canvas.showSafeArea}
               assetUrls={assetUrls}
+              editorMode
             />
             <div className="add-toolbar">
               {layerTypes.map((type) => (
-                <button key={type} onClick={() => void addLayer(type)} title={`Add ${layerLabel[type]}`}>
+                <button
+                  key={type}
+                  className={placing === type ? 'active-tool' : ''}
+                  onClick={() => void addLayer(type)}
+                  title={type === 'pin' ? 'Add Pin — click the map to place it' : `Add ${layerLabel[type]}`}
+                >
                   <b>{icons[type]}</b>
                   {layerLabel[type]}
                 </button>
               ))}
             </div>
+            {placing && (
+              <div className="placement-hint">
+                Click the map to place the {layerLabel[placing]} — Esc to cancel
+              </div>
+            )}
             <div className="map-hint">{words.panZoom}</div>
           </div>
           {exportState.status !== 'idle' && (
@@ -928,42 +1423,131 @@ export function App() {
             </div>
           )}
         </section>
-        <aside className="panel right-panel" onWheel={(event) => event.stopPropagation()}>
+        <aside
+          className={`panel right-panel ${playbackState !== 'stopped' ? 'preview-locked' : ''}`}
+          onWheel={(event) => event.stopPropagation()}
+        >
           <div className="panel-heading">
             <span>{words.properties}</span>
           </div>
-          {selectedTransition ? (
+          {playbackState !== 'stopped' && (
+            <p className="preview-edit-lock">Stop Preview to edit View or Transition settings.</p>
+          )}
+          {!projectMode && selectedTransition && (
             <TransitionInspector
               transition={selectedTransition}
-              fromName={selectedTransition.name}
-              toName={project.views[selectedTransitionIndex! + 1]?.name ?? ''}
-              onChange={(patch) => updateSelectedTransition(patch)}
+              fromName={project.views.find((view) => view.id === selectedTransition.fromViewId)?.name ?? ''}
+              toName={project.views.find((view) => view.id === selectedTransition.toViewId)?.name ?? ''}
+              onChange={(patch) => playbackState === 'stopped' && updateSelectedTransition(patch)}
             />
-          ) : selected ? (
+          )}
+          {!projectMode && !selectedTransition && activeView && (
+            <ViewInspector
+              view={activeView}
+              onChange={(patch) => playbackState === 'stopped' && updateTransition(patch)}
+            />
+          )}
+          {selected ? (
             <Inspector
               layer={selected}
               onChange={(patch) => updateLayer(selected.id, patch)}
               onDuplicate={duplicate}
               onRemove={remove}
+              canRemove={projectMode}
               onMove={move}
+              assetUrls={assetUrls}
+              onAddAsset={(asset) =>
+                updateProject((p) => ({
+                  ...p,
+                  assets: p.assets.some((a) => a.id === asset.id) ? p.assets : [...p.assets, asset],
+                }))
+              }
+              transitionContext={
+                !projectMode && editingTransitionIndex !== null && project.transitions[editingTransitionIndex]
+                  ? (() => {
+                      const transition = project.transitions[editingTransitionIndex];
+                      const sourceView = project.views.find((view) => view.id === transition.fromViewId)!;
+                      const destView = project.views.find((view) => view.id === transition.toViewId)!;
+                      const compiledIndex = sequence.segments.findIndex(
+                        (segment) => segment.kind === 'transition' && segment.id === transition.id,
+                      );
+                      const memberIds = (segment: (typeof sequence.segments)[number] | undefined) =>
+                        segment?.kind === 'view'
+                          ? viewMemberIds(segment.view)
+                          : segment?.kind === 'transition'
+                            ? transitionMemberIds(segment.transition)
+                            : new Set<string>();
+                      const sourceMembers = memberIds(sequence.segments[compiledIndex - 1]);
+                      const destMembers = memberIds(sequence.segments[compiledIndex + 1]);
+                      return {
+                        transitionIndex: editingTransitionIndex,
+                        fromName: sourceView.name,
+                        toName: destView?.name ?? '',
+                        inTransition: segmentVisibleIds.has(selected.id),
+                        continuouslyVisible: sourceMembers.has(selected.id),
+                        anim: transitionAnimOf(transition, selected.id),
+                        warnings: validateTransitionLayer({
+                          sourceMemberIds: sourceMembers,
+                          transitionIncluded: segmentVisibleIds.has(selected.id),
+                          destMemberIds: destMembers,
+                          layerId: selected.id,
+                          anim: transitionAnimOf(transition, selected.id),
+                          transitionDuration: transition.duration,
+                        }),
+                        onSetMembership: (inTransition) => setSegmentMembership(selected.id, inTransition),
+                        onPatchAnim: (patch) => patchTransitionAnim(selected.id, patch),
+                      };
+                    })()
+                  : undefined
+              }
+              viewContext={
+                !projectMode &&
+                editingTransitionIndex === null &&
+                editingViewIndex >= 0 &&
+                project.views[editingViewIndex]
+                  ? (() => {
+                      const activeView = project.views[editingViewIndex];
+                      return {
+                        viewIndex: editingViewIndex,
+                        viewName: activeView.name,
+                        holdDuration: activeView.holdDuration,
+                        inView: segmentVisibleIds.has(selected.id),
+                        anim: viewAnimOf(activeView, selected.id),
+                        warnings: validateViewLayer({
+                          viewIncluded: segmentVisibleIds.has(selected.id),
+                          anim: viewAnimOf(activeView, selected.id),
+                          holdDuration: activeView.holdDuration,
+                        }),
+                        onSetMembership: (inView) => setSegmentMembership(selected.id, inView),
+                        onPatchAnim: (patch) => patchViewAnim(selected.id, patch),
+                      };
+                    })()
+                  : undefined
+              }
             />
-          ) : (
+          ) : projectMode ? (
             <div className="inspector">
               <span className="inspector-icon">◌</span>
-              <strong>Nothing selected</strong>
-              <p>Select a Layer on the canvas or in the Project Layers panel.</p>
-              <hr />
-              <div className="foundation">
-                <span>PHASE 2</span>
-                <p>Static Layers are ready</p>
-                <p>Use the Add toolbar to begin composing your map.</p>
-              </div>
+              <strong>MAP MODE</strong>
+              <p>Select a Project Layer to edit its global properties.</p>
             </div>
-          )}
+          ) : null}
         </aside>
       </section>
       <TimelinePanel>
         <TimelineToolbar>
+          <label
+            className="project-mode-toggle"
+            title="Edit Project Layers without editing a View or Transition."
+          >
+            <input
+              type="checkbox"
+              checked={projectMode}
+              disabled={playbackState !== 'stopped'}
+              onChange={(event) => toggleProjectMode(event.target.checked)}
+            />
+            Map Mode
+          </label>
           <div className="transport-controls" role="group" aria-label="Preview transport">
             <button
               className={playbackState === 'playing' ? 'active' : ''}
@@ -985,7 +1569,7 @@ export function App() {
             </button>
             <button
               className={playbackState === 'stopped' ? 'active' : ''}
-              onClick={stopPreview}
+              onClick={stopPlayback}
               disabled={project.views.length < 1}
               aria-label="Stop preview"
               title="Stop"
@@ -993,14 +1577,21 @@ export function App() {
               ⏹
             </button>
           </div>
-          <select aria-label="Preview mode" defaultValue="sequence">
-            <option value="sequence">Sequence Preview</option>
-            <option value="current">Current View</option>
-          </select>
-          <button type="button">Layout</button>
           <button type="button" onClick={() => setLayersPanelOpen((open) => !open)}>
             Layers
           </button>
+          <select
+            aria-label="Canvas format"
+            value={project.canvas.layoutId}
+            onChange={(e) => setCanvasLayout(e.target.value as Project['canvas']['layoutId'])}
+          >
+            {CANVAS_LAYOUTS.map((layout) => (
+              <option key={layout.id} value={layout.id}>
+                {layout.name}
+              </option>
+            ))}
+            <option value="custom">Custom…</option>
+          </select>
           <div className="timeline-zoom-control" role="group" aria-label="Timeline zoom">
             <button
               onClick={() => zoomTimeline(1 / 1.25)}
@@ -1014,41 +1605,46 @@ export function App() {
               +
             </button>
           </div>
-          {activeView && (
-            <div className="timeline-view-fields">
-              <label>
-                Hold
-                <input
-                  aria-label="View hold duration"
-                  type="number"
-                  min="0.5"
-                  max="30"
-                  step="0.5"
-                  value={activeView.holdDuration}
-                  onChange={(e) => updateTransition({ holdDuration: Number(e.target.value) })}
-                />
-              </label>
-              <button className="update-view" onClick={updateView} disabled={playbackState === 'playing'}>
-                Update View
-              </button>
-            </div>
-          )}
           <span className="timeline-preview-state">
-            {previewTime !== null
+            {playbackState !== 'stopped' && previewTime !== null
               ? `${formatTimelineTime(previewDisplayTime)} / ${formatTimelineTime(sequence.duration)} · ${
                   activeTransitionIndex !== null
                     ? `Transition ${activeTransitionIndex + 1} → ${activeTransitionIndex + 2}`
                     : `View ${previewState!.activeViewIndex + 1}`
                 } · ${playbackState}`
-              : activeView
-                ? 'Ready to preview'
-                : 'Create a View to preview'}
+              : projectMode
+                ? 'Map Mode Â· Project Layers'
+                : selectedTransition
+                  ? `Editing Transition ${project.views.findIndex((view) => view.id === selectedTransition.fromViewId) + 1} → ${project.views.findIndex((view) => view.id === selectedTransition.toViewId) + 1}`
+                  : activeView
+                    ? `Editing ${activeView.name}`
+                    : 'Create a View to preview'}
           </span>
         </TimelineToolbar>
         <TimelineViewport>
           <div ref={timelineScrollRef} className="timeline-scroll">
+            <div
+              className="timeline-scrub-track"
+              style={{ width: timelineLayout.width }}
+              role="slider"
+              aria-label="Preview scrub track"
+              aria-valuemin={0}
+              aria-valuemax={sequence.duration}
+              aria-valuenow={previewDisplayTime}
+              onPointerDown={(event) => {
+                event.currentTarget.setPointerCapture(event.pointerId);
+                scrubTimeline(event);
+              }}
+              onPointerMove={(event) => {
+                if (event.currentTarget.hasPointerCapture(event.pointerId)) scrubTimeline(event);
+              }}
+            >
+              {playbackState !== 'stopped' && (
+                <span className="scrub-playhead" style={{ left: playheadPosition }} />
+              )}
+            </div>
             <div className="timeline-track">
-              {project.views.length > 0 && (
+              {project.views.length > 0 && playbackState !== 'stopped' && (
                 <div
                   className="timeline-playhead"
                   style={{ left: playheadPosition }}
@@ -1058,9 +1654,19 @@ export function App() {
                 </div>
               )}
               {project.views.map((view, index) => {
-                const segment = sequence.segments[index];
+                const transition = project.transitions.find(
+                  (candidate) =>
+                    candidate.fromViewId === view.id && candidate.toViewId === project.views[index + 1]?.id,
+                );
                 const cardWidth = holdCardWidth(view.holdDuration, timelineZoom);
                 const isLast = index === project.views.length - 1;
+                const transitionLayerIds = transition ? transitionMemberIds(transition) : new Set<string>();
+                const animatedTransitionLayers = transition
+                  ? Object.entries(transitionLayerConfigsOf(transition)).filter(
+                      ([layerId, config]) =>
+                        config.included && config.animation && transitionLayerIds.has(layerId),
+                    ).length
+                  : 0;
                 return (
                   <Fragment key={view.id}>
                     <div
@@ -1069,18 +1675,12 @@ export function App() {
                       style={{ flexBasis: cardWidth }}
                       draggable
                       tabIndex={0}
-                      onClick={(event) => {
+                      onClick={() => {
+                        if (playbackState !== 'stopped') return;
                         activateView(view.id);
-                        if (segment) {
-                          const bounds = event.currentTarget.getBoundingClientRect();
-                          const ratio = Math.max(
-                            0,
-                            Math.min(1, (event.clientX - bounds.left) / bounds.width),
-                          );
-                          seekPreview(segment.start + ratio * view.holdDuration);
-                        }
                       }}
                       onKeyDown={(event) => {
+                        if (playbackState !== 'stopped') return;
                         if (event.target !== event.currentTarget) return;
                         if (event.key === 'Delete') {
                           event.preventDefault();
@@ -1127,6 +1727,14 @@ export function App() {
                           />
                         )}
                         <span className="view-thumb-index">{String(index + 1).padStart(2, '0')}</span>
+                        {activeViewId === view.id && activeViewStale && (
+                          <span
+                            className="view-stale-badge"
+                            title="The camera differs from this View. Choose Update View to save the current camera position."
+                          >
+                            ●
+                          </span>
+                        )}
                       </span>
                       <strong>{view.name}</strong>
                       <button
@@ -1141,7 +1749,27 @@ export function App() {
                         ⋯
                       </button>
                       <small>
-                        <span className="view-duration-exact">Hold {view.holdDuration.toFixed(1)}s</span>
+                        <span className="view-duration-exact">
+                          Hold{' '}
+                          <input
+                            type="number"
+                            min="0"
+                            max="60"
+                            step="0.5"
+                            value={view.holdDuration}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => {
+                              const value = Math.max(0, Number(e.target.value));
+                              updateProject((p) => ({
+                                ...p,
+                                views: p.views.map((v) =>
+                                  v.id === view.id ? { ...v, holdDuration: value } : v,
+                                ),
+                              }));
+                            }}
+                          />{' '}
+                          s
+                        </span>
                         {isLast && 'final View'}
                       </small>
                       {openViewMenuId === view.id && (
@@ -1150,6 +1778,16 @@ export function App() {
                           role="menu"
                           onClick={(event) => event.stopPropagation()}
                         >
+                          <button
+                            onClick={() => {
+                              updateView();
+                              setOpenViewMenuId(null);
+                            }}
+                            role="menuitem"
+                            title="Saves the current camera position to this View. Layer properties are project-global and need no capture."
+                          >
+                            Update View
+                          </button>
                           <button onClick={() => renameView(view.id)} role="menuitem">
                             Rename
                           </button>
@@ -1162,28 +1800,37 @@ export function App() {
                         </div>
                       )}
                     </div>
-                    {!isLast && (
-                      <button
-                        type="button"
-                        className={`view-transition ${selectedTransitionIndex === index ? 'selected' : ''} ${activeTransitionIndex === index ? 'active' : ''}`}
-                        style={{ flexBasis: transitionWidth(view.transitionDuration, timelineZoom) }}
+                    {!isLast && transition && (
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        className={`view-transition ${selectedTransitionId === transition.id ? 'selected' : ''} ${activeTransitionIndex === index ? 'active' : ''}`}
+                        style={{ flexBasis: transitionWidth(transition.duration, timelineZoom) }}
                         data-transition-index={index}
-                        title={`Transition ${view.name} → ${project.views[index + 1].name}: ${view.transitionDuration.toFixed(1)}s ${transitionTypeLabel(view.transitionType)}`}
-                        onClick={(event) => {
-                          selectTransition(index);
-                          if (segment) {
-                            const bounds = event.currentTarget.getBoundingClientRect();
-                            const ratio = Math.max(
-                              0,
-                              Math.min(1, (event.clientX - bounds.left) / bounds.width),
-                            );
-                            seekPreview(segment.holdEnd + ratio * view.transitionDuration);
+                        title={`Transition ${view.name} → ${project.views[index + 1].name}: ${transition.duration.toFixed(1)}s ${transitionTypeLabel(transition.type)} — click to edit`}
+                        onClick={() => {
+                          if (playbackState !== 'stopped') return;
+                          selectTransition(transition.id);
+                        }}
+                        onKeyDown={(event) => {
+                          if (playbackState !== 'stopped') return;
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            selectTransition(transition.id);
                           }
                         }}
                       >
-                        <strong>{view.transitionDuration.toFixed(1)}s</strong>
-                        <small>{transitionTypeLabel(view.transitionType)}</small>
-                      </button>
+                        <strong>{transition.duration.toFixed(1)}s</strong>
+                        <small>{transitionTypeLabel(transition.type)}</small>
+                        {animatedTransitionLayers > 0 && (
+                          <small
+                            className="transition-anim-count"
+                            title={`${animatedTransitionLayers} animated layer(s) in this transition`}
+                          >
+                            ● {animatedTransitionLayers}
+                          </small>
+                        )}
+                      </div>
                     )}
                   </Fragment>
                 );
@@ -1194,24 +1841,28 @@ export function App() {
             </div>
           </div>
         </TimelineViewport>
-        <TimelineStatusBar>
-          <div>
-            <strong>{words.views}</strong>
-            <span>
-              {project.views.length} view{project.views.length === 1 ? '' : 's'} ·{' '}
-              {activeView ? activeView.name : 'No View selected'}
-            </span>
-          </div>
-          {activeView && (
-            <div className="view-actions">
-              <button onClick={updateView}>Update</button>
-              <button onClick={() => duplicateView()}>Duplicate</button>
-              <button onClick={() => renameView()}>Rename</button>
-              <button onClick={() => deleteView()}>Delete</button>
-            </div>
-          )}
-        </TimelineStatusBar>
       </TimelinePanel>
+      {playbackState === 'stopped' &&
+        !projectMode &&
+        transitionPopoverId === selectedTransitionId &&
+        selectedTransitionIndex !== null &&
+        project.transitions[selectedTransitionIndex] && (
+          <TransitionPopover
+            index={selectedTransitionIndex}
+            transition={project.transitions[selectedTransitionIndex]}
+            fromName={
+              project.views.find(
+                (view) => view.id === project.transitions[selectedTransitionIndex].fromViewId,
+              )?.name ?? ''
+            }
+            toName={
+              project.views.find((view) => view.id === project.transitions[selectedTransitionIndex].toViewId)
+                ?.name ?? ''
+            }
+            onChange={(patch) => updateSelectedTransition(patch)}
+            onClose={() => setTransitionPopoverId(null)}
+          />
+        )}
     </main>
   );
 }
@@ -1224,16 +1875,139 @@ function TimelinePanel({ children }: { children: React.ReactNode }) {
   );
 }
 
+const TRANSITION_POPOVER_WIDTH = 188;
+const TRANSITION_POPOVER_MARGIN = 8;
+
+/**
+ * Transition settings popover rendered through a portal into the document
+ * body, so it is never clipped by the timeline's overflow container.
+ * Positioned from the anchor segment's bounding rect; opens downward when
+ * there is room, otherwise upward. Closes on outside click and Esc, and
+ * repositions on window resize and container scroll.
+ */
+function TransitionPopover({
+  index,
+  transition,
+  fromName,
+  toName,
+  onChange,
+  onClose,
+}: {
+  index: number;
+  transition: Transition;
+  fromName: string;
+  toName: string;
+  onChange: (patch: Partial<Pick<Transition, 'duration' | 'preset' | 'type'>>) => void;
+  onClose: () => void;
+}) {
+  const [position, setPosition] = useState<{ top: number; left: number; openUp: boolean } | null>(null);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const updatePosition = useCallback(() => {
+    const anchor = document.querySelector<HTMLElement>(`[data-transition-index="${index}"]`);
+    if (!anchor) return;
+    const rect = anchor.getBoundingClientRect();
+    const height = bodyRef.current?.offsetHeight ?? 148;
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const openUp = spaceBelow < height + TRANSITION_POPOVER_MARGIN * 2;
+    const top = openUp
+      ? Math.max(TRANSITION_POPOVER_MARGIN, rect.top - height - TRANSITION_POPOVER_MARGIN)
+      : rect.bottom + TRANSITION_POPOVER_MARGIN;
+    const left = Math.min(
+      Math.max(TRANSITION_POPOVER_MARGIN, rect.left + rect.width / 2 - TRANSITION_POPOVER_WIDTH / 2),
+      window.innerWidth - TRANSITION_POPOVER_WIDTH - TRANSITION_POPOVER_MARGIN,
+    );
+    setPosition({ top, left, openUp });
+  }, [index]);
+  useEffect(() => {
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    const scroller = document.querySelector<HTMLElement>('.timeline-scroll');
+    scroller?.addEventListener('scroll', updatePosition, { passive: true });
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    const onOutsidePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (bodyRef.current?.contains(target)) return;
+      if ((target as Element).closest?.('[data-transition-index]')) return;
+      onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    document.addEventListener('pointerdown', onOutsidePointerDown, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      scroller?.removeEventListener('scroll', updatePosition);
+      window.removeEventListener('keydown', onKey);
+      document.removeEventListener('pointerdown', onOutsidePointerDown, true);
+    };
+  }, [updatePosition, onClose]);
+  useLayoutEffect(() => {
+    updatePosition();
+  }, [updatePosition, transition.duration, transition.preset, transition.type]);
+  if (!position) return null;
+  return createPortal(
+    <div
+      ref={bodyRef}
+      className={`view-transition-popover ${position.openUp ? 'open-up' : ''}`}
+      role="dialog"
+      aria-label={`Transition ${fromName} → ${toName}`}
+      style={{ top: position.top, left: position.left }}
+    >
+      <strong className="transition-popover-title">
+        {fromName} → {toName}
+      </strong>
+      <label>
+        Duration
+        <span>
+          <input
+            type="number"
+            min="0"
+            max="30"
+            step="0.5"
+            value={transition.duration}
+            onChange={(e) => onChange({ duration: Number(e.target.value) })}
+          />
+          s
+        </span>
+      </label>
+      <label>
+        Type
+        <select
+          value={transition.type}
+          onChange={(e) => onChange({ type: e.target.value as Transition['type'] })}
+        >
+          <option value="smooth">Smooth</option>
+          <option value="pan">Pan</option>
+          <option value="zoom">Zoom</option>
+          <option value="fly-to">Fly To</option>
+        </select>
+      </label>
+      <label>
+        Easing
+        <select
+          value={transition.preset}
+          onChange={(e) => onChange({ preset: e.target.value as Transition['preset'] })}
+        >
+          <option value="smooth">Smooth</option>
+          <option value="linear">Linear</option>
+          <option value="ease-in">Ease In</option>
+          <option value="ease-out">Ease Out</option>
+          <option value="ease-in-out">Ease In-Out</option>
+          <option value="cinematic">Cinematic</option>
+          <option value="bezier">Bezier</option>
+        </select>
+      </label>
+    </div>,
+    document.body,
+  );
+}
+
 function TimelineToolbar({ children }: { children: React.ReactNode }) {
   return <div className="timeline-toolbar">{children}</div>;
 }
 
 function TimelineViewport({ children }: { children: React.ReactNode }) {
   return <div className="timeline-viewport">{children}</div>;
-}
-
-function TimelineStatusBar({ children }: { children: React.ReactNode }) {
-  return <div className="timeline-status-bar">{children}</div>;
 }
 
 function holdCardWidth(holdDuration: number, zoom = 1) {
@@ -1244,34 +2018,80 @@ function transitionWidth(duration: number, zoom = 1) {
   return Math.max(MIN_TRANSITION_WIDTH, duration * TRANSITION_PIXELS_PER_SECOND) * zoom;
 }
 
-function timelinePosition(sequence: ReturnType<typeof compileViews>, time: number, zoom = 1) {
-  if (!sequence.segments.length) return 0;
-  const clampedTime = Math.max(0, Math.min(sequence.duration, time));
+export function buildTimelineLayout(project: Project, zoom = 1) {
+  const sequence = compileTimeline(project);
+  let x = 0;
+  let boundary = 0;
+  const items: Array<{
+    id: string;
+    kind: 'view' | 'transition';
+    x: number;
+    width: number;
+    projectStartTime: number;
+    projectEndTime: number;
+  }> = [];
+  project.views.forEach((view, index) => {
+    const width = holdCardWidth(view.holdDuration, zoom);
+    items.push({
+      id: view.id,
+      kind: 'view',
+      x,
+      width,
+      projectStartTime: boundary,
+      projectEndTime: boundary + view.holdDuration,
+    });
+    x += width + VIEW_CARD_GAP;
+    boundary += view.holdDuration;
+    const next = project.views[index + 1];
+    const transition =
+      next &&
+      project.transitions.find(
+        (candidate) => candidate.fromViewId === view.id && candidate.toViewId === next.id,
+      );
+    if (transition) {
+      const transitionVisualWidth = transitionWidth(transition.duration, zoom);
+      items.push({
+        id: transition.id,
+        kind: 'transition',
+        x,
+        width: transitionVisualWidth,
+        projectStartTime: boundary,
+        projectEndTime: boundary + transition.duration,
+      });
+      x += transitionVisualWidth + VIEW_CARD_GAP;
+      boundary += transition.duration;
+    }
+  });
+  return { duration: sequence.duration, items, width: x };
+}
+
+function timelinePosition(project: Project, time: number, zoom = 1) {
+  const layout = buildTimelineLayout(project, zoom);
+  if (!layout.items.length) return 0;
+  const clampedTime = Math.max(0, Math.min(layout.duration, time));
   let position = 0;
-  for (let index = 0; index < sequence.segments.length; index += 1) {
-    const segment = sequence.segments[index];
-    const cardWidth = holdCardWidth(segment.from.holdDuration, zoom);
-    const isLast = index === sequence.segments.length - 1;
-    if (clampedTime <= segment.holdEnd || isLast) {
-      const progress =
-        segment.from.holdDuration > 0 ? (clampedTime - segment.start) / segment.from.holdDuration : 0;
-      return position + Math.max(0, Math.min(1, progress)) * cardWidth;
+  for (const item of layout.items) {
+    position = item.x;
+    if (clampedTime <= item.projectEndTime) {
+      const duration = item.projectEndTime - item.projectStartTime;
+      const progress = duration > 0 ? (clampedTime - item.projectStartTime) / duration : 0;
+      return item.x + Math.max(0, Math.min(1, progress)) * item.width;
     }
-    position += cardWidth + VIEW_CARD_GAP;
-    const width = transitionWidth(segment.from.transitionDuration, zoom);
-    if (clampedTime <= segment.end) {
-      const progress =
-        segment.from.transitionDuration > 0
-          ? (clampedTime - segment.holdEnd) / segment.from.transitionDuration
-          : 0;
-      return position + Math.max(0, Math.min(1, progress)) * width;
-    }
-    position += width + VIEW_CARD_GAP;
   }
   return position;
 }
 
-function transitionTypeLabel(type: View['transitionType']) {
+function timelineTimeAtPosition(project: Project, x: number, zoom = 1) {
+  const layout = buildTimelineLayout(project, zoom);
+  const item = layout.items.find((candidate) => x >= candidate.x && x <= candidate.x + candidate.width);
+  if (!item) return x < 0 ? 0 : layout.duration;
+  const duration = item.projectEndTime - item.projectStartTime;
+  if (duration <= 0) return item.projectStartTime;
+  const progress = Math.max(0, Math.min(1, (x - item.x) / item.width));
+  return item.projectStartTime + progress * duration;
+}
+
+function transitionTypeLabel(type: Transition['type']) {
   if (type === 'pan') return 'Pan';
   if (type === 'zoom') return 'Zoom';
   if (type === 'fly-to') return 'Fly To';
@@ -1295,18 +2115,43 @@ const exportStatusLabel = (status: ExportProgressState['status']) => {
   return 'Video export';
 };
 
+function ViewInspector({
+  view,
+  onChange,
+}: {
+  view: View;
+  onChange: (patch: Partial<Pick<View, 'holdDuration'>>) => void;
+}) {
+  return (
+    <div className="layer-inspector view-inspector">
+      <span className="type-chip">View</span>
+      <strong>{view.name}</strong>
+      <label>
+        Hold (s)
+        <input
+          type="number"
+          min="0"
+          max="60"
+          step="0.5"
+          value={view.holdDuration}
+          onChange={(event) => onChange({ holdDuration: Math.max(0, Number(event.target.value)) })}
+        />
+      </label>
+      <p className="transition-hint">Update View saves the current camera position only.</p>
+    </div>
+  );
+}
+
 function TransitionInspector({
   transition,
   fromName,
   toName,
   onChange,
 }: {
-  transition: View;
+  transition: Transition;
   fromName: string;
   toName: string;
-  onChange: (
-    patch: Partial<Pick<View, 'transitionDuration' | 'transitionPreset' | 'transitionType'>>,
-  ) => void;
+  onChange: (patch: Partial<Pick<Transition, 'duration' | 'preset' | 'type'>>) => void;
 }) {
   return (
     <div className="layer-inspector transition-inspector">
@@ -1319,8 +2164,8 @@ function TransitionInspector({
       <label>
         Type
         <select
-          value={transition.transitionType ?? 'smooth'}
-          onChange={(e) => onChange({ transitionType: e.target.value as View['transitionType'] })}
+          value={transition.type}
+          onChange={(e) => onChange({ type: e.target.value as Transition['type'] })}
         >
           <option value="smooth">Smooth</option>
           <option value="pan">Pan</option>
@@ -1335,15 +2180,15 @@ function TransitionInspector({
           min="0"
           max="30"
           step="0.5"
-          value={transition.transitionDuration}
-          onChange={(e) => onChange({ transitionDuration: Number(e.target.value) })}
+          value={transition.duration}
+          onChange={(e) => onChange({ duration: Number(e.target.value) })}
         />
       </label>
       <label>
         Easing
         <select
-          value={transition.transitionPreset}
-          onChange={(e) => onChange({ transitionPreset: e.target.value as View['transitionPreset'] })}
+          value={transition.preset}
+          onChange={(e) => onChange({ preset: e.target.value as Transition['preset'] })}
         >
           <option value="smooth">Smooth</option>
           <option value="linear">Linear</option>
@@ -1354,9 +2199,35 @@ function TransitionInspector({
           <option value="bezier">Bezier</option>
         </select>
       </label>
-      <p className="transition-hint">Applies to the camera and layer motion leaving {fromName}.</p>
+      <p className="transition-hint">
+        Applies to the camera motion leaving {fromName}. Select a layer in the Layers panel to configure its
+        Appear / Hold / Wipe Out animation within this transition.
+      </p>
     </div>
   );
+}
+
+interface TransitionLayerContext {
+  transitionIndex: number;
+  fromName: string;
+  toName: string;
+  inTransition: boolean;
+  continuouslyVisible: boolean;
+  anim: import('../core/project').SegmentLayerAnimation | undefined;
+  warnings: SegmentWarning[];
+  onSetMembership: (inTransition: boolean) => void;
+  onPatchAnim: (patch: Partial<import('../core/project').SegmentLayerAnimation>) => void;
+}
+
+interface ViewLayerContext {
+  viewIndex: number;
+  viewName: string;
+  holdDuration: number;
+  inView: boolean;
+  anim: import('../core/project').SegmentLayerAnimation | undefined;
+  warnings: SegmentWarning[];
+  onSetMembership: (inView: boolean) => void;
+  onPatchAnim: (patch: Partial<import('../core/project').SegmentLayerAnimation>) => void;
 }
 
 function Inspector({
@@ -1364,17 +2235,113 @@ function Inspector({
   onChange,
   onDuplicate,
   onRemove,
+  canRemove,
   onMove,
+  assetUrls = {},
+  onAddAsset,
+  transitionContext,
+  viewContext,
 }: {
   layer: Layer;
   onChange: (patch: Partial<Layer>) => void;
   onDuplicate: () => void;
   onRemove: () => void;
+  canRemove: boolean;
   onMove: (d: -1 | 1) => void;
+  assetUrls?: Record<string, string>;
+  onAddAsset?: (asset: import('../core/project').ProjectAsset) => void;
+  transitionContext?: TransitionLayerContext;
+  viewContext?: ViewLayerContext;
 }) {
-  const isText = layer.type === 'text' || layer.type === 'pin';
+  const isText = layer.type === 'text';
+  const [myStyles, setMyStyles] = useState<PinStyleEntry[]>(() => getPinStyles());
+  const [savingStyle, setSavingStyle] = useState(false);
+  const isCustom = (layer.pinStyle ?? 'dot') === 'custom';
+  const hasCustomImage =
+    isCustom && layer.pinCustomAssetId != null && assetUrls[layer.pinCustomAssetId] != null;
+  /** Open the native picker, ingest into project assets, apply to the Pin. */
+  const chooseCustomImage = async (title: string) => {
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    try {
+      const sourcePath = await open({
+        title,
+        multiple: false,
+        directory: false,
+        filters: [{ name: 'PNG or JPEG image', extensions: ['png', 'jpg', 'jpeg'] }],
+      });
+      if (typeof sourcePath !== 'string') return;
+      const asset = await ingestProjectImage(sourcePath);
+      onAddAsset?.(asset);
+      onChange({
+        pinStyle: 'custom',
+        pinCustomAssetId: asset.id,
+        color: '#ffffff',
+        pinBorderColor: '#ffffff',
+        pinBorderWidth: 0,
+      });
+    } catch (err) {
+      console.error(`${title} failed:`, err);
+    }
+  };
+  /** Copy a reusable style's image into the project-owned asset store, then apply it. */
+  const applyMyStyle = async (entry: PinStyleEntry) => {
+    if (!onAddAsset) return;
+    try {
+      const dataUrl = entry.imageDataUrl;
+      const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+      const asset = await ingestProjectImageBytes(Array.from(bytes), entry.filename || 'pin-style-icon.png');
+      onAddAsset(asset);
+      onChange({
+        pinStyle: 'custom',
+        pinCustomAssetId: asset.id,
+        pinCustomAnchor: entry.anchor,
+        pinSize: entry.defaultSize,
+      });
+    } catch (err) {
+      console.error('Apply pin style failed:', err);
+    }
+  };
+  /** Save the Pin's current custom image into the app-level My Styles library. */
+  const saveCurrentToMyStyles = async () => {
+    if (!hasCustomImage || savingStyle) return;
+    setSavingStyle(true);
+    try {
+      const name = window.prompt('Style name', layer.name || 'My Style');
+      if (!name) return;
+      savePinStyle(
+        name.trim(),
+        assetUrls[layer.pinCustomAssetId!],
+        layer.name || 'custom-icon.png',
+        layer.pinCustomAnchor ?? 'bottom-center',
+        layer.pinSize ?? 15,
+      );
+      setMyStyles(getPinStyles());
+    } finally {
+      setSavingStyle(false);
+    }
+  };
+  const handleRenameStyle = (entry: PinStyleEntry) => {
+    const name = window.prompt('Rename style', entry.name);
+    if (!name || !name.trim()) return;
+    renamePinStyle(entry.id, name.trim());
+    setMyStyles(getPinStyles());
+  };
+  const handleDeleteStyle = (entry: PinStyleEntry) => {
+    if (
+      !window.confirm(
+        `Delete "${entry.name}" from My Styles? Pins already using it in projects are unaffected.`,
+      )
+    )
+      return;
+    deletePinStyle(entry.id);
+    setMyStyles(getPinStyles());
+  };
   return (
     <div className="layer-inspector">
+      <span className="pin-section-title">Project Layer â€” {layer.name}</span>
       <span className="type-chip">
         {icons[layer.type]} {layerLabel[layer.type]}
       </span>
@@ -1382,9 +2349,587 @@ function Inspector({
         Name
         <input value={layer.name} onChange={(e) => onChange({ name: e.target.value })} />
       </label>
+      {layer.type === 'pin' && (
+        <>
+          <div className="pin-section">
+            <span className="pin-section-title">Style</span>
+            <div className="pin-style-grid">
+              {BUILTIN_PIN_STYLES.map((entry) => (
+                <button
+                  key={entry.id}
+                  type="button"
+                  className={`pin-style-tile ${(layer.pinStyle ?? 'dot') === entry.id ? 'active' : ''}`}
+                  title={entry.label}
+                  onClick={() => onChange({ pinStyle: entry.id })}
+                >
+                  <PinStyleGlyph id={entry.id} color={layer.color} />
+                  <span>{entry.label}</span>
+                </button>
+              ))}
+              {myStyles.map((entry) => {
+                const active =
+                  isCustom &&
+                  layer.pinCustomAssetId != null &&
+                  assetUrls[layer.pinCustomAssetId] === entry.imageDataUrl;
+                return (
+                  <div key={entry.id} className={`pin-style-tile my-style-tile ${active ? 'active' : ''}`}>
+                    <button
+                      type="button"
+                      className="pin-style-main"
+                      title={`Apply ${entry.name}`}
+                      onClick={() => void applyMyStyle(entry)}
+                    >
+                      <img src={entry.imageDataUrl} alt={entry.name} draggable={false} />
+                      <span>{entry.name}</span>
+                    </button>
+                    <div className="pin-style-tile-actions">
+                      <button
+                        type="button"
+                        className="pin-style-action"
+                        title="Rename style"
+                        onClick={() => handleRenameStyle(entry)}
+                      >
+                        ✎
+                      </button>
+                      <button
+                        type="button"
+                        className="pin-style-action danger"
+                        title="Delete from My Styles"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleDeleteStyle(entry);
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+              <button
+                type="button"
+                className="pin-style-tile add"
+                title="Add a custom image to this Pin (then save it to My Styles)"
+                onClick={() => void chooseCustomImage('Choose Custom Icon')}
+              >
+                <span className="pin-style-add-icon">＋</span>
+                <span>Add</span>
+              </button>
+            </div>
+            <div className="two-col">
+              <label>
+                Size
+                <span className="pin-size-control">
+                  <input
+                    type="range"
+                    min="4"
+                    max="200"
+                    step="1"
+                    value={layer.pinSize ?? 15}
+                    onChange={(e) => onChange({ pinSize: Number(e.target.value) })}
+                  />
+                  <b>{Math.round(layer.pinSize ?? 15)}px</b>
+                </span>
+              </label>
+              <label>
+                Opacity
+                <input
+                  type="range"
+                  min="0.05"
+                  max="1"
+                  step="0.05"
+                  value={layer.opacity}
+                  onChange={(e) => onChange({ opacity: Number(e.target.value) })}
+                />
+              </label>
+            </div>
+            {isCustom ? (
+              <>
+                <div className="pin-section">
+                  <span className="pin-section-title">Custom Icon</span>
+                  {hasCustomImage ? (
+                    <>
+                      <div className="custom-icon-preview">
+                        <img
+                          src={assetUrls[layer.pinCustomAssetId!]}
+                          alt="Custom icon"
+                          style={{
+                            width: 48,
+                            height: 48,
+                            objectFit: 'contain',
+                            borderRadius: 3,
+                            border: '1px solid #3b5063',
+                          }}
+                        />
+                      </div>
+                      <div className="two-col">
+                        <button
+                          className="quiet"
+                          onClick={() => void chooseCustomImage('Replace Custom Icon')}
+                        >
+                          Replace
+                        </button>
+                        <button className="quiet" onClick={() => onChange({ pinCustomAssetId: undefined })}>
+                          Remove
+                        </button>
+                      </div>
+                      <div className="two-col">
+                        <label>
+                          Anchor
+                          <select
+                            value={layer.pinCustomAnchor ?? 'bottom-center'}
+                            onChange={(e) =>
+                              onChange({ pinCustomAnchor: e.target.value as Layer['pinCustomAnchor'] })
+                            }
+                          >
+                            <option value="bottom-center">Bottom Center</option>
+                            <option value="center">Center</option>
+                          </select>
+                        </label>
+                        <button
+                          className="quiet"
+                          style={{ alignSelf: 'flex-end' }}
+                          disabled={savingStyle}
+                          onClick={() => void saveCurrentToMyStyles()}
+                        >
+                          {savingStyle ? 'Saving…' : 'Save to My Styles'}
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <p style={{ fontSize: 10, color: '#7a8fa0', margin: '4px 0' }}>No image selected.</p>
+                      <button className="quiet" onClick={() => void chooseCustomImage('Choose Custom Icon')}>
+                        Choose Image…
+                      </button>
+                      <p style={{ fontSize: 9, color: '#5a6a78', margin: '3px 0 0' }}>
+                        PNG or JPEG · Square images work best
+                      </p>
+                    </>
+                  )}
+                </div>
+                <div className="two-col">
+                  <label className="toggle">
+                    <span>Tint</span>
+                    <input
+                      type="checkbox"
+                      checked={layer.pinTintEnabled ?? false}
+                      onChange={(e) => onChange({ pinTintEnabled: e.target.checked })}
+                    />
+                  </label>
+                  <label>
+                    Tint color
+                    <input
+                      type="color"
+                      value={layer.pinTintColor ?? '#e8533e'}
+                      onChange={(e) => onChange({ pinTintColor: e.target.value })}
+                    />
+                  </label>
+                </div>
+                <div className="two-col">
+                  <label>
+                    Border
+                    <input
+                      type="color"
+                      value={layer.pinBorderColor ?? '#ffffff'}
+                      onChange={(e) => onChange({ pinBorderColor: e.target.value })}
+                    />
+                  </label>
+                  <label>
+                    Border width
+                    <input
+                      type="number"
+                      min="0"
+                      max="12"
+                      step="0.5"
+                      value={layer.pinBorderWidth ?? 0}
+                      onChange={(e) => onChange({ pinBorderWidth: Number(e.target.value) })}
+                    />
+                  </label>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="two-col">
+                  <label>
+                    Fill
+                    <input
+                      type="color"
+                      value={layer.color}
+                      onChange={(e) => onChange({ color: e.target.value })}
+                    />
+                  </label>
+                  <label>
+                    Border
+                    <input
+                      type="color"
+                      value={layer.pinBorderColor ?? '#ffffff'}
+                      onChange={(e) => onChange({ pinBorderColor: e.target.value })}
+                    />
+                  </label>
+                </div>
+                <div className="two-col">
+                  <label>
+                    Border width
+                    <input
+                      type="number"
+                      min="0"
+                      max="12"
+                      step="0.5"
+                      value={layer.pinBorderWidth ?? 3}
+                      onChange={(e) => onChange({ pinBorderWidth: Number(e.target.value) })}
+                    />
+                  </label>
+                </div>
+              </>
+            )}
+          </div>
+          {/* Labels section */}
+          <div className="pin-section">
+            <span className="pin-section-title">Label</span>
+            <label className="toggle">
+              <span>Show label</span>
+              <input
+                type="checkbox"
+                checked={layer.pinLabelVisible ?? true}
+                onChange={(e) => onChange({ pinLabelVisible: e.target.checked })}
+              />
+            </label>
+            <label>
+              Label text
+              <textarea
+                dir={layer.textDirection === 'rtl' ? 'rtl' : 'auto'}
+                value={layer.text ?? ''}
+                onChange={(e) => onChange({ text: e.target.value })}
+              />
+            </label>
+            <div className="two-col">
+              <label>
+                Label size
+                <input
+                  type="range"
+                  min="9"
+                  max="26"
+                  step="0.5"
+                  value={layer.pinLabelSize ?? 11}
+                  onChange={(e) => onChange({ pinLabelSize: Number(e.target.value) })}
+                />
+              </label>
+              <label>
+                Label color
+                <input
+                  type="color"
+                  value={layer.pinLabelColor ?? '#ffffff'}
+                  onChange={(e) => onChange({ pinLabelColor: e.target.value })}
+                />
+              </label>
+            </div>
+            <div className="two-col">
+              <label>
+                Label position
+                <select
+                  value={layer.pinLabelPosition ?? 'right'}
+                  onChange={(e) =>
+                    onChange({ pinLabelPosition: e.target.value as Layer['pinLabelPosition'] })
+                  }
+                >
+                  <option value="right">Right</option>
+                  <option value="left">Left</option>
+                  <option value="top">Top</option>
+                  <option value="bottom">Bottom</option>
+                </select>
+              </label>
+              <label>
+                Label gap
+                <input
+                  type="number"
+                  min="0"
+                  max="20"
+                  step="1"
+                  value={layer.pinLabelGap ?? 5}
+                  onChange={(e) => onChange({ pinLabelGap: Number(e.target.value) })}
+                />
+              </label>
+            </div>
+          </div>
+          <p className="global-layer-note">
+            Layer properties apply everywhere this Layer is used. Animate it per View / Transition in the
+            segment section below.
+          </p>
+        </>
+      )}
+      {transitionContext && (
+        <div className="pin-section transition-layer-section">
+          <span className="pin-section-title">
+            Transition Layer{' '}
+            <em className="transition-section-context">
+              {transitionContext.fromName} → {transitionContext.toName}
+            </em>
+          </span>
+          <label className="toggle">
+            <span>Layer exists in this transition</span>
+            <input
+              type="checkbox"
+              checked={transitionContext.inTransition}
+              onChange={(e) => transitionContext.onSetMembership(e.target.checked)}
+            />
+          </label>
+          {!transitionContext.inTransition ? (
+            <p className="transition-hint">Enable this layer for the transition to configure animation.</p>
+          ) : (
+            <>
+              <span className="pin-section-sub">Appear</span>
+              <label
+                className="toggle"
+                title={
+                  transitionContext.continuouslyVisible
+                    ? 'Layer is already visible when the transition starts; Appear has no effect (no replay).'
+                    : undefined
+                }
+              >
+                <span>Enable Appear</span>
+                <input
+                  type="checkbox"
+                  disabled={transitionContext.continuouslyVisible}
+                  checked={Boolean(transitionContext.anim?.appearEnabled)}
+                  onChange={(e) => transitionContext.onPatchAnim({ appearEnabled: e.target.checked })}
+                />
+              </label>
+              {transitionContext.anim?.appearEnabled && (
+                <>
+                  <label>
+                    Type
+                    <select
+                      value={transitionContext.anim.appearType ?? 'fade'}
+                      onChange={(e) =>
+                        transitionContext.onPatchAnim({
+                          appearType: e.target.value as import('../core/project').PinAppearType,
+                        })
+                      }
+                    >
+                      <option value="fade">Fade</option>
+                      <option value="pop">Pop</option>
+                      <option value="drop">Drop</option>
+                    </select>
+                  </label>
+                  <div className="two-col">
+                    <label>
+                      Delay (s)
+                      <input
+                        type="number"
+                        min="0"
+                        max="10"
+                        step="0.1"
+                        value={transitionContext.anim.appearDelay ?? 0}
+                        onChange={(e) =>
+                          transitionContext.onPatchAnim({
+                            appearDelay: Math.max(0, Number(e.target.value)),
+                          })
+                        }
+                      />
+                    </label>
+                    <label>
+                      Duration (s)
+                      <input
+                        type="number"
+                        min="0.05"
+                        max="10"
+                        step="0.1"
+                        value={transitionContext.anim.appearDuration ?? 0.6}
+                        onChange={(e) =>
+                          transitionContext.onPatchAnim({
+                            appearDuration: Math.max(0.05, Number(e.target.value)),
+                          })
+                        }
+                      />
+                    </label>
+                  </div>
+                </>
+              )}
+              <span className="pin-section-sub">Layer Hold</span>
+              <label>
+                Hold (s)
+                <input
+                  type="number"
+                  min="0"
+                  max="10"
+                  step="0.1"
+                  value={transitionContext.anim?.layerHoldDuration ?? 0}
+                  onChange={(e) =>
+                    transitionContext.onPatchAnim({
+                      layerHoldDuration: Math.max(0, Number(e.target.value)),
+                    })
+                  }
+                />
+              </label>
+              <span className="pin-section-sub">Wipe Out</span>
+              <label className="toggle">
+                <span>Enable Wipe Out</span>
+                <input
+                  type="checkbox"
+                  checked={Boolean(transitionContext.anim?.wipeEnabled)}
+                  onChange={(e) => transitionContext.onPatchAnim({ wipeEnabled: e.target.checked })}
+                />
+              </label>
+              {transitionContext.anim?.wipeEnabled && (
+                <label>
+                  Duration (s)
+                  <input
+                    type="number"
+                    min="0.05"
+                    max="10"
+                    step="0.1"
+                    value={transitionContext.anim.wipeDuration ?? 0.5}
+                    onChange={(e) =>
+                      transitionContext.onPatchAnim({
+                        wipeDuration: Math.max(0.05, Number(e.target.value)),
+                      })
+                    }
+                  />
+                </label>
+              )}
+            </>
+          )}
+          {transitionContext.warnings.map((warning, index) => (
+            <p key={index} className={`segment-warning ${warning.level}`}>
+              ⚠ {warning.message}
+            </p>
+          ))}
+        </div>
+      )}
+      {viewContext && (
+        <div className="pin-section transition-layer-section">
+          <span className="pin-section-title">
+            View Animation <em className="transition-section-context">{viewContext.viewName}</em>
+          </span>
+          <label className="toggle">
+            <span>Layer exists in this View</span>
+            <input
+              type="checkbox"
+              checked={viewContext.inView}
+              onChange={(e) => viewContext.onSetMembership(e.target.checked)}
+            />
+          </label>
+          {viewContext.holdDuration === 0 && (
+            <p className="segment-warning info">
+              View Hold is 0s. This View has no playback interval. Its Layer configuration and animations are
+              preserved but do not affect playback until Hold is increased.
+            </p>
+          )}
+          {!viewContext.inView ? (
+            <p className="transition-hint">Enable this layer for the View to configure animation.</p>
+          ) : (
+            <>
+              <span className="pin-section-sub">Appear</span>
+              <label className="toggle">
+                <span>Enable Appear</span>
+                <input
+                  type="checkbox"
+                  checked={Boolean(viewContext.anim?.appearEnabled)}
+                  onChange={(e) => viewContext.onPatchAnim({ appearEnabled: e.target.checked })}
+                />
+              </label>
+              {viewContext.anim?.appearEnabled && (
+                <>
+                  <label>
+                    Type
+                    <select
+                      value={viewContext.anim.appearType ?? 'fade'}
+                      onChange={(e) =>
+                        viewContext.onPatchAnim({
+                          appearType: e.target.value as import('../core/project').PinAppearType,
+                        })
+                      }
+                    >
+                      <option value="fade">Fade</option>
+                      <option value="pop">Pop</option>
+                      <option value="drop">Drop</option>
+                    </select>
+                  </label>
+                  <div className="two-col">
+                    <label>
+                      Delay (s)
+                      <input
+                        type="number"
+                        min="0"
+                        max="10"
+                        step="0.1"
+                        value={viewContext.anim.appearDelay ?? 0}
+                        onChange={(e) =>
+                          viewContext.onPatchAnim({ appearDelay: Math.max(0, Number(e.target.value)) })
+                        }
+                      />
+                    </label>
+                    <label>
+                      Duration (s)
+                      <input
+                        type="number"
+                        min="0.05"
+                        max="10"
+                        step="0.1"
+                        value={viewContext.anim.appearDuration ?? 0.6}
+                        onChange={(e) =>
+                          viewContext.onPatchAnim({
+                            appearDuration: Math.max(0.05, Number(e.target.value)),
+                          })
+                        }
+                      />
+                    </label>
+                  </div>
+                </>
+              )}
+              <span className="pin-section-sub">Layer Hold</span>
+              <label>
+                Hold (s)
+                <input
+                  type="number"
+                  min="0"
+                  max="10"
+                  step="0.1"
+                  value={viewContext.anim?.layerHoldDuration ?? 0}
+                  onChange={(e) =>
+                    viewContext.onPatchAnim({ layerHoldDuration: Math.max(0, Number(e.target.value)) })
+                  }
+                />
+              </label>
+              <span className="pin-section-sub">Wipe Out</span>
+              <label className="toggle">
+                <span>Enable Wipe Out</span>
+                <input
+                  type="checkbox"
+                  checked={Boolean(viewContext.anim?.wipeEnabled)}
+                  onChange={(e) => viewContext.onPatchAnim({ wipeEnabled: e.target.checked })}
+                />
+              </label>
+              {viewContext.anim?.wipeEnabled && (
+                <label>
+                  Duration (s)
+                  <input
+                    type="number"
+                    min="0.05"
+                    max="10"
+                    step="0.1"
+                    value={viewContext.anim.wipeDuration ?? 0.5}
+                    onChange={(e) =>
+                      viewContext.onPatchAnim({
+                        wipeDuration: Math.max(0.05, Number(e.target.value)),
+                      })
+                    }
+                  />
+                </label>
+              )}
+            </>
+          )}
+          {viewContext.warnings.map((warning, index) => (
+            <p key={index} className={`segment-warning ${warning.level}`}>
+              ⚠ {warning.message}
+            </p>
+          ))}
+        </div>
+      )}
       {isText && (
         <label>
-          {layer.type === 'text' ? 'Content' : 'Label'}
+          Content
           <textarea
             dir={layer.textDirection === 'rtl' ? 'rtl' : 'auto'}
             value={layer.text ?? ''}
@@ -1454,33 +2999,30 @@ function Inspector({
           </div>
         </>
       )}
-      <div className="two-col">
-        <label>
-          Color
-          <input type="color" value={layer.color} onChange={(e) => onChange({ color: e.target.value })} />
-        </label>
-        <label>
-          Opacity
-          <input
-            type="range"
-            min="0.1"
-            max="1"
-            step="0.05"
-            value={layer.opacity}
-            onChange={(e) => onChange({ opacity: Number(e.target.value) })}
-          />
-        </label>
-      </div>
-      <label className="toggle">
-        <span>Visible</span>
-        <input
-          type="checkbox"
-          checked={layer.visible}
-          onChange={(e) => onChange({ visible: e.target.checked })}
-        />
-      </label>
-      <label className="toggle">
-        <span>Lock direct editing</span>
+      {layer.type !== 'pin' && (
+        <div className="two-col">
+          <label>
+            Color
+            <input type="color" value={layer.color} onChange={(e) => onChange({ color: e.target.value })} />
+          </label>
+          <label>
+            Opacity
+            <input
+              type="range"
+              min="0.1"
+              max="1"
+              step="0.05"
+              value={layer.opacity}
+              onChange={(e) => onChange({ opacity: Number(e.target.value) })}
+            />
+          </label>
+        </div>
+      )}
+      <label
+        className="toggle"
+        title="Prevents moving this layer directly on the map. The layer stays editable in Properties and is still captured in Views."
+      >
+        <span>Lock on canvas</span>
         <input
           type="checkbox"
           checked={layer.locked}
@@ -1488,8 +3030,12 @@ function Inspector({
         />
       </label>
       <div className="order-actions">
-        <button onClick={() => onMove(-1)}>Move back</button>
-        <button onClick={() => onMove(1)}>Move forward</button>
+        <button title="Moves this layer one level below overlapping layers" onClick={() => onMove(-1)}>
+          ↓ Send Backward
+        </button>
+        <button title="Moves this layer one level above overlapping layers" onClick={() => onMove(1)}>
+          ↑ Bring Forward
+        </button>
       </div>
       <details>
         <summary>Advanced</summary>
@@ -1498,9 +3044,11 @@ function Inspector({
       <button className="duplicate" onClick={onDuplicate}>
         Duplicate Layer
       </button>
-      <button className="delete-layer" onClick={onRemove}>
-        Delete Layer
-      </button>
+      {canRemove && (
+        <button className="delete-layer" onClick={onRemove}>
+          Delete Layer
+        </button>
+      )}
     </div>
   );
 }

@@ -48,6 +48,14 @@ export async function ingestProjectImage(sourcePath: string): Promise<ProjectAss
   return invoke<ProjectAsset>('ingest_project_image', { sourcePath });
 }
 
+/**
+ * Ingest raw PNG/JPEG bytes (e.g. decoded from a reusable app-level Pin
+ * Style) into the project-owned content-addressed asset store.
+ */
+export async function ingestProjectImageBytes(bytes: number[], filename: string): Promise<ProjectAsset> {
+  return invoke<ProjectAsset>('ingest_project_image_bytes', { bytes, filename });
+}
+
 export function resolveProjectAssetDataUrl(asset: ProjectAsset): Promise<string> {
   let pending = dataUrlCache.get(asset.id);
   if (!pending) {
@@ -70,10 +78,15 @@ export async function resolveProjectAssetUrls(project: Project): Promise<Record<
 export function findReferencedAssets(project: Project): Set<string> {
   const referenced = new Set<string>();
   const collect = (layers: Project['layers']) => {
-    for (const layer of layers) if (layer.type === 'image' && layer.assetId) referenced.add(layer.assetId);
+    for (const layer of layers) {
+      if (layer.type === 'image' && layer.assetId) referenced.add(layer.assetId);
+      if (layer.type === 'pin' && layer.pinCustomAssetId) referenced.add(layer.pinCustomAssetId);
+    }
   };
+  // Assets are project-level: custom icons and images live exclusively on the
+  // canonical Project Layer definition. Migration adopts any legacy-only
+  // layer before this runtime path is reached.
   collect(project.layers);
-  for (const view of project.views) collect(view.layers);
   return referenced;
 }
 

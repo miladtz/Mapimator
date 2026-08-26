@@ -1,5 +1,5 @@
 import { findCountry } from '../data/worldMap';
-import type { CameraState, CanvasLayout, Layer, TransitionType, View } from './project';
+import type { CameraState, CanvasLayout, Layer, TransitionPreset, TransitionType } from './project';
 
 export const CAMERA_VIEWPORT = { width: 1000, height: 560 };
 
@@ -15,7 +15,7 @@ export const CAMERA_SETTINGS = {
   fitPadding: 54,
 };
 
-export type CameraTransitionPreset = View['transitionPreset'];
+export type CameraTransitionPreset = TransitionPreset;
 export type CameraTransitionType = TransitionType;
 
 /**
@@ -160,9 +160,8 @@ export const fitCountryCamera = (countryId: string): CameraState | null => {
 };
 
 export const fitLayersCamera = (layers: Layer[], fallback: CameraState): CameraState => {
-  const visible = layers.filter((layer) => layer.visible);
-  if (!visible.length) return fallback;
-  const bounds = visible.map(layerBounds).filter((bounds): bounds is Bounds => bounds !== null);
+  if (!layers.length) return fallback;
+  const bounds = layers.map(layerBounds).filter((bounds): bounds is Bounds => bounds !== null);
   return bounds.length ? fitBounds(mergeBounds(bounds)) : fallback;
 };
 
