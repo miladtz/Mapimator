@@ -65,7 +65,13 @@ import { formatExportDuration } from '../core/exportProgress';
 import { canEditMembership } from '../core/editorPreviewModes';
 import { validateTransitionLayer, validateViewLayer, type SegmentWarning } from '../core/segmentValidation';
 import { autoReframe } from '../core/layout';
-import { fitCountryCamera, fitLayerCamera, fitSelectionCamera, fitWorldCamera } from '../core/camera';
+import {
+  fitCountryCamera,
+  fitLayerCamera,
+  fitSelectionCamera,
+  fitWorldCamera,
+  roundCamera,
+} from '../core/camera';
 import { exportPortableProject, importPortableProjectDetailed } from '../core/portableProject';
 import { DEFAULT_EXPORT_PRESET_ID, EXPORT_PRESETS, type ExportPresetId } from '../core/exportPresets';
 import {
@@ -199,7 +205,7 @@ export function App() {
   const [timelineSelection, setTimelineSelection] = useState<SegmentRef | null>(null);
   const [transitionPopoverId, setTransitionPopoverId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const [camera, setCamera] = useState<CameraState>({ x: 0, y: 0, zoom: 1 });
+  const [camera, setCamera] = useState<CameraState>({ x: 0, y: 0, zoom: 1, bearing: 0, pitch: 0 });
   const [mapMode, setMapMode] = useState<MapMode>('flat');
   const [playbackState, setPlaybackState] = useState<PlaybackState>('stopped');
   const [layersPanelOpen, setLayersPanelOpen] = useState(true);
@@ -663,7 +669,7 @@ export function App() {
       setSelectedId(null);
       setTimelineSelection(null);
       setTransitionPopoverId(null);
-      setCamera(saved.views[0]?.camera ?? { x: 0, y: 0, zoom: 1 });
+      setCamera(saved.views[0]?.camera ?? { x: 0, y: 0, zoom: 1, bearing: 0, pitch: 0 });
       previewClock.stop();
       setPlaybackState('stopped');
       setNotice(words.opened);
@@ -705,7 +711,7 @@ export function App() {
       const { project: imported, compatibility } = await importPortableProjectDetailed(inputPath);
       setProject(imported);
       setProjectFilePath(null);
-      setCamera(imported.views[0]?.camera ?? { x: 0, y: 0, zoom: 1 });
+      setCamera(imported.views[0]?.camera ?? { x: 0, y: 0, zoom: 1, bearing: 0, pitch: 0 });
       setSelectedId(null);
       setTimelineSelection(null);
       setTransitionPopoverId(null);
@@ -1030,11 +1036,15 @@ export function App() {
       setNotice(`Country not found: ${countryId}`);
       return;
     }
-    applyCameraEdit(next);
+    applyCameraEdit({ ...next, bearing: camera.bearing, pitch: camera.pitch });
     setNotice(`Fit Country applied: ${countryId.toUpperCase()}`);
   };
   const fitSelection = () => {
-    applyCameraEdit(fitSelectionCamera(project.layers, selectedId, camera));
+    applyCameraEdit({
+      ...fitSelectionCamera(project.layers, selectedId, camera),
+      bearing: camera.bearing,
+      pitch: camera.pitch,
+    });
     setNotice(selectedId ? 'Fit Selection applied' : 'Fit Layers applied');
   };
   const fitLayer = () => {
@@ -1042,7 +1052,7 @@ export function App() {
       setNotice('Select a layer before Fit Layer');
       return;
     }
-    applyCameraEdit(fitLayerCamera(selected, camera));
+    applyCameraEdit({ ...fitLayerCamera(selected, camera), bearing: camera.bearing, pitch: camera.pitch });
     setNotice(`Fit Layer applied: ${selected.name}`);
   };
   const exportProof = async () => {
@@ -1532,6 +1542,11 @@ export function App() {
           {playbackState !== 'stopped' && (
             <p className="preview-edit-lock">Stop Preview to edit View or Transition settings.</p>
           )}
+          <CameraInspector
+            camera={camera}
+            disabled={playbackState !== 'stopped' || mapMode !== 'flat'}
+            onChange={(bearing) => setCamera((current) => roundCamera({ ...current, bearing }))}
+          />
           {!projectMode && selectedTransition && (
             <TransitionInspector
               transition={selectedTransition}
@@ -2327,6 +2342,48 @@ const exportStatusLabel = (status: ExportProgressState['status']) => {
   if (status === 'failed') return 'Export failed';
   return 'Video export';
 };
+
+function CameraInspector({
+  camera,
+  disabled,
+  onChange,
+}: {
+  camera: CameraState;
+  disabled: boolean;
+  onChange: (bearing: number) => void;
+}) {
+  const bearing = camera.bearing ?? 0;
+  return (
+    <div className="layer-inspector camera-inspector">
+      <span className="type-chip">Camera</span>
+      <label>
+        Bearing
+        <input
+          type="range"
+          min="-180"
+          max="180"
+          step="1"
+          value={bearing}
+          disabled={disabled}
+          onChange={(event) => onChange(Number(event.target.value))}
+        />
+        <input
+          type="number"
+          min="-180"
+          max="180"
+          step="1"
+          value={bearing}
+          disabled={disabled}
+          onChange={(event) => onChange(Number(event.target.value))}
+        />
+      </label>
+      <button type="button" disabled={disabled || bearing === 0} onClick={() => onChange(0)}>
+        Reset Bearing
+      </button>
+      <p className="transition-hint">0° is north-up; positive values rotate clockwise.</p>
+    </div>
+  );
+}
 
 function ViewInspector({
   view,

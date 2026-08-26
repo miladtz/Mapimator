@@ -26,6 +26,7 @@
     "test:preview-smoothness": "node scripts/verify-preview-smoothness.mjs",
     "test:save-export-runtime": "node scripts/verify-save-export-runtime.mjs",
     "test:export-render-stability": "node scripts/verify-export-render-stability.mjs",
+    "test:camera-bearing": "node scripts/verify-camera-bearing.mjs",
     "benchmark:export-runtime": "node scripts/benchmark-export-runtime.mjs"
   },
   "dependencies": {

@@ -143,7 +143,7 @@ assert.equal(
 );
 
 const atStart = evaluateProjectAtTime(runtimeProject, 0);
-assert.deepEqual(atStart.camera, viewA.camera, 't=0 evaluates the exact first View camera');
+assert.deepEqual(atStart.camera, runtimeProject.views[0].camera, 't=0 evaluates the exact first View camera');
 assert.equal(atStart.activeViewIndex, 0);
 
 const midFlyTo = evaluateProjectAtTime(runtimeProject, 2 + 2);
@@ -154,7 +154,7 @@ assert.ok(
 assert.equal(midFlyTo.activeViewIndex, 0, 'active View stays on the source during its transition');
 
 const atEnd = evaluateProjectAtTime(runtimeProject, sequence.duration);
-assert.deepEqual(atEnd.camera, viewC.camera, 'end evaluates the exact final View camera');
+assert.deepEqual(atEnd.camera, runtimeProject.views[2].camera, 'end evaluates the exact final View camera');
 assert.equal(atEnd.activeViewIndex, 2);
 
 // 7. Old projects without transitionType default to 'smooth'.
@@ -162,8 +162,15 @@ delete viewA.transitionType;
 delete viewB.transitionType;
 const legacyProject = createProject('Legacy');
 legacyProject.views = [viewA, viewB, viewC];
-const legacyMid = evaluateProjectAtTime(validateAndMigrateProject(legacyProject), 2 + 2);
-const smoothReference = interpolateCamera(viewA.camera, viewB.camera, 0.5, viewA.transitionPreset, 'smooth');
+const legacyRuntime = validateAndMigrateProject(legacyProject);
+const legacyMid = evaluateProjectAtTime(legacyRuntime, 2 + 2);
+const smoothReference = interpolateCamera(
+  legacyRuntime.views[0].camera,
+  legacyRuntime.views[1].camera,
+  0.5,
+  viewA.transitionPreset,
+  'smooth',
+);
 assert.deepEqual(legacyMid.camera, smoothReference, 'missing transitionType must default to smooth');
 
 // 8. Persistence: all presets and types survive validation; unknown types rejected.

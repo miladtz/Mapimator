@@ -173,6 +173,10 @@ export interface CameraState {
   x: number;
   y: number;
   zoom: number;
+  /** Clockwise degrees from north-up. Legacy projects default to zero. */
+  bearing?: number;
+  /** Reserved for Milestone 6B. It remains zero in the 6A renderer. */
+  pitch?: number;
 }
 /**
  * A View's own configuration for one project Layer, keyed by the stable

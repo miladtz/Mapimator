@@ -10,6 +10,7 @@ import type {
   ViewLayerConfig,
 } from './project';
 import { normalizeSegmentAnimation } from './project';
+import { normalizeBearing } from './camera';
 
 type LegacyView = Omit<View, 'layerConfigs' | 'transitionLayerConfigs'> & {
   layerConfigs?: Record<string, ViewLayerConfig>;
@@ -81,6 +82,10 @@ const optionalBooleans = ['effectRepeat', 'pinLabelVisible', 'pinAppearEnabled',
 const validateCamera = (value: unknown, path: string): CameraState => {
   if (!isRecord(value) || !isFiniteNumber(value.x) || !isFiniteNumber(value.y) || !isFiniteNumber(value.zoom))
     throw new Error(`${path} must contain finite x, y, and zoom values.`);
+  if (value.bearing !== undefined && !isFiniteNumber(value.bearing))
+    throw new Error(`${path}.bearing must be finite.`);
+  if (value.pitch !== undefined && (!isFiniteNumber(value.pitch) || value.pitch < 0 || value.pitch > 60))
+    throw new Error(`${path}.pitch must be between 0 and 60 degrees.`);
   return value as unknown as CameraState;
 };
 
@@ -492,7 +497,15 @@ export function validateAndMigrateProject(value: unknown): Project {
         ];
       }),
     );
-    return { ...runtimeView, layerConfigs: vc } as View;
+    return {
+      ...runtimeView,
+      camera: {
+        ...runtimeView.camera,
+        bearing: normalizeBearing(runtimeView.camera.bearing),
+        pitch: runtimeView.camera.pitch ?? 0,
+      },
+      layerConfigs: vc,
+    } as View;
   });
   const viewIds = new Set(backfilled.map((view) => view.id));
   const existingTransitions = (value.transitions as Transition[] | undefined) ?? [];

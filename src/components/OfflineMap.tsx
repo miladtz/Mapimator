@@ -14,7 +14,12 @@ import {
   clamp,
   constrainCamera,
   fitWorldCamera,
+  interpolateBearing,
+  normalizeBearing,
+  projectWorldToScreen,
   roundCamera,
+  screenDeltaToNorthUp,
+  unprojectScreenToWorld,
   zoomAtPoint,
 } from '../core/camera';
 import {
@@ -104,7 +109,7 @@ export function OfflineMap({
   assetUrls,
   editorMode = true,
 }: Props) {
-  const drag = useRef<{ x: number; y: number } | null>(null);
+  const drag = useRef<{ worldX: number; worldY: number } | null>(null);
   const lastPan = useRef<{ x: number; y: number; time: number } | null>(null);
   const velocity = useRef({ x: 0, y: 0 });
   const globeRotation = useRef<GlobeRotation>({ lon: 0, lat: 0 });
@@ -196,7 +201,7 @@ export function OfflineMap({
           CAMERA_SETTINGS.minZoom,
           CAMERA_SETTINGS.maxZoom,
         );
-        targetCamera.current = roundCamera({ x: 0, y: 0, zoom });
+        targetCamera.current = roundCamera({ ...targetCamera.current, x: 0, y: 0, zoom });
         if (!animation.current) glideToTarget();
         return;
       }
@@ -218,6 +223,8 @@ export function OfflineMap({
         x: start.x + (end.x - start.x) * eased,
         y: start.y + (end.y - start.y) * eased,
         zoom: start.zoom * Math.pow(end.zoom / start.zoom, eased),
+        bearing: interpolateBearing(start.bearing, end.bearing, eased),
+        pitch: (start.pitch ?? 0) + ((end.pitch ?? 0) - (start.pitch ?? 0)) * eased,
       });
       targetCamera.current = next;
       currentCamera.current = next;
@@ -235,6 +242,8 @@ export function OfflineMap({
         y: currentCamera.current.y + (targetCamera.current.y - currentCamera.current.y) * 0.34,
         zoom:
           currentCamera.current.zoom * Math.pow(targetCamera.current.zoom / currentCamera.current.zoom, 0.34),
+        bearing: currentCamera.current.bearing,
+        pitch: currentCamera.current.pitch,
       });
       currentCamera.current = next;
       emitCameraChange(next);
@@ -309,7 +318,8 @@ export function OfflineMap({
     cancelActiveCameraInteraction();
     event.currentTarget.focus();
     const point = svgPoint(event, event.currentTarget);
-    drag.current = { x: point.x - currentCamera.current.x, y: point.y - currentCamera.current.y };
+    const world = unprojectScreenToWorld(currentCamera.current, point.x, point.y);
+    drag.current = { worldX: world.x, worldY: world.y };
     lastPan.current = { x: event.clientX, y: event.clientY, time: performance.now() };
     velocity.current = { x: 0, y: 0 };
     movedSinceDown.current = false;
@@ -323,12 +333,7 @@ export function OfflineMap({
       // Convert the cursor's screen-space point to the layer's geographic
       // (world) coordinate so the graphic tracks the cursor at any zoom.
       const world =
-        mapMode === 'globe'
-          ? point
-          : {
-              x: (point.x - currentCamera.current.x) / currentCamera.current.zoom,
-              y: (point.y - currentCamera.current.y) / currentCamera.current.zoom,
-            };
+        mapMode === 'globe' ? point : unprojectScreenToWorld(currentCamera.current, point.x, point.y);
       onMoveLayer(moving.current, world.x, world.y);
     } else if (drag.current) {
       const now = performance.now();
@@ -340,11 +345,13 @@ export function OfflineMap({
             lon: ((event.clientX - previous.x) / dt) * 16.67 * 0.42,
             lat: ((event.clientY - previous.y) / dt) * 16.67 * 0.42,
           };
-        else
-          velocity.current = {
+        else {
+          const screenVelocity = {
             x: ((event.clientX - previous.x) / dt) * 16.67,
             y: ((event.clientY - previous.y) / dt) * 16.67,
           };
+          velocity.current = screenDeltaToNorthUp(currentCamera.current, screenVelocity.x, screenVelocity.y);
+        }
       }
       lastPan.current = { x: event.clientX, y: event.clientY, time: now };
       if (mapMode === 'globe') {
@@ -354,10 +361,17 @@ export function OfflineMap({
         });
         return;
       }
+      const point = svgPoint(event, event.currentTarget);
+      const northUp = projectWorldToScreen(
+        { ...currentCamera.current, x: 0, y: 0, bearing: 0 },
+        drag.current.worldX,
+        drag.current.worldY,
+      );
+      const cursorNorthUp = unrotateViewportPoint(point, currentCamera.current.bearing);
       targetCamera.current = applyEdgeResistance({
         ...currentCamera.current,
-        x: svgPoint(event, event.currentTarget).x - drag.current.x,
-        y: svgPoint(event, event.currentTarget).y - drag.current.y,
+        x: cursorNorthUp.x - northUp.x,
+        y: cursorNorthUp.y - northUp.y,
       });
       currentCamera.current = targetCamera.current;
       emitCameraChange(targetCamera.current);
@@ -396,10 +410,7 @@ export function OfflineMap({
       const worldPoint =
         mapModeRef.current === 'globe'
           ? svgCoords
-          : {
-              x: (svgCoords.x - currentCamera.current.x) / currentCamera.current.zoom,
-              y: (svgCoords.y - currentCamera.current.y) / currentCamera.current.zoom,
-            };
+          : unprojectScreenToWorld(currentCamera.current, svgCoords.x, svgCoords.y);
       onBackgroundClick(worldPoint);
     }
   };
@@ -408,6 +419,7 @@ export function OfflineMap({
     const { x, y } = svgPoint(event, event.currentTarget);
     if (mapMode === 'globe') {
       targetCamera.current = roundCamera({
+        ...currentCamera.current,
         x: 0,
         y: 0,
         zoom: clamp(currentCamera.current.zoom * 1.62, CAMERA_SETTINGS.minZoom, CAMERA_SETTINGS.maxZoom),
@@ -505,6 +517,16 @@ function svgPoint(event: { clientX: number; clientY: number }, svg: SVGSVGElemen
   return { x: transformed.x, y: transformed.y };
 }
 
+function unrotateViewportPoint(point: { x: number; y: number }, bearing = 0) {
+  const radians = (-normalizeBearing(bearing) * Math.PI) / 180;
+  const dx = point.x - CAMERA_VIEWPORT.width / 2;
+  const dy = point.y - CAMERA_VIEWPORT.height / 2;
+  return {
+    x: dx * Math.cos(radians) - dy * Math.sin(radians) + CAMERA_VIEWPORT.width / 2,
+    y: dx * Math.sin(radians) + dy * Math.cos(radians) + CAMERA_VIEWPORT.height / 2,
+  };
+}
+
 export function MapScene({
   style,
   mapMode = 'flat',
@@ -525,15 +547,14 @@ export function MapScene({
   editorMode = false,
 }: MapSceneProps) {
   const globe = globeProjection(camera, globeRotation);
+  const bearing = normalizeBearing(camera.bearing);
   const transform =
-    mapMode === 'globe' ? undefined : `translate(${camera.x} ${camera.y}) scale(${camera.zoom})`;
+    mapMode === 'globe'
+      ? undefined
+      : `translate(${CAMERA_VIEWPORT.width / 2} ${CAMERA_VIEWPORT.height / 2}) rotate(${bearing}) translate(${-CAMERA_VIEWPORT.width / 2} ${-CAMERA_VIEWPORT.height / 2}) translate(${camera.x} ${camera.y}) scale(${camera.zoom})`;
   const backgroundClick = (event: React.MouseEvent<SVGElement>) => {
     const point = svgPoint(event, event.currentTarget.ownerSVGElement as SVGSVGElement);
-    onBackgroundClick?.(
-      mapMode === 'globe'
-        ? point
-        : { x: (point.x - camera.x) / camera.zoom, y: (point.y - camera.y) / camera.zoom },
-    );
+    onBackgroundClick?.(mapMode === 'globe' ? point : unprojectScreenToWorld(camera, point.x, point.y));
   };
   const labels = useMemo(() => selectMapLabels(camera), [camera.x, camera.y, camera.zoom]);
   const projectedMap = useMemo(
@@ -604,10 +625,7 @@ export function MapScene({
       </defs>
       <rect width="1000" height="560" fill={style.backgroundColor} onClick={backgroundClick} />
       {mapMode === 'flat' ? (
-        <>
-          <rect width="1000" height="560" fill={style.waterColor} onClick={backgroundClick} />
-          <rect width="1000" height="560" fill="url(#grid)" onClick={backgroundClick} />
-        </>
+        <rect width="1000" height="560" fill={style.waterColor} onClick={backgroundClick} />
       ) : (
         <ellipse
           cx="500"
@@ -632,6 +650,7 @@ export function MapScene({
       <g clipPath={mapMode === 'globe' ? 'url(#globe-clip)' : undefined}>
         {mapMode === 'globe' && <GlobeGraticule color={style.countryBorderColor} />}
         <g transform={transform}>
+          {mapMode === 'flat' && <rect x="-1000" y="-1000" width="3000" height="2560" fill="url(#grid)" />}
           {COUNTRIES.map((c) => {
             const projected = projectedMap ? projectedMap.countries.get(c.id) : c.path;
             return projected ? (
@@ -752,6 +771,7 @@ export function MapScene({
                   assetUrl={customIconUrl ?? imageUrl}
                   globe={mapMode === 'globe' ? globe : undefined}
                   screenScale={mapMode === 'globe' ? globe.symbolScale : 1 / camera.zoom}
+                  screenRotation={mapMode === 'globe' ? 0 : -bearing}
                   editorMode={editorMode}
                 />
               );
@@ -1045,6 +1065,7 @@ function PinGraphic({
   onPointerDown,
   point,
   screenScale,
+  screenRotation,
   assetUrl,
   editorMode = false,
 }: {
@@ -1053,6 +1074,7 @@ function PinGraphic({
   onPointerDown: (event: PointerEvent<SVGGElement>) => void;
   point: { x: number; y: number };
   screenScale: number;
+  screenRotation: number;
   assetUrl?: string;
   editorMode?: boolean;
 }) {
@@ -1244,7 +1266,9 @@ function PinGraphic({
   ) : null;
   return (
     <g {...commonProps(layer, selected, onPointerDown)}>
-      <g transform={`translate(${point.x} ${point.y + dropOffsetY}) scale(${scale})`}>
+      <g
+        transform={`translate(${point.x} ${point.y + dropOffsetY}) rotate(${screenRotation}) scale(${scale})`}
+      >
         {glyph}
         {label}
         {selected && (
@@ -1285,6 +1309,7 @@ function LayerGraphic({
   assetUrl,
   globe,
   screenScale = 1,
+  screenRotation = 0,
   editorMode = false,
 }: {
   layer: Layer;
@@ -1293,6 +1318,7 @@ function LayerGraphic({
   assetUrl?: string;
   globe?: GlobeProjection;
   screenScale?: number;
+  screenRotation?: number;
   editorMode?: boolean;
 }) {
   const common = {
@@ -1327,6 +1353,7 @@ function LayerGraphic({
         onPointerDown={onPointerDown}
         point={point}
         screenScale={screenScale}
+        screenRotation={screenRotation}
         assetUrl={assetUrl}
         editorMode={editorMode}
       />

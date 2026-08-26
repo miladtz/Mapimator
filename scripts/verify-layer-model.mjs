@@ -342,8 +342,16 @@ const spine = (a, holdA = 1, transDur = 2, holdB = 1) => {
     ['layer-a', 'layer-b'],
     'registry preserved',
   );
-  assert.deepEqual(migrated.views[0].camera, { x: 10, y: 20, zoom: 1.5 }, 'camera preserved');
-  assert.deepEqual(migrated.views[1].camera, { x: -10, y: -20, zoom: 0.5 }, 'second camera preserved');
+  assert.deepEqual(
+    migrated.views[0].camera,
+    { x: 10, y: 20, zoom: 1.5, bearing: 0, pitch: 0 },
+    'camera preserved with orientation defaults',
+  );
+  assert.deepEqual(
+    migrated.views[1].camera,
+    { x: -10, y: -20, zoom: 0.5, bearing: 0, pitch: 0 },
+    'second camera preserved with orientation defaults',
+  );
 
   // Membership preserved: View 1 includes layer-a (visible), View 2 excludes
   // layer-b (invisible in legacy = not allocated).

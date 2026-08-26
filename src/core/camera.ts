@@ -45,6 +45,59 @@ const expLerp = (a: number, b: number, t: number) => a * Math.pow(b / a, t);
 
 export const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
+export const normalizeBearing = (bearing = 0) => {
+  const normalized = ((((bearing + 180) % 360) + 360) % 360) - 180;
+  return Object.is(normalized, -0) ? 0 : normalized;
+};
+
+export const interpolateBearing = (from: number | undefined, to: number | undefined, t: number) => {
+  const start = normalizeBearing(from);
+  const delta = normalizeBearing(normalizeBearing(to) - start);
+  return normalizeBearing(start + delta * clamp(t, 0, 1));
+};
+
+const rotatePoint = (x: number, y: number, degrees: number) => {
+  const radians = (degrees * Math.PI) / 180;
+  const cosine = Math.cos(radians);
+  const sine = Math.sin(radians);
+  return { x: x * cosine - y * sine, y: x * sine + y * cosine };
+};
+
+export const screenDeltaToNorthUp = (camera: CameraState, deltaX: number, deltaY: number) =>
+  rotatePoint(deltaX, deltaY, -normalizeBearing(camera.bearing));
+
+export const projectWorldToScreen = (camera: CameraState, worldX: number, worldY: number) => {
+  const northUpX = worldX * camera.zoom + camera.x;
+  const northUpY = worldY * camera.zoom + camera.y;
+  const rotated = rotatePoint(
+    northUpX - CAMERA_VIEWPORT.width / 2,
+    northUpY - CAMERA_VIEWPORT.height / 2,
+    normalizeBearing(camera.bearing),
+  );
+  return { x: rotated.x + CAMERA_VIEWPORT.width / 2, y: rotated.y + CAMERA_VIEWPORT.height / 2 };
+};
+
+export const unprojectScreenToWorld = (camera: CameraState, screenX: number, screenY: number) => {
+  const northUp = rotatePoint(
+    screenX - CAMERA_VIEWPORT.width / 2,
+    screenY - CAMERA_VIEWPORT.height / 2,
+    -normalizeBearing(camera.bearing),
+  );
+  return {
+    x: (northUp.x + CAMERA_VIEWPORT.width / 2 - camera.x) / camera.zoom,
+    y: (northUp.y + CAMERA_VIEWPORT.height / 2 - camera.y) / camera.zoom,
+  };
+};
+
+const northUpScreenPoint = (camera: CameraState, screenX: number, screenY: number) => {
+  const point = rotatePoint(
+    screenX - CAMERA_VIEWPORT.width / 2,
+    screenY - CAMERA_VIEWPORT.height / 2,
+    -normalizeBearing(camera.bearing),
+  );
+  return { x: point.x + CAMERA_VIEWPORT.width / 2, y: point.y + CAMERA_VIEWPORT.height / 2 };
+};
+
 export const constrainCamera = (camera: CameraState): CameraState => {
   const zoom = clamp(camera.zoom, CAMERA_SETTINGS.minZoom, CAMERA_SETTINGS.maxZoom);
   const minX = CAMERA_VIEWPORT.width - CAMERA_VIEWPORT.width * zoom;
@@ -53,6 +106,8 @@ export const constrainCamera = (camera: CameraState): CameraState => {
     x: clamp(camera.x, minX, 0),
     y: clamp(camera.y, minY, 0),
     zoom,
+    bearing: camera.bearing,
+    pitch: camera.pitch,
   });
 };
 
@@ -62,6 +117,8 @@ export const applyEdgeResistance = (camera: CameraState): CameraState => {
     x: constrained.x + (camera.x - constrained.x) * CAMERA_SETTINGS.edgeResistance,
     y: constrained.y + (camera.y - constrained.y) * CAMERA_SETTINGS.edgeResistance,
     zoom: constrained.zoom,
+    bearing: camera.bearing,
+    pitch: camera.pitch,
   });
 };
 
@@ -77,12 +134,14 @@ export const zoomAtPoint = (
     CAMERA_SETTINGS.minZoom,
     CAMERA_SETTINGS.maxZoom,
   );
-  const worldX = (viewportX - camera.x) / camera.zoom;
-  const worldY = (viewportY - camera.y) / camera.zoom;
+  const { x: worldX, y: worldY } = unprojectScreenToWorld(camera, viewportX, viewportY);
+  const northUp = northUpScreenPoint(camera, viewportX, viewportY);
   return constrainCamera({
-    x: viewportX - worldX * nextZoom,
-    y: viewportY - worldY * nextZoom,
+    x: northUp.x - worldX * nextZoom,
+    y: northUp.y - worldY * nextZoom,
     zoom: nextZoom,
+    bearing: camera.bearing,
+    pitch: camera.pitch,
   });
 };
 
@@ -116,10 +175,21 @@ export const flyToCamera = (
   if (t <= FLY_OUT_END) zoom = expLerp(from.zoom, cruise, smoothstep01(t / FLY_OUT_END));
   else if (t <= FLY_IN_START) zoom = cruise;
   else zoom = expLerp(cruise, to.zoom, smoothstep01((t - FLY_IN_START) / (1 - FLY_IN_START)));
+  const orientation =
+    from.bearing !== undefined ||
+    to.bearing !== undefined ||
+    from.pitch !== undefined ||
+    to.pitch !== undefined
+      ? {
+          bearing: interpolateBearing(from.bearing, to.bearing, position),
+          pitch: interpolateNumber(from.pitch ?? 0, to.pitch ?? 0, position),
+        }
+      : {};
   return roundCamera({
     x: interpolateNumber(from.x, to.x, position),
     y: interpolateNumber(from.y, to.y, position),
     zoom,
+    ...orientation,
   });
 };
 
@@ -137,19 +207,32 @@ export const interpolateCamera = (
   if (type === 'pan') zoomProgress = Math.pow(position, PAN_ZOOM_LAG);
   else if (type === 'zoom') zoomProgress = Math.pow(position, ZOOM_ZOOM_LEAD);
   const zoom = from.zoom * Math.pow(to.zoom / from.zoom, zoomProgress);
+  const orientation =
+    from.bearing !== undefined ||
+    to.bearing !== undefined ||
+    from.pitch !== undefined ||
+    to.pitch !== undefined
+      ? {
+          bearing: interpolateBearing(from.bearing, to.bearing, position),
+          pitch: interpolateNumber(from.pitch ?? 0, to.pitch ?? 0, position),
+        }
+      : {};
   return roundCamera({
     x: interpolateNumber(from.x, to.x, position),
     y: interpolateNumber(from.y, to.y, position),
     zoom,
+    ...orientation,
   });
 };
 
-export const fitWorldCamera = (): CameraState => ({ x: 0, y: 0, zoom: 1 });
+export const fitWorldCamera = (): CameraState => ({ x: 0, y: 0, zoom: 1, bearing: 0, pitch: 0 });
 
 export const roundCamera = (camera: CameraState): CameraState => ({
   x: round(camera.x, 8),
   y: round(camera.y, 8),
   zoom: round(camera.zoom, 10),
+  ...(camera.bearing !== undefined ? { bearing: round(normalizeBearing(camera.bearing), 8) } : {}),
+  ...(camera.pitch !== undefined ? { pitch: round(clamp(camera.pitch, 0, 60), 8) } : {}),
 });
 
 export const fitCountryCamera = (countryId: string): CameraState | null => {
