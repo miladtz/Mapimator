@@ -1545,7 +1545,7 @@ export function App() {
           <CameraInspector
             camera={camera}
             disabled={playbackState !== 'stopped' || mapMode !== 'flat'}
-            onChange={(bearing) => setCamera((current) => roundCamera({ ...current, bearing }))}
+            onChange={(patch) => setCamera((current) => roundCamera({ ...current, ...patch }))}
           />
           {!projectMode && selectedTransition && (
             <TransitionInspector
@@ -2350,9 +2350,28 @@ function CameraInspector({
 }: {
   camera: CameraState;
   disabled: boolean;
-  onChange: (bearing: number) => void;
+  onChange: (patch: Partial<Pick<CameraState, 'bearing' | 'pitch'>>) => void;
 }) {
   const bearing = camera.bearing ?? 0;
+  const pitch = camera.pitch ?? 0;
+  const pendingPatch = useRef<Partial<Pick<CameraState, 'bearing' | 'pitch'>> | null>(null);
+  const pendingFrame = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (pendingFrame.current !== null) cancelAnimationFrame(pendingFrame.current);
+    },
+    [],
+  );
+  const scheduleChange = (patch: Partial<Pick<CameraState, 'bearing' | 'pitch'>>) => {
+    pendingPatch.current = { ...pendingPatch.current, ...patch };
+    if (pendingFrame.current !== null) return;
+    pendingFrame.current = requestAnimationFrame(() => {
+      pendingFrame.current = null;
+      const latest = pendingPatch.current;
+      pendingPatch.current = null;
+      if (latest) onChange(latest);
+    });
+  };
   return (
     <div className="layer-inspector camera-inspector">
       <span className="type-chip">Camera</span>
@@ -2365,7 +2384,7 @@ function CameraInspector({
           step="1"
           value={bearing}
           disabled={disabled}
-          onChange={(event) => onChange(Number(event.target.value))}
+          onChange={(event) => scheduleChange({ bearing: Number(event.target.value) })}
         />
         <input
           type="number"
@@ -2374,11 +2393,39 @@ function CameraInspector({
           step="1"
           value={bearing}
           disabled={disabled}
-          onChange={(event) => onChange(Number(event.target.value))}
+          onChange={(event) => scheduleChange({ bearing: Number(event.target.value) })}
         />
       </label>
-      <button type="button" disabled={disabled || bearing === 0} onClick={() => onChange(0)}>
+      <button
+        type="button"
+        disabled={disabled || bearing === 0}
+        onClick={() => scheduleChange({ bearing: 0 })}
+      >
         Reset Bearing
+      </button>
+      <label>
+        Pitch
+        <input
+          type="range"
+          min="-60"
+          max="60"
+          step="1"
+          value={pitch}
+          disabled={disabled}
+          onChange={(event) => scheduleChange({ pitch: Number(event.target.value) })}
+        />
+        <input
+          type="number"
+          min="-60"
+          max="60"
+          step="1"
+          value={pitch}
+          disabled={disabled}
+          onChange={(event) => scheduleChange({ pitch: Number(event.target.value) })}
+        />
+      </label>
+      <button type="button" disabled={disabled || pitch === 0} onClick={() => scheduleChange({ pitch: 0 })}>
+        Reset Pitch
       </button>
       <p className="transition-hint">0° is north-up; positive values rotate clockwise.</p>
     </div>

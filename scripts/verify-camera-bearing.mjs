@@ -125,7 +125,11 @@ const mapSource = readFileSync(join(root, 'src/components/OfflineMap.tsx'), 'utf
 const frameSource = readFileSync(join(root, 'src/core/frameRenderer.tsx'), 'utf8');
 const appSource = readFileSync(join(root, 'src/app/App.tsx'), 'utf8');
 assert.match(mapSource, /rotate\(\$\{bearing\}\)/, 'bearing is serialized in the actual SVG scene transform');
-assert.match(mapSource, /screenRotation=\{mapMode === 'globe' \? 0 : -bearing\}/, 'Pin glyph counter-rotates');
+assert.match(
+  mapSource,
+  /screenRotation=\{mapMode === 'globe' \|\| flatPerspectiveCamera \? 0 : -bearing\}/,
+  'Pin glyph counter-rotates in affine Bearing and remains upright after perspective projection',
+);
 assert.match(mapSource, /unprojectScreenToWorld/, 'placement and dragging use bearing-aware inverse math');
 assert.match(frameSource, /<MapScene/, 'Export and thumbnails reuse the bearing-aware scene');
 assert.match(appSource, /Update View/, 'View camera capture remains available');

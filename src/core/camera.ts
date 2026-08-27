@@ -2,6 +2,9 @@ import { findCountry } from '../data/worldMap';
 import type { CameraState, CanvasLayout, Layer, TransitionPreset, TransitionType } from './project';
 
 export const CAMERA_VIEWPORT = { width: 1000, height: 560 };
+export const CAMERA_FOV_DEGREES = 45;
+export const CAMERA_FOCAL_LENGTH =
+  CAMERA_VIEWPORT.height / 2 / Math.tan((CAMERA_FOV_DEGREES * Math.PI) / 360);
 
 export const CAMERA_SETTINGS = {
   minZoom: 1,
@@ -63,26 +66,84 @@ const rotatePoint = (x: number, y: number, degrees: number) => {
   return { x: x * cosine - y * sine, y: x * sine + y * cosine };
 };
 
+export interface CameraRay {
+  origin: { x: number; y: number; z: number };
+  direction: { x: number; y: number; z: number };
+}
+
+export interface MapPlanePoint {
+  x: number;
+  y: number;
+}
+
+const cameraPitch = (camera: CameraState) => clamp(camera.pitch ?? 0, -60, 60);
+
+export const screenRay = (camera: CameraState, screenX: number, screenY: number): CameraRay => {
+  const pitch = (cameraPitch(camera) * Math.PI) / 180;
+  const sine = Math.sin(pitch);
+  const cosine = Math.cos(pitch);
+  const x = screenX - CAMERA_VIEWPORT.width / 2;
+  const y = screenY - CAMERA_VIEWPORT.height / 2;
+  return {
+    origin: {
+      x: 0,
+      y: -CAMERA_FOCAL_LENGTH * sine,
+      z: CAMERA_FOCAL_LENGTH * cosine,
+    },
+    direction: {
+      x,
+      y: CAMERA_FOCAL_LENGTH * sine + y * cosine,
+      z: -CAMERA_FOCAL_LENGTH * cosine + y * sine,
+    },
+  };
+};
+
+export const intersectRayWithMapPlane = (ray: CameraRay): MapPlanePoint | null => {
+  if (!Number.isFinite(ray.direction.z) || Math.abs(ray.direction.z) < 1e-9) return null;
+  const distance = -ray.origin.z / ray.direction.z;
+  if (!Number.isFinite(distance) || distance <= 0) return null;
+  const x = ray.origin.x + ray.direction.x * distance;
+  const y = ray.origin.y + ray.direction.y * distance;
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+};
+
+const screenToCameraPlane = (camera: CameraState, screenX: number, screenY: number) =>
+  intersectRayWithMapPlane(screenRay(camera, screenX, screenY));
+
 export const screenDeltaToNorthUp = (camera: CameraState, deltaX: number, deltaY: number) =>
   rotatePoint(deltaX, deltaY, -normalizeBearing(camera.bearing));
 
-export const projectWorldToScreen = (camera: CameraState, worldX: number, worldY: number) => {
-  const northUpX = worldX * camera.zoom + camera.x;
-  const northUpY = worldY * camera.zoom + camera.y;
-  const rotated = rotatePoint(
-    northUpX - CAMERA_VIEWPORT.width / 2,
-    northUpY - CAMERA_VIEWPORT.height / 2,
-    normalizeBearing(camera.bearing),
-  );
-  return { x: rotated.x + CAMERA_VIEWPORT.width / 2, y: rotated.y + CAMERA_VIEWPORT.height / 2 };
+export const createWorldToScreenProjector = (camera: CameraState) => {
+  const bearing = (normalizeBearing(camera.bearing) * Math.PI) / 180;
+  const bearingCosine = Math.cos(bearing);
+  const bearingSine = Math.sin(bearing);
+  const pitchDegrees = cameraPitch(camera);
+  const pitch = (pitchDegrees * Math.PI) / 180;
+  const pitchCosine = Math.cos(pitch);
+  const pitchSine = Math.sin(pitch);
+  return (worldX: number, worldY: number) => {
+    const northUpX = worldX * camera.zoom + camera.x - CAMERA_VIEWPORT.width / 2;
+    const northUpY = worldY * camera.zoom + camera.y - CAMERA_VIEWPORT.height / 2;
+    const rotatedX = northUpX * bearingCosine - northUpY * bearingSine;
+    const rotatedY = northUpX * bearingSine + northUpY * bearingCosine;
+    if (pitchDegrees === 0)
+      return { x: rotatedX + CAMERA_VIEWPORT.width / 2, y: rotatedY + CAMERA_VIEWPORT.height / 2 };
+    const depth = CAMERA_FOCAL_LENGTH + rotatedY * pitchSine;
+    if (!Number.isFinite(depth) || depth <= 1e-6) return null;
+    const perspective = CAMERA_FOCAL_LENGTH / depth;
+    const x = CAMERA_VIEWPORT.width / 2 + rotatedX * perspective;
+    const y = CAMERA_VIEWPORT.height / 2 + rotatedY * pitchCosine * perspective;
+    return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+  };
 };
 
+export const projectWorldToScreen = (camera: CameraState, worldX: number, worldY: number) =>
+  createWorldToScreenProjector(camera)(worldX, worldY);
+
 export const unprojectScreenToWorld = (camera: CameraState, screenX: number, screenY: number) => {
-  const northUp = rotatePoint(
-    screenX - CAMERA_VIEWPORT.width / 2,
-    screenY - CAMERA_VIEWPORT.height / 2,
-    -normalizeBearing(camera.bearing),
-  );
+  const plane = screenToCameraPlane(camera, screenX, screenY);
+  if (!plane) return null;
+  const northUp = rotatePoint(plane.x, plane.y, -normalizeBearing(camera.bearing));
   return {
     x: (northUp.x + CAMERA_VIEWPORT.width / 2 - camera.x) / camera.zoom,
     y: (northUp.y + CAMERA_VIEWPORT.height / 2 - camera.y) / camera.zoom,
@@ -90,12 +151,26 @@ export const unprojectScreenToWorld = (camera: CameraState, screenX: number, scr
 };
 
 const northUpScreenPoint = (camera: CameraState, screenX: number, screenY: number) => {
-  const point = rotatePoint(
-    screenX - CAMERA_VIEWPORT.width / 2,
-    screenY - CAMERA_VIEWPORT.height / 2,
-    -normalizeBearing(camera.bearing),
-  );
+  const plane = screenToCameraPlane(camera, screenX, screenY);
+  if (!plane) return null;
+  const point = rotatePoint(plane.x, plane.y, -normalizeBearing(camera.bearing));
   return { x: point.x + CAMERA_VIEWPORT.width / 2, y: point.y + CAMERA_VIEWPORT.height / 2 };
+};
+
+export const cameraForWorldAtScreen = (
+  camera: CameraState,
+  worldX: number,
+  worldY: number,
+  screenX: number,
+  screenY: number,
+): CameraState | null => {
+  const northUp = northUpScreenPoint(camera, screenX, screenY);
+  if (!northUp) return null;
+  return roundCamera({
+    ...camera,
+    x: northUp.x - worldX * camera.zoom,
+    y: northUp.y - worldY * camera.zoom,
+  });
 };
 
 export const constrainCamera = (camera: CameraState): CameraState => {
@@ -134,11 +209,12 @@ export const zoomAtPoint = (
     CAMERA_SETTINGS.minZoom,
     CAMERA_SETTINGS.maxZoom,
   );
-  const { x: worldX, y: worldY } = unprojectScreenToWorld(camera, viewportX, viewportY);
+  const world = unprojectScreenToWorld(camera, viewportX, viewportY);
   const northUp = northUpScreenPoint(camera, viewportX, viewportY);
+  if (!world || !northUp) return camera;
   return constrainCamera({
-    x: northUp.x - worldX * nextZoom,
-    y: northUp.y - worldY * nextZoom,
+    x: northUp.x - world.x * nextZoom,
+    y: northUp.y - world.y * nextZoom,
     zoom: nextZoom,
     bearing: camera.bearing,
     pitch: camera.pitch,
@@ -232,7 +308,7 @@ export const roundCamera = (camera: CameraState): CameraState => ({
   y: round(camera.y, 8),
   zoom: round(camera.zoom, 10),
   ...(camera.bearing !== undefined ? { bearing: round(normalizeBearing(camera.bearing), 8) } : {}),
-  ...(camera.pitch !== undefined ? { pitch: round(clamp(camera.pitch, 0, 60), 8) } : {}),
+  ...(camera.pitch !== undefined ? { pitch: round(clamp(camera.pitch, -60, 60), 8) } : {}),
 });
 
 export const fitCountryCamera = (countryId: string): CameraState | null => {

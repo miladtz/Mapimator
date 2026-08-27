@@ -84,8 +84,8 @@ const validateCamera = (value: unknown, path: string): CameraState => {
     throw new Error(`${path} must contain finite x, y, and zoom values.`);
   if (value.bearing !== undefined && !isFiniteNumber(value.bearing))
     throw new Error(`${path}.bearing must be finite.`);
-  if (value.pitch !== undefined && (!isFiniteNumber(value.pitch) || value.pitch < 0 || value.pitch > 60))
-    throw new Error(`${path}.pitch must be between 0 and 60 degrees.`);
+  if (value.pitch !== undefined && (!isFiniteNumber(value.pitch) || value.pitch < -60 || value.pitch > 60))
+    throw new Error(`${path}.pitch must be between -60 and 60 degrees.`);
   return value as unknown as CameraState;
 };
 

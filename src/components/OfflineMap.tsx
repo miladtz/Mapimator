@@ -9,6 +9,7 @@ import React, {
 } from 'react';
 import {
   applyEdgeResistance,
+  cameraForWorldAtScreen,
   CAMERA_SETTINGS,
   CAMERA_VIEWPORT,
   clamp,
@@ -18,7 +19,6 @@ import {
   normalizeBearing,
   projectWorldToScreen,
   roundCamera,
-  screenDeltaToNorthUp,
   unprojectScreenToWorld,
   zoomAtPoint,
 } from '../core/camera';
@@ -33,6 +33,7 @@ import {
   type Project,
 } from '../core/project';
 import { selectMapLabels } from '../core/mapLabels';
+import { preparseSvgPaths, projectSvgPath } from '../core/perspectiveGeometry';
 import { formatNumbers, resolveTextDirection, resolveTextLanguage } from '../core/text';
 import {
   COASTLINE_PATH,
@@ -44,6 +45,14 @@ import {
   WORLD_MAP_DATASET,
   type MapLabel,
 } from '../data/worldMap';
+
+preparseSvgPaths([
+  ...COUNTRIES.map((country) => country.path),
+  LAKE_PATH,
+  ...RIVER_PATHS,
+  COUNTRY_BORDER_PATH,
+  COASTLINE_PATH,
+]);
 
 interface Props {
   style: MapStylePreset;
@@ -319,6 +328,7 @@ export function OfflineMap({
     event.currentTarget.focus();
     const point = svgPoint(event, event.currentTarget);
     const world = unprojectScreenToWorld(currentCamera.current, point.x, point.y);
+    if (!world) return;
     drag.current = { worldX: world.x, worldY: world.y };
     lastPan.current = { x: event.clientX, y: event.clientY, time: performance.now() };
     velocity.current = { x: 0, y: 0 };
@@ -334,6 +344,7 @@ export function OfflineMap({
       // (world) coordinate so the graphic tracks the cursor at any zoom.
       const world =
         mapMode === 'globe' ? point : unprojectScreenToWorld(currentCamera.current, point.x, point.y);
+      if (!world) return;
       onMoveLayer(moving.current, world.x, world.y);
     } else if (drag.current) {
       const now = performance.now();
@@ -345,13 +356,6 @@ export function OfflineMap({
             lon: ((event.clientX - previous.x) / dt) * 16.67 * 0.42,
             lat: ((event.clientY - previous.y) / dt) * 16.67 * 0.42,
           };
-        else {
-          const screenVelocity = {
-            x: ((event.clientX - previous.x) / dt) * 16.67,
-            y: ((event.clientY - previous.y) / dt) * 16.67,
-          };
-          velocity.current = screenDeltaToNorthUp(currentCamera.current, screenVelocity.x, screenVelocity.y);
-        }
       }
       lastPan.current = { x: event.clientX, y: event.clientY, time: now };
       if (mapMode === 'globe') {
@@ -362,17 +366,20 @@ export function OfflineMap({
         return;
       }
       const point = svgPoint(event, event.currentTarget);
-      const northUp = projectWorldToScreen(
-        { ...currentCamera.current, x: 0, y: 0, bearing: 0 },
+      const anchored = cameraForWorldAtScreen(
+        currentCamera.current,
         drag.current.worldX,
         drag.current.worldY,
+        point.x,
+        point.y,
       );
-      const cursorNorthUp = unrotateViewportPoint(point, currentCamera.current.bearing);
-      targetCamera.current = applyEdgeResistance({
-        ...currentCamera.current,
-        x: cursorNorthUp.x - northUp.x,
-        y: cursorNorthUp.y - northUp.y,
-      });
+      if (!anchored) return;
+      const previousCamera = currentCamera.current;
+      targetCamera.current = applyEdgeResistance(anchored);
+      velocity.current = {
+        x: targetCamera.current.x - previousCamera.x,
+        y: targetCamera.current.y - previousCamera.y,
+      };
       currentCamera.current = targetCamera.current;
       emitCameraChange(targetCamera.current);
     }
@@ -411,7 +418,7 @@ export function OfflineMap({
         mapModeRef.current === 'globe'
           ? svgCoords
           : unprojectScreenToWorld(currentCamera.current, svgCoords.x, svgCoords.y);
-      onBackgroundClick(worldPoint);
+      if (worldPoint) onBackgroundClick(worldPoint);
     }
   };
   const onDoubleClick = (event: React.MouseEvent<SVGSVGElement>) => {
@@ -517,16 +524,6 @@ function svgPoint(event: { clientX: number; clientY: number }, svg: SVGSVGElemen
   return { x: transformed.x, y: transformed.y };
 }
 
-function unrotateViewportPoint(point: { x: number; y: number }, bearing = 0) {
-  const radians = (-normalizeBearing(bearing) * Math.PI) / 180;
-  const dx = point.x - CAMERA_VIEWPORT.width / 2;
-  const dy = point.y - CAMERA_VIEWPORT.height / 2;
-  return {
-    x: dx * Math.cos(radians) - dy * Math.sin(radians) + CAMERA_VIEWPORT.width / 2,
-    y: dx * Math.sin(radians) + dy * Math.cos(radians) + CAMERA_VIEWPORT.height / 2,
-  };
-}
-
 export function MapScene({
   style,
   mapMode = 'flat',
@@ -548,29 +545,60 @@ export function MapScene({
 }: MapSceneProps) {
   const globe = globeProjection(camera, globeRotation);
   const bearing = normalizeBearing(camera.bearing);
+  const flatPerspectiveCamera = mapMode === 'flat' && (camera.pitch ?? 0) !== 0 ? camera : undefined;
   const transform =
     mapMode === 'globe'
       ? undefined
-      : `translate(${CAMERA_VIEWPORT.width / 2} ${CAMERA_VIEWPORT.height / 2}) rotate(${bearing}) translate(${-CAMERA_VIEWPORT.width / 2} ${-CAMERA_VIEWPORT.height / 2}) translate(${camera.x} ${camera.y}) scale(${camera.zoom})`;
+      : flatPerspectiveCamera
+        ? undefined
+        : `translate(${CAMERA_VIEWPORT.width / 2} ${CAMERA_VIEWPORT.height / 2}) rotate(${bearing}) translate(${-CAMERA_VIEWPORT.width / 2} ${-CAMERA_VIEWPORT.height / 2}) translate(${camera.x} ${camera.y}) scale(${camera.zoom})`;
   const backgroundClick = (event: React.MouseEvent<SVGElement>) => {
     const point = svgPoint(event, event.currentTarget.ownerSVGElement as SVGSVGElement);
-    onBackgroundClick?.(mapMode === 'globe' ? point : unprojectScreenToWorld(camera, point.x, point.y));
+    const world = mapMode === 'globe' ? point : unprojectScreenToWorld(camera, point.x, point.y);
+    if (world) onBackgroundClick?.(world);
   };
   const labels = useMemo(() => selectMapLabels(camera), [camera.x, camera.y, camera.zoom]);
   const projectedMap = useMemo(
     () =>
-      mapMode === 'globe'
+      mapMode === 'globe' || flatPerspectiveCamera
         ? {
             countries: new Map(
-              COUNTRIES.map((country) => [country.id, projectPathToGlobe(country.path, globe)]),
+              COUNTRIES.map((country) => [
+                country.id,
+                mapMode === 'globe'
+                  ? projectPathToGlobe(country.path, globe)
+                  : projectPathToFlatCamera(country.path, camera),
+              ]),
             ),
-            lakes: projectPathToGlobe(LAKE_PATH, globe),
-            rivers: RIVER_PATHS.map((path) => projectPathToGlobe(path, globe)),
-            borders: projectPathToGlobe(COUNTRY_BORDER_PATH, globe),
-            coastlines: projectPathToGlobe(COASTLINE_PATH, globe),
+            lakes:
+              mapMode === 'globe'
+                ? projectPathToGlobe(LAKE_PATH, globe)
+                : projectPathToFlatCamera(LAKE_PATH, camera),
+            rivers: RIVER_PATHS.map((path) =>
+              mapMode === 'globe' ? projectPathToGlobe(path, globe) : projectPathToFlatCamera(path, camera),
+            ),
+            borders:
+              mapMode === 'globe'
+                ? projectPathToGlobe(COUNTRY_BORDER_PATH, globe)
+                : projectPathToFlatCamera(COUNTRY_BORDER_PATH, camera),
+            coastlines:
+              mapMode === 'globe'
+                ? projectPathToGlobe(COASTLINE_PATH, globe)
+                : projectPathToFlatCamera(COASTLINE_PATH, camera),
           }
         : null,
-    [mapMode, globe.centerLat, globe.centerLon, globe.radius],
+    [
+      mapMode,
+      globe.centerLat,
+      globe.centerLon,
+      globe.radius,
+      camera.x,
+      camera.y,
+      camera.zoom,
+      camera.bearing,
+      camera.pitch,
+      flatPerspectiveCamera,
+    ],
   );
   return (
     <svg
@@ -650,7 +678,18 @@ export function MapScene({
       <g clipPath={mapMode === 'globe' ? 'url(#globe-clip)' : undefined}>
         {mapMode === 'globe' && <GlobeGraticule color={style.countryBorderColor} />}
         <g transform={transform}>
-          {mapMode === 'flat' && <rect x="-1000" y="-1000" width="3000" height="2560" fill="url(#grid)" />}
+          {mapMode === 'flat' && !flatPerspectiveCamera && (
+            <rect x="-1000" y="-1000" width="3000" height="2560" fill="url(#grid)" />
+          )}
+          {flatPerspectiveCamera && (
+            <path
+              d={projectPathToFlatCamera(flatGridPath(), camera)}
+              fill="none"
+              stroke={style.countryBorderColor}
+              strokeOpacity=".12"
+              strokeWidth=".6"
+            />
+          )}
           {COUNTRIES.map((c) => {
             const projected = projectedMap ? projectedMap.countries.get(c.id) : c.path;
             return projected ? (
@@ -716,6 +755,7 @@ export function MapScene({
                 className="continent-label"
                 opacity={opacity}
                 globe={mapMode === 'globe' ? globe : undefined}
+                flatCamera={flatPerspectiveCamera}
               />
             ))}
           {labelLanguage !== 'none' &&
@@ -728,6 +768,7 @@ export function MapScene({
                 className="marine-label"
                 opacity={opacity}
                 globe={mapMode === 'globe' ? globe : undefined}
+                flatCamera={flatPerspectiveCamera}
               />
             ))}
           {labelLanguage !== 'none' &&
@@ -741,6 +782,7 @@ export function MapScene({
                 scale={scale}
                 letterSpacing={letterSpacing}
                 globe={mapMode === 'globe' ? globe : undefined}
+                flatCamera={flatPerspectiveCamera}
               />
             ))}
           {labelLanguage !== 'none' &&
@@ -752,6 +794,7 @@ export function MapScene({
                 color={style.cityColor}
                 opacity={opacity}
                 globe={mapMode === 'globe' ? globe : undefined}
+                flatCamera={flatPerspectiveCamera}
               />
             ))}
           {layers
@@ -770,8 +813,11 @@ export function MapScene({
                   onPointerDown={(event) => onLayerPointerDown?.(event, layer)}
                   assetUrl={customIconUrl ?? imageUrl}
                   globe={mapMode === 'globe' ? globe : undefined}
-                  screenScale={mapMode === 'globe' ? globe.symbolScale : 1 / camera.zoom}
-                  screenRotation={mapMode === 'globe' ? 0 : -bearing}
+                  flatCamera={flatPerspectiveCamera}
+                  screenScale={
+                    mapMode === 'globe' ? globe.symbolScale : flatPerspectiveCamera ? 1 : 1 / camera.zoom
+                  }
+                  screenRotation={mapMode === 'globe' || flatPerspectiveCamera ? 0 : -bearing}
                   editorMode={editorMode}
                 />
               );
@@ -820,8 +866,12 @@ function globeProjection(camera: CameraState, rotation: GlobeRotation): GlobePro
   };
 }
 
-function projectLayerPoint(x: number, y: number, globe?: GlobeProjection) {
-  return globe ? projectPointToGlobe([x, y], globe) : { x, y };
+function projectLayerPoint(x: number, y: number, globe?: GlobeProjection, flatCamera?: CameraState) {
+  return globe
+    ? projectPointToGlobe([x, y], globe)
+    : flatCamera
+      ? projectWorldToScreen(flatCamera, x, y)
+      : { x, y };
 }
 
 function projectPointToGlobe(point: readonly [number, number], globe: GlobeProjection) {
@@ -869,6 +919,34 @@ function projectPathToGlobe(path: string, globe: GlobeProjection) {
   return commands.join('');
 }
 
+function projectPathToFlatCamera(path: string, camera: CameraState) {
+  return projectSvgPath(path, camera);
+}
+
+function flatGridPath() {
+  const commands: string[] = [];
+  for (let x = -1000; x <= 2000; x += 70) {
+    commands.push(`M${x} -1000`);
+    for (let y = -930; y <= 1560; y += 70) commands.push(`L${x} ${y}`);
+  }
+  for (let y = -1000; y <= 1560; y += 70) commands.push(`M-1000 ${y}L2000 ${y}`);
+  return commands.join('');
+}
+
+function mapPlaneLocalTransform(camera: CameraState, x: number, y: number) {
+  const origin = projectWorldToScreen(camera, x, y);
+  const horizontal = projectWorldToScreen(camera, x + 1, y);
+  const vertical = projectWorldToScreen(camera, x, y + 1);
+  if (!origin || !horizontal || !vertical) return undefined;
+  const a = horizontal.x - origin.x;
+  const b = horizontal.y - origin.y;
+  const c = vertical.x - origin.x;
+  const d = vertical.y - origin.y;
+  const e = origin.x - a * x - c * y;
+  const f = origin.y - b * x - d * y;
+  return `matrix(${round(a, 6)} ${round(b, 6)} ${round(c, 6)} ${round(d, 6)} ${round(e, 6)} ${round(f, 6)})`;
+}
+
 function degToRad(value: number) {
   return (value * Math.PI) / 180;
 }
@@ -891,6 +969,7 @@ function CountryLabel({
   scale = 1,
   letterSpacing = 0.16,
   globe,
+  flatCamera,
 }: {
   country: (typeof COUNTRIES)[number];
   language: Project['mapSettings']['labelLanguage'];
@@ -899,14 +978,20 @@ function CountryLabel({
   scale?: number;
   letterSpacing?: number;
   globe?: GlobeProjection;
+  flatCamera?: CameraState;
 }) {
   const fa = country.nameFa || country.name;
-  const point = projectLayerPoint(country.label[0], country.label[1], globe);
+  const point = projectLayerPoint(country.label[0], country.label[1], globe, flatCamera);
   if (!point) return null;
+  const sourceX = flatCamera ? country.label[0] : point.x;
+  const sourceY = flatCamera ? country.label[1] : point.y;
   return (
     <text
-      x={point.x}
-      y={point.y}
+      x={sourceX}
+      y={sourceY}
+      transform={
+        flatCamera ? mapPlaneLocalTransform(flatCamera, country.label[0], country.label[1]) : undefined
+      }
       fill={color}
       className="country-label"
       style={{ fontSize: `${5.9 * scale}px`, letterSpacing }}
@@ -921,10 +1006,10 @@ function CountryLabel({
       )}
       {language === 'both' && (
         <>
-          <tspan x={point.x} dy="-4" direction="rtl" unicodeBidi="plaintext">
+          <tspan x={sourceX} dy="-4" direction="rtl" unicodeBidi="plaintext">
             {fa}
           </tspan>
-          <tspan x={point.x} dy="9">
+          <tspan x={sourceX} dy="9">
             {country.name}
           </tspan>
         </>
@@ -939,6 +1024,7 @@ function MapFeatureLabel({
   className,
   opacity,
   globe,
+  flatCamera,
 }: {
   label: MapLabel;
   language: Project['mapSettings']['labelLanguage'];
@@ -946,14 +1032,18 @@ function MapFeatureLabel({
   className: string;
   opacity: number;
   globe?: GlobeProjection;
+  flatCamera?: CameraState;
 }) {
   const text = language === 'fa' ? label.nameFa : label.name;
-  const point = projectLayerPoint(label.point[0], label.point[1], globe);
+  const point = projectLayerPoint(label.point[0], label.point[1], globe, flatCamera);
   if (!point) return null;
+  const sourceX = flatCamera ? label.point[0] : point.x;
+  const sourceY = flatCamera ? label.point[1] : point.y;
   return (
     <text
-      x={point.x}
-      y={point.y}
+      x={sourceX}
+      y={sourceY}
+      transform={flatCamera ? mapPlaneLocalTransform(flatCamera, label.point[0], label.point[1]) : undefined}
       fill={color}
       className={`${className} ${language === 'fa' ? 'persian-text' : ''}`}
       textAnchor="middle"
@@ -963,10 +1053,10 @@ function MapFeatureLabel({
     >
       {language === 'both' ? (
         <>
-          <tspan x={point.x} dy="-3" className="persian-text" direction="rtl">
+          <tspan x={sourceX} dy="-3" className="persian-text" direction="rtl">
             {label.nameFa}
           </tspan>
-          <tspan x={point.x} dy="8">
+          <tspan x={sourceX} dy="8">
             {label.name}
           </tspan>
         </>
@@ -983,23 +1073,31 @@ function CityLabel({
   color,
   opacity,
   globe,
+  flatCamera,
 }: {
   label: MapLabel;
   language: Project['mapSettings']['labelLanguage'];
   color: string;
   opacity: number;
   globe?: GlobeProjection;
+  flatCamera?: CameraState;
 }) {
   const text = language === 'fa' ? label.nameFa : label.name;
   const shown = language === 'both' ? `${label.name} · ${label.nameFa}` : text;
-  const point = projectLayerPoint(label.point[0], label.point[1], globe);
+  const point = projectLayerPoint(label.point[0], label.point[1], globe, flatCamera);
   if (!point) return null;
+  const sourceX = flatCamera ? label.point[0] : point.x;
+  const sourceY = flatCamera ? label.point[1] : point.y;
   return (
-    <g className={`city-label ${label.capital ? 'capital-label' : ''}`} opacity={opacity}>
-      <circle cx={point.x} cy={point.y} r={label.capital ? 1.8 : 1.2} fill={color} />
+    <g
+      className={`city-label ${label.capital ? 'capital-label' : ''}`}
+      opacity={opacity}
+      transform={flatCamera ? mapPlaneLocalTransform(flatCamera, label.point[0], label.point[1]) : undefined}
+    >
+      <circle cx={sourceX} cy={sourceY} r={label.capital ? 1.8 : 1.2} fill={color} />
       <text
-        x={point.x + 3}
-        y={point.y - 2}
+        x={sourceX + 3}
+        y={sourceY - 2}
         fill={color}
         className={language !== 'en' ? 'persian-text' : ''}
         direction={language === 'fa' ? 'rtl' : 'ltr'}
@@ -1308,6 +1406,7 @@ function LayerGraphic({
   onPointerDown,
   assetUrl,
   globe,
+  flatCamera,
   screenScale = 1,
   screenRotation = 0,
   editorMode = false,
@@ -1317,6 +1416,7 @@ function LayerGraphic({
   onPointerDown: (event: PointerEvent<SVGGElement>) => void;
   assetUrl?: string;
   globe?: GlobeProjection;
+  flatCamera?: CameraState;
   screenScale?: number;
   screenRotation?: number;
   editorMode?: boolean;
@@ -1326,15 +1426,21 @@ function LayerGraphic({
     onPointerDown,
     className: `layer-graphic ${selected ? 'selected-layer' : ''}`,
   };
-  const point = projectLayerPoint(layer.x, layer.y, globe);
+  const point = projectLayerPoint(layer.x, layer.y, globe, flatCamera);
   const point2 =
     typeof layer.x2 === 'number' && typeof layer.y2 === 'number'
-      ? projectLayerPoint(layer.x2, layer.y2, globe)
+      ? projectLayerPoint(layer.x2, layer.y2, globe, flatCamera)
       : null;
   if (!point) return null;
   if (layer.type === 'region') {
     const country = findCountry(layer.countryId);
-    const path = country && globe ? projectPathToGlobe(country.path, globe) : country?.path;
+    const path = country
+      ? globe
+        ? projectPathToGlobe(country.path, globe)
+        : flatCamera
+          ? projectPathToFlatCamera(country.path, flatCamera)
+          : country.path
+      : undefined;
     if (!country || !path) return null;
     return country ? (
       <g {...common}>
@@ -1380,11 +1486,14 @@ function LayerGraphic({
   }
   if (layer.type === 'image' && assetUrl)
     return (
-      <g {...common}>
+      <g
+        {...common}
+        transform={flatCamera ? mapPlaneLocalTransform(flatCamera, layer.x, layer.y) : undefined}
+      >
         <image
           href={assetUrl}
-          x={point.x}
-          y={point.y}
+          x={flatCamera ? layer.x : point.x}
+          y={flatCamera ? layer.y : point.y}
           width={(layer.width ?? 0) * (globe?.symbolScale ?? 1)}
           height={(layer.height ?? 0) * (globe?.symbolScale ?? 1)}
           preserveAspectRatio="xMidYMid meet"
@@ -1393,10 +1502,13 @@ function LayerGraphic({
     );
   if (layer.type === 'shape' || layer.type === 'image')
     return (
-      <g {...common}>
+      <g
+        {...common}
+        transform={flatCamera ? mapPlaneLocalTransform(flatCamera, layer.x, layer.y) : undefined}
+      >
         <rect
-          x={point.x}
-          y={point.y}
+          x={flatCamera ? layer.x : point.x}
+          y={flatCamera ? layer.y : point.y}
           width={(layer.width ?? 0) * (globe?.symbolScale ?? 1)}
           height={(layer.height ?? 0) * (globe?.symbolScale ?? 1)}
           rx="3"
@@ -1406,8 +1518,8 @@ function LayerGraphic({
           strokeWidth="2"
         />
         <text
-          x={point.x + ((layer.width ?? 0) * (globe?.symbolScale ?? 1)) / 2}
-          y={point.y + ((layer.height ?? 0) * (globe?.symbolScale ?? 1)) / 2 + 4}
+          x={(flatCamera ? layer.x : point.x) + ((layer.width ?? 0) * (globe?.symbolScale ?? 1)) / 2}
+          y={(flatCamera ? layer.y : point.y) + ((layer.height ?? 0) * (globe?.symbolScale ?? 1)) / 2 + 4}
           textAnchor="middle"
           fill={layer.color}
           className="layer-caption"
