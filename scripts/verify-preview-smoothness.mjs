@@ -70,13 +70,14 @@ clock.play(3, () => completions++);
 for (const step of [7, 19, 5, 41, 16, 33]) scheduler.advance(step);
 assert.equal(scheduler.maxPending, 1, 'Preview must never schedule overlapping animation frames');
 assert.ok(samples.every((time, index) => index === 0 || time >= samples[index - 1]), 'clock must be monotonic');
-assert.equal(clock.getSnapshot(), 0.121, 'clock must use elapsed wall time, not a fixed frame delta');
+assert.equal(clock.getSnapshot(), 0.114, 'clock must use elapsed wall time after its exact first display frame');
 
 clock.pause();
 const pausedAt = clock.getSnapshot();
 scheduler.advance(500);
 assert.equal(clock.getSnapshot(), pausedAt, 'Pause must freeze the exact project time');
 clock.play(3, () => completions++);
+scheduler.advance(0); // exact resume frame
 scheduler.advance(250);
 assert.equal(clock.getSnapshot(), pausedAt + 0.25, 'Resume must continue from the exact paused time');
 scheduler.advance(3000);

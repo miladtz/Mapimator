@@ -109,7 +109,11 @@ project.transitions[1].duration = 2;
 const sequence = compileTimeline(project);
 assert.equal(sequence.segments.length, 3, 'zero-Hold Views emit transitions but no hold segment');
 assert.equal(evaluateProjectAtTime(project, 0).camera.bearing, 170);
-assert.equal(evaluateProjectAtTime(project, 1).camera.bearing, -180);
+assert.equal(
+  evaluateProjectAtTime(project, 1).camera.bearing,
+  -172.1875,
+  'zero-Hold chain uses the continuous camera tangent while preserving the exact waypoint',
+);
 assert.equal(evaluateProjectAtTime(project, 2).camera.bearing, -170);
 assert.equal(evaluateProjectAtTime(project, 4).camera.bearing, 45);
 

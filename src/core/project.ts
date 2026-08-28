@@ -177,7 +177,32 @@ export interface CameraState {
   bearing?: number;
   /** Reserved for Milestone 6B. It remains zero in the 6A renderer. */
   pitch?: number;
+  /**
+   * Globe-only physical sphere orientation. Flat projects omit this field.
+   * Components are a normalized quaternion in object-to-world order.
+   */
+  globeOrientation?: Quaternion;
+  /** Globe-only normalized object-local geographic point used as the camera anchor. */
+  globeFocus?: GlobeFocus;
 }
+export interface GlobeFocus {
+  x: number;
+  y: number;
+  z: number;
+}
+export interface Quaternion {
+  x: number;
+  y: number;
+  z: number;
+  w: number;
+}
+export const IDENTITY_QUATERNION: Quaternion = { x: 0, y: 0, z: 0, w: 1 };
+export type MapMode = 'flat' | 'globe';
+/** The first View establishes one renderer mode for the complete sequence. */
+export const sequenceMapMode = (project: Pick<Project, 'views'>): MapMode | undefined =>
+  project.views[0]?.mapMode;
+export const hasConsistentViewMapMode = (views: readonly Pick<View, 'mapMode'>[]) =>
+  views.length < 2 || views.every((view) => view.mapMode === views[0]?.mapMode);
 /**
  * A View's own configuration for one project Layer, keyed by the stable
  * project layer id. It stores ONLY usage + animation — never copied Layer
@@ -207,6 +232,8 @@ export interface View {
   name: string;
   holdDuration: number;
   camera: CameraState;
+  /** Canonical renderer mode owned by this temporal camera anchor. */
+  mapMode: MapMode;
   /**
    * NEW MODEL: the View's own per-layer configuration, keyed by project layer id.
    * New projects store membership + animation here. Legacy projects omit this
@@ -488,6 +515,7 @@ export const createView = (
    *  others included=false.  This guarantees every segment config has an
    *  entry for every project layer ID — the checkbox state is fully explicit. */
   allLayers?: Layer[],
+  mapMode: MapMode = 'flat',
 ): View => {
   const registry = allLayers ?? layers;
   // Backward compatibility: without allLayers, included = layer.visible
@@ -499,6 +527,7 @@ export const createView = (
     name,
     holdDuration: 0,
     camera: { ...camera },
+    mapMode,
     // Usages only — no Layer visual state is copied.  Visual state is read
     // from Project.layers at render time.
     layerConfigs: Object.fromEntries(

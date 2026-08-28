@@ -52,9 +52,9 @@ const {
 } = mod;
 
 assert.equal(CAMERA_FOV_DEGREES, 45, 'fixed moderate FOV');
-assert.equal(roundCamera({ x: 0, y: 0, zoom: 1, pitch: -80 }).pitch, -60);
-assert.equal(roundCamera({ x: 0, y: 0, zoom: 1, pitch: 80 }).pitch, 60);
-for (const pitch of [0, 20, -20, 45, -45, 60, -60])
+assert.equal(roundCamera({ x: 0, y: 0, zoom: 1, pitch: -90 }).pitch, -85);
+assert.equal(roundCamera({ x: 0, y: 0, zoom: 1, pitch: 90 }).pitch, 85);
+for (const pitch of [0, 20, -20, 45, -45, 60, -60, 75, -75, 80, -80, 85, -85])
   assert.equal(roundCamera({ x: 0, y: 0, zoom: 1, pitch }).pitch, pitch);
 
 const topDown = { x: -420, y: -160, zoom: 2.4, bearing: 37, pitch: 0 };
@@ -120,7 +120,11 @@ project.transitions = [createTransition(first.id, middle.id, [], first), createT
 project.transitions.forEach((transition) => (transition.duration = 2));
 assert.equal(compileTimeline(project).segments.length, 3, 'zero-Hold Views remain camera-only anchors');
 assert.equal(evaluateProjectAtTime(project, 0).camera.pitch, 0);
-assert.equal(evaluateProjectAtTime(project, 1).camera.pitch, 22.5);
+assert.equal(
+  evaluateProjectAtTime(project, 1).camera.pitch,
+  20.45454545,
+  'zero-Hold chain uses the continuous camera tangent while preserving the exact waypoint',
+);
 assert.equal(evaluateProjectAtTime(project, 2).camera.pitch, 45);
 assert.equal(evaluateProjectAtTime(project, 4).camera.pitch, 55);
 const midpoint = interpolateCamera(first.camera, middle.camera, 0.5, 'linear');

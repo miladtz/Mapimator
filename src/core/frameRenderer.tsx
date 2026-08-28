@@ -3,11 +3,13 @@ import { flushSync } from 'react-dom';
 import interFontUrl from '@fontsource-variable/inter/files/inter-latin-wght-normal.woff2?url';
 import vazirmatnArabicFontUrl from '@fontsource-variable/vazirmatn/files/vazirmatn-arabic-wght-normal.woff2?url';
 import { MapScene } from '../components/OfflineMap';
+import { GlobeOverlay } from '../components/WebGLGlobe';
 import type { MapMode } from '../components/OfflineMap';
 import { MAP_STYLES, type Project } from './project';
 import { projectExportSettings, validateExportSettings, type ExportVideoSettings } from './exportPresets';
 import { compileTimeline, evaluateProjectAtTime } from './viewCompiler';
 import { resolveProjectAssetUrls } from './projectAssets';
+import { GlobeWebGLRenderer } from './globeRenderer';
 
 export const EXPORT_FRAME_WIDTH = 1920;
 export const EXPORT_FRAME_HEIGHT = 1080;
@@ -166,6 +168,10 @@ class PreparedFrameRenderer {
     private readonly root: ReturnType<typeof createRoot>,
     private readonly canvas: HTMLCanvasElement,
     private readonly context: CanvasRenderingContext2D,
+    private readonly globeCanvas: HTMLCanvasElement,
+    private readonly globeRenderer: GlobeWebGLRenderer | null,
+    private readonly overlayCanvas: HTMLCanvasElement,
+    private readonly overlayContext: CanvasRenderingContext2D,
   ) {}
 
   static async create(project: Project, width: number, height: number, mapMode: MapMode) {
@@ -198,6 +204,18 @@ class PreparedFrameRenderer {
     canvas.height = height;
     const context = canvas.getContext('2d', { alpha: false });
     if (!context) throw new Error('Unable to create the deterministic frame canvas.');
+    const globeCanvas = document.createElement('canvas');
+    globeCanvas.width = width;
+    globeCanvas.height = height;
+    const needsGlobe =
+      project.views.some((view) => view.mapMode === 'globe') ||
+      (project.views.length === 0 && mapMode === 'globe');
+    const globeRenderer = needsGlobe ? new GlobeWebGLRenderer(globeCanvas) : null;
+    const overlayCanvas = document.createElement('canvas');
+    overlayCanvas.width = width;
+    overlayCanvas.height = height;
+    const overlayContext = overlayCanvas.getContext('2d');
+    if (!overlayContext) throw new Error('Unable to create the Globe overlay canvas.');
     return new PreparedFrameRenderer(
       project,
       width,
@@ -211,6 +229,10 @@ class PreparedFrameRenderer {
       createRoot(host),
       canvas,
       context,
+      globeCanvas,
+      globeRenderer,
+      overlayCanvas,
+      overlayContext,
     );
   }
 
@@ -219,11 +241,54 @@ class PreparedFrameRenderer {
     const state = evaluateProjectAtTime(this.project, time);
     const evaluateMs = performance.now() - evaluateStarted;
     const sceneStarted = performance.now();
+    const resolvedMapMode = this.project.views.length > 0 ? state.mapMode : this.mapMode;
+    if (resolvedMapMode === 'globe') {
+      if (!this.globeRenderer) throw new Error('The deterministic Globe renderer is unavailable.');
+      this.globeRenderer.render(state.camera, this.style);
+      const pixels = this.globeRenderer.readPixels();
+      this.context.putImageData(new ImageData(pixels, this.width, this.height), 0, 0);
+      flushSync(() => {
+        this.root.render(
+          <GlobeOverlay
+            width={this.width}
+            height={this.height}
+            renderer={this.globeRenderer}
+            camera={state.camera}
+            style={this.style}
+            layers={state.layers}
+            labelLanguage={this.project.mapSettings.labelLanguage}
+            selectedId={null}
+          />,
+        );
+      });
+      const svg = this.host.querySelector<SVGSVGElement>('svg');
+      if (!svg) throw new Error('The deterministic Globe overlay did not mount.');
+      const raster = await svgToCanvas(
+        svg,
+        this.width,
+        this.height,
+        this.overlayCanvas,
+        this.overlayContext,
+        this.exportStyles,
+      );
+      this.context.drawImage(this.overlayCanvas, 0, 0);
+      const rgbaStarted = performance.now();
+      const value = await consumeCanvas(this.canvas);
+      return {
+        value,
+        timings: {
+          evaluateMs,
+          sceneMs: performance.now() - sceneStarted,
+          ...raster,
+          rgbaMs: performance.now() - rgbaStarted,
+        } satisfies FrameRenderTimings,
+      };
+    }
     flushSync(() => {
       this.root.render(
         <MapScene
           style={this.style}
-          mapMode={this.mapMode}
+          mapMode="flat"
           layers={state.layers}
           camera={state.camera}
           labelLanguage={this.project.mapSettings.labelLanguage}
@@ -260,6 +325,7 @@ class PreparedFrameRenderer {
 
   dispose() {
     this.root.unmount();
+    this.globeRenderer?.dispose();
     this.host.remove();
     this.freezeStyles.remove();
   }
@@ -487,6 +553,18 @@ export async function renderViewThumbnails(
   canvas.height = height;
   const context = canvas.getContext('2d', { alpha: false });
   if (!context) throw new Error('Unable to create the deterministic thumbnail canvas.');
+  const globeCanvas = document.createElement('canvas');
+  globeCanvas.width = width;
+  globeCanvas.height = height;
+  const needsGlobe =
+    project.views.some((view) => view.mapMode === 'globe') ||
+    (project.views.length === 0 && mapMode === 'globe');
+  const globeRenderer = needsGlobe ? new GlobeWebGLRenderer(globeCanvas) : null;
+  const overlayCanvas = document.createElement('canvas');
+  overlayCanvas.width = width;
+  overlayCanvas.height = height;
+  const overlayContext = overlayCanvas.getContext('2d');
+  if (!overlayContext) throw new Error('Unable to create the deterministic Globe thumbnail overlay.');
   const indexById = new Map(project.views.map((view, index) => [view.id, index]));
   try {
     for (const viewId of viewIds) {
@@ -496,10 +574,36 @@ export async function renderViewThumbnails(
       const segment = sequence.segments[index];
       if (!segment) continue;
       const state = evaluateProjectAtTime(project, segment.start);
+      const resolvedMapMode = project.views.length > 0 ? state.mapMode : mapMode;
+      if (resolvedMapMode === 'globe') {
+        if (!globeRenderer) throw new Error('The deterministic Globe thumbnail renderer is unavailable.');
+        globeRenderer.render(state.camera, style);
+        context.putImageData(new ImageData(globeRenderer.readPixels(), width, height), 0, 0);
+        root.render(
+          <GlobeOverlay
+            width={width}
+            height={height}
+            renderer={globeRenderer}
+            camera={state.camera}
+            style={style}
+            layers={state.layers}
+            labelLanguage={project.mapSettings.labelLanguage}
+            selectedId={null}
+          />,
+        );
+        await nextPaint();
+        const overlay = await waitForSceneSvg(host);
+        await svgToCanvas(overlay, width, height, overlayCanvas, overlayContext, exportStyles);
+        context.drawImage(overlayCanvas, 0, 0);
+        signal?.throwIfAborted();
+        onThumbnail({ viewId, dataUrl: canvasToJpegDataUrl(canvas) });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+        continue;
+      }
       root.render(
         <MapScene
           style={style}
-          mapMode={mapMode}
+          mapMode="flat"
           layers={state.layers}
           camera={state.camera}
           labelLanguage={project.mapSettings.labelLanguage}
@@ -519,6 +623,7 @@ export async function renderViewThumbnails(
     }
   } finally {
     root.unmount();
+    globeRenderer?.dispose();
     host.remove();
     freezeStyles.remove();
   }

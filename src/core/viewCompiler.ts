@@ -1,5 +1,14 @@
-import type { CameraState, Layer, Project, SegmentLayerAnimation, Transition, View } from './project';
+import type {
+  CameraState,
+  Layer,
+  MapMode,
+  Project,
+  SegmentLayerAnimation,
+  Transition,
+  View,
+} from './project';
 import {
+  hasConsistentViewMapMode,
   transitionAnimOf,
   transitionLayerConfigsOf,
   transitionLayersOf,
@@ -10,6 +19,8 @@ import {
 } from './project';
 import { easeCameraProgress, interpolateCamera } from './camera';
 import type { CameraTransitionType } from './camera';
+import { interpolateGlobeCamera } from './globeMath';
+import { interpolateCameraChainTransition } from './cameraContinuity';
 
 export type CompiledSegment =
   | { kind: 'view'; id: string; view: View; start: number; end: number; duration: number }
@@ -36,12 +47,15 @@ export interface AnimationSequence {
 }
 export interface RenderedProjectState {
   camera: CameraState;
+  mapMode: MapMode;
   layers: Layer[];
   activeViewIndex: number;
   transitionProgress: number;
 }
 
 export const compileTimeline = (project: Project): AnimationSequence => {
+  if (!hasConsistentViewMapMode(project.views))
+    throw new Error('Project Views must all use the same map mode.');
   let cursor = 0;
   const segments: CompiledSegment[] = [];
   for (let index = 0; index < project.views.length; index += 1) {
@@ -263,6 +277,7 @@ export const evaluateProjectAtTime = (project: Project, time: number): RenderedP
   if (!segment)
     return {
       camera: project.views.at(-1)?.camera ?? { x: 0, y: 0, zoom: 1 },
+      mapMode: project.views.at(-1)?.mapMode ?? 'flat',
       layers: [],
       activeViewIndex: Math.max(0, project.views.length - 1),
       transitionProgress: 0,
@@ -283,6 +298,7 @@ export const evaluateProjectAtTime = (project: Project, time: number): RenderedP
     }
     return {
       camera: segment.view.camera,
+      mapMode: segment.view.mapMode,
       layers,
       activeViewIndex: Math.max(
         0,
@@ -296,13 +312,24 @@ export const evaluateProjectAtTime = (project: Project, time: number): RenderedP
   const raw = Math.min(1, Math.max(0, (timelineTime - segment.start) / segment.duration));
   const transitionStartTime = segment.start;
   const transitionType: CameraTransitionType = segment.transition.type;
-  const camera = interpolateCamera(
-    segment.from.camera,
-    segment.to.camera,
-    raw,
-    segment.transition.preset,
-    transitionType,
-  );
+  const fromIndex = project.views.findIndex((view) => view.id === segment.from.id);
+  const camera =
+    interpolateCameraChainTransition(project, fromIndex, raw) ??
+    (segment.from.mapMode === 'globe'
+      ? interpolateGlobeCamera(
+          segment.from.camera,
+          segment.to.camera,
+          raw,
+          segment.transition.preset,
+          transitionType,
+        )
+      : interpolateCamera(
+          segment.from.camera,
+          segment.to.camera,
+          raw,
+          segment.transition.preset,
+          transitionType,
+        ));
   const layers = transitionLayersOf(project, segment.transition);
   const sourceMembers = segmentMemberIds(sequence.segments[index - 1]);
   const continued = applyContinuingTransitionAnimations(layers, sequence.segments, index, timelineTime);
@@ -316,6 +343,7 @@ export const evaluateProjectAtTime = (project: Project, time: number): RenderedP
   }
   return {
     camera,
+    mapMode: segment.from.mapMode,
     layers,
     activeViewIndex: Math.max(
       0,

@@ -1,6 +1,12 @@
 import { CITY_LABELS, CONTINENT_LABELS, COUNTRIES, MARINE_LABELS, type MapLabel } from '../data/worldMap';
 import type { CameraState } from './project';
-import { clamp } from './camera';
+import {
+  CAMERA_FOCAL_LENGTH,
+  CAMERA_SETTINGS,
+  clamp,
+  createWorldToScreenProjector,
+  flatCameraDepth,
+} from './camera';
 
 export interface LabelOpacity<T> {
   item: T;
@@ -17,6 +23,126 @@ export interface SelectedMapLabels {
   cities: LabelOpacity<MapLabel>[];
   riversOpacity: number;
   lakesOpacity: number;
+}
+
+export interface FlatLabelProjection {
+  x: number;
+  y: number;
+  rotation: number;
+  scale: number;
+  depth: number;
+  basisLength: number;
+  verticalBasisLength: number;
+  shear: number;
+  foreshortening: number;
+  determinant: number;
+  rawSigmaMax: number;
+  rawSigmaMin: number;
+  perspectiveSigmaMax: number;
+  perspectiveSigmaMin: number;
+  rawMatrix: readonly [number, number, number, number];
+  matrix: readonly [number, number, number, number, number, number];
+  transform: string;
+}
+
+export const LABEL_MIN_DEPTH = CAMERA_FOCAL_LENGTH * 0.15;
+export const LABEL_MIN_BASIS_LENGTH = 0.01;
+export const LABEL_MAX_BASIS_LENGTH = CAMERA_SETTINGS.maxZoom / 0.15 + 1;
+export const LABEL_MIN_DETERMINANT = 0.015;
+
+const singularValues2x2 = (a: number, b: number, c: number, d: number) => {
+  const energy = a * a + b * b + c * c + d * d;
+  const determinant = a * d - b * c;
+  const discriminant = Math.sqrt(Math.max(0, energy * energy - 4 * determinant * determinant));
+  return {
+    max: Math.sqrt(Math.max(0, (energy + discriminant) / 2)),
+    min: Math.sqrt(Math.max(0, (energy - discriminant) / 2)),
+  };
+};
+
+/**
+ * Flat geographic labels are screen-space typography anchored to the map.
+ * Perspective controls position and a normalized local surface frame, never
+ * unbounded absolute glyph scale.
+ */
+export function projectFlatMapLabel(
+  camera: CameraState,
+  worldX: number,
+  worldY: number,
+): FlatLabelProjection | null {
+  const project = createWorldToScreenProjector(camera);
+  const depth = flatCameraDepth(camera, worldX, worldY);
+  if (!Number.isFinite(depth) || depth < LABEL_MIN_DEPTH) return null;
+  const anchor = project(worldX, worldY);
+  const tangent = project(worldX + 1, worldY);
+  const vertical = project(worldX, worldY + 1);
+  if (!anchor || !tangent || !vertical) return null;
+  const dx = tangent.x - anchor.x;
+  const dy = tangent.y - anchor.y;
+  const verticalX = vertical.x - anchor.x;
+  const verticalY = vertical.y - anchor.y;
+  const basisLength = Math.hypot(dx, dy);
+  const verticalBasisLength = Math.hypot(verticalX, verticalY);
+  if (
+    ![anchor.x, anchor.y, dx, dy, verticalX, verticalY, basisLength, verticalBasisLength].every(
+      Number.isFinite,
+    ) ||
+    basisLength < LABEL_MIN_BASIS_LENGTH ||
+    basisLength > LABEL_MAX_BASIS_LENGTH ||
+    verticalBasisLength < LABEL_MIN_BASIS_LENGTH ||
+    verticalBasisLength > LABEL_MAX_BASIS_LENGTH
+  )
+    return null;
+  const exX = dx / basisLength;
+  const exY = dy / basisLength;
+  const rawC = verticalX / basisLength;
+  const rawD = verticalY / basisLength;
+  const rawSingular = singularValues2x2(exX, exY, rawC, rawD);
+  if (
+    !Number.isFinite(rawSingular.max) ||
+    !Number.isFinite(rawSingular.min) ||
+    rawSingular.max < LABEL_MIN_BASIS_LENGTH ||
+    rawSingular.min / rawSingular.max < LABEL_MIN_DETERMINANT
+  )
+    return null;
+  // The tiny guard keeps a recomputed sigmaMax at or below one despite
+  // floating-point cancellation in extremely ill-conditioned frames.
+  const perspectiveNormalization = 1 / (rawSingular.max * (1 + 1e-7));
+  const shapeA = exX * perspectiveNormalization;
+  const shapeB = exY * perspectiveNormalization;
+  const shapeC = rawC * perspectiveNormalization;
+  const shapeD = rawD * perspectiveNormalization;
+  const perspectiveSingular = singularValues2x2(shapeA, shapeB, shapeC, shapeD);
+  const shear = shapeC * shapeA + shapeD * shapeB;
+  const foreshortening = shapeA * shapeD - shapeB * shapeC;
+  const rotation = (Math.atan2(dy, dx) * 180) / Math.PI;
+  const scale = clamp(camera.zoom, CAMERA_SETTINGS.minZoom, CAMERA_SETTINGS.maxZoom);
+  const a = shapeA * scale;
+  const b = shapeB * scale;
+  const c = shapeC * scale;
+  const d = shapeD * scale;
+  const determinant = a * d - b * c;
+  const values = [anchor.x, anchor.y, rotation, scale, a, b, c, d, determinant];
+  if (!values.every(Number.isFinite)) return null;
+  return {
+    x: anchor.x,
+    y: anchor.y,
+    rotation,
+    scale,
+    depth,
+    basisLength,
+    verticalBasisLength,
+    shear,
+    foreshortening,
+    determinant,
+    rawSigmaMax: rawSingular.max,
+    rawSigmaMin: rawSingular.min,
+    perspectiveSigmaMax: perspectiveSingular.max,
+    perspectiveSigmaMin: perspectiveSingular.min,
+    rawMatrix: [exX, exY, rawC, rawD],
+    matrix: [a, b, c, d, anchor.x, anchor.y],
+    transform: `matrix(${a} ${b} ${c} ${d} ${anchor.x} ${anchor.y})`,
+  };
 }
 
 type LabelCandidate<T> = LabelOpacity<T> & {

@@ -9,6 +9,7 @@ import React, {
 } from 'react';
 import {
   applyEdgeResistance,
+  applyCameraWheel,
   cameraForWorldAtScreen,
   CAMERA_SETTINGS,
   CAMERA_VIEWPORT,
@@ -17,6 +18,7 @@ import {
   fitWorldCamera,
   interpolateBearing,
   normalizeBearing,
+  normalizeWheelDelta,
   projectWorldToScreen,
   roundCamera,
   unprojectScreenToWorld,
@@ -28,13 +30,16 @@ import {
   pinStyleOf,
   type CameraState,
   type Layer,
+  type MapMode,
   type MapStylePreset,
   type PinStyle,
   type Project,
 } from '../core/project';
-import { selectMapLabels } from '../core/mapLabels';
+import { projectFlatMapLabel, selectMapLabels } from '../core/mapLabels';
 import { preparseSvgPaths, projectSvgPath } from '../core/perspectiveGeometry';
 import { formatNumbers, resolveTextDirection, resolveTextLanguage } from '../core/text';
+import { WebGLGlobe } from './WebGLGlobe';
+import { CameraOrbitControl } from './CameraOrbitControl';
 import {
   COASTLINE_PATH,
   COUNTRIES,
@@ -74,7 +79,7 @@ interface Props {
   editorMode?: boolean;
 }
 
-export type MapMode = 'flat' | 'globe';
+export type { MapMode } from '../core/project';
 
 export interface MapSceneProps {
   style: MapStylePreset;
@@ -132,6 +137,7 @@ export function OfflineMap({
   const movedSinceDown = useRef(false);
   const activePointerId = useRef<number | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
   const onCameraChangeRef = useRef(onCameraChange);
   const interactionEnabledRef = useRef(interactionEnabled);
   const mapModeRef = useRef(mapMode);
@@ -161,6 +167,8 @@ export function OfflineMap({
     spacePan.current = false;
     velocity.current = { x: 0, y: 0 };
     globeVelocity.current = { lon: 0, lat: 0 };
+    if (viewportRef.current)
+      viewportRef.current.style.cursor = interactionEnabledRef.current ? 'grab' : 'default';
     currentCamera.current = constrainCamera(currentCamera.current);
     targetCamera.current = currentCamera.current;
   }, [cancelCameraFrames]);
@@ -183,43 +191,71 @@ export function OfflineMap({
     };
   }, [cancelActiveCameraInteraction]);
   useEffect(() => {
+    if (mapMode !== 'flat') return;
     const svg = svgRef.current;
     if (!svg) return;
     const observer = new ResizeObserver(() => cancelActiveCameraInteraction());
     observer.observe(svg);
     return () => observer.disconnect();
-  }, [cancelActiveCameraInteraction]);
+  }, [cancelActiveCameraInteraction, mapMode]);
   useEffect(
     () => cancelActiveCameraInteraction(),
     [cancelActiveCameraInteraction, interactionEnabled, mapMode],
   );
   useEffect(() => {
-    const svg = svgRef.current;
-    if (!svg) return;
+    const viewport = viewportRef.current;
+    if (!viewport) return;
     const onWheel = (event: WheelEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('input, select, textarea, [data-map-wheel-exempt="true"]')) return;
       event.preventDefault();
       event.stopPropagation();
       if (!interactionEnabledRef.current) return;
-      const { x, y } = svgPoint(event, svg);
-      const delta = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
-      if (mapModeRef.current === 'globe') {
-        const adaptiveSpeed =
-          CAMERA_SETTINGS.zoomSpeed * (0.72 + Math.log2(Math.max(1, targetCamera.current.zoom)) * 0.14);
-        const zoom = clamp(
-          targetCamera.current.zoom * Math.exp(-delta * CAMERA_SETTINGS.wheelSmoothing * adaptiveSpeed),
-          CAMERA_SETTINGS.minZoom,
-          CAMERA_SETTINGS.maxZoom,
+      const mode = mapModeRef.current;
+      if (mode === 'globe') {
+        const result = applyCameraWheel(
+          targetCamera.current,
+          mode,
+          event.deltaY,
+          event.deltaMode,
+          event.ctrlKey,
+          event.altKey,
+          viewport.clientHeight,
         );
-        targetCamera.current = roundCamera({ ...targetCamera.current, x: 0, y: 0, zoom });
-        if (!animation.current) glideToTarget();
+        cancelCameraFrames();
+        if (result.action !== 'reserved') {
+          targetCamera.current = result.camera;
+          currentCamera.current = result.camera;
+          emitCameraChange(result.camera);
+        }
         return;
       }
+      const svg = svgRef.current;
+      if (!svg) return;
+      if (event.ctrlKey || event.altKey) {
+        const result = applyCameraWheel(
+          targetCamera.current,
+          'flat',
+          event.deltaY,
+          event.deltaMode,
+          event.ctrlKey,
+          event.altKey,
+          svg.clientHeight,
+        );
+        cancelCameraFrames();
+        targetCamera.current = result.camera;
+        currentCamera.current = result.camera;
+        emitCameraChange(result.camera);
+        return;
+      }
+      const { x, y } = svgPoint(event, svg);
+      const delta = normalizeWheelDelta(event.deltaY, event.deltaMode, svg.clientHeight);
       targetCamera.current = zoomAtPoint(targetCamera.current, x, y, delta * CAMERA_SETTINGS.wheelSmoothing);
       if (!animation.current) glideToTarget();
     };
-    svg.addEventListener('wheel', onWheel, { passive: false });
-    return () => svg.removeEventListener('wheel', onWheel);
-  }, []);
+    viewport.addEventListener('wheel', onWheel, { passive: false });
+    return () => viewport.removeEventListener('wheel', onWheel);
+  }, [cancelCameraFrames, emitCameraChange]);
   const animateTo = (target: CameraState, duration = CAMERA_SETTINGS.animatedZoomMs) => {
     cancelCameraFrames();
     const start = constrainCamera(targetCamera.current);
@@ -334,6 +370,7 @@ export function OfflineMap({
     velocity.current = { x: 0, y: 0 };
     movedSinceDown.current = false;
     activePointerId.current = event.pointerId;
+    if (viewportRef.current) viewportRef.current.style.cursor = 'grabbing';
     event.currentTarget.setPointerCapture(event.pointerId);
   };
   const onPointerMove = (event: PointerEvent<SVGSVGElement>) => {
@@ -394,6 +431,7 @@ export function OfflineMap({
     lastPan.current = null;
     moving.current = null;
     activePointerId.current = null;
+    if (viewportRef.current) viewportRef.current.style.cursor = interactionEnabled ? 'grab' : 'default';
     if (shouldGlobeMomentum) runGlobeMomentum();
     else if (shouldMomentum) runMomentum();
     else {
@@ -482,37 +520,75 @@ export function OfflineMap({
     onSelect(layer.id);
     event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId);
   };
+  const mapRenderer =
+    mapMode === 'globe' ? (
+      <WebGLGlobe
+        style={style}
+        layers={layers}
+        camera={camera}
+        onCameraChange={onCameraChange}
+        interactionEnabled={interactionEnabled}
+        labelLanguage={labelLanguage}
+        selectedId={selectedId}
+        onSelect={onSelect}
+        onMoveLayer={onMoveLayer}
+        onBackgroundClick={onBackgroundClick}
+      />
+    ) : (
+      <MapScene
+        style={style}
+        mapMode="flat"
+        layers={layers}
+        camera={camera}
+        labelLanguage={labelLanguage}
+        selectedId={selectedId}
+        safeArea={safeArea}
+        showSafeArea={showSafeArea}
+        assetUrls={assetUrls}
+        onBackgroundClick={onBackgroundClick ?? (() => onSelect(null))}
+        editorMode={editorMode}
+        onLayerPointerDown={beginLayerMove}
+        svgProps={{
+          ref: svgRef,
+          onPointerDown,
+          onPointerMove,
+          onPointerUp: onPointerUpHandler,
+          onPointerLeave: end,
+          onPointerCancel: cancelActiveCameraInteraction,
+          onLostPointerCapture: (event) => {
+            if (activePointerId.current === event.pointerId) cancelActiveCameraInteraction();
+          },
+          onDoubleClick,
+          onKeyDown,
+          onKeyUp,
+          tabIndex: 0,
+        }}
+      />
+    );
   return (
-    <MapScene
-      style={style}
-      mapMode={mapMode}
-      layers={layers}
-      camera={camera}
-      labelLanguage={labelLanguage}
-      selectedId={selectedId}
-      safeArea={safeArea}
-      showSafeArea={showSafeArea}
-      assetUrls={assetUrls}
-      globeRotation={globeRotation.current}
-      onBackgroundClick={onBackgroundClick ?? (() => onSelect(null))}
-      editorMode={editorMode}
-      onLayerPointerDown={beginLayerMove}
-      svgProps={{
-        ref: svgRef,
-        onPointerDown,
-        onPointerMove,
-        onPointerUp: onPointerUpHandler,
-        onPointerLeave: end,
-        onPointerCancel: cancelActiveCameraInteraction,
-        onLostPointerCapture: (event) => {
-          if (activePointerId.current === event.pointerId) cancelActiveCameraInteraction();
-        },
-        onDoubleClick,
-        onKeyDown,
-        onKeyUp,
-        tabIndex: 0,
+    <div
+      ref={viewportRef}
+      className="map-navigation-viewport"
+      data-map-mode={mapMode}
+      style={{
+        position: 'relative',
+        width: '100%',
+        height: '100%',
+        minWidth: 0,
+        minHeight: 0,
+        cursor: interactionEnabled ? 'grab' : 'default',
       }}
-    />
+    >
+      {mapRenderer}
+      {editorMode ? (
+        <CameraOrbitControl
+          camera={camera}
+          mapMode={mapMode}
+          disabled={!interactionEnabled}
+          onChange={onCameraChange}
+        />
+      ) : null}
+    </div>
   );
 }
 
@@ -981,17 +1057,18 @@ function CountryLabel({
   flatCamera?: CameraState;
 }) {
   const fa = country.nameFa || country.name;
-  const point = projectLayerPoint(country.label[0], country.label[1], globe, flatCamera);
+  const flatLabel = flatCamera
+    ? projectFlatMapLabel(flatCamera, country.label[0], country.label[1])
+    : undefined;
+  const point = flatCamera ? flatLabel : projectLayerPoint(country.label[0], country.label[1], globe);
   if (!point) return null;
-  const sourceX = flatCamera ? country.label[0] : point.x;
-  const sourceY = flatCamera ? country.label[1] : point.y;
+  const sourceX = flatCamera ? 0 : point.x;
+  const sourceY = flatCamera ? 0 : point.y;
   return (
     <text
       x={sourceX}
       y={sourceY}
-      transform={
-        flatCamera ? mapPlaneLocalTransform(flatCamera, country.label[0], country.label[1]) : undefined
-      }
+      transform={flatLabel?.transform}
       fill={color}
       className="country-label"
       style={{ fontSize: `${5.9 * scale}px`, letterSpacing }}
@@ -1035,15 +1112,16 @@ function MapFeatureLabel({
   flatCamera?: CameraState;
 }) {
   const text = language === 'fa' ? label.nameFa : label.name;
-  const point = projectLayerPoint(label.point[0], label.point[1], globe, flatCamera);
+  const flatLabel = flatCamera ? projectFlatMapLabel(flatCamera, label.point[0], label.point[1]) : undefined;
+  const point = flatCamera ? flatLabel : projectLayerPoint(label.point[0], label.point[1], globe);
   if (!point) return null;
-  const sourceX = flatCamera ? label.point[0] : point.x;
-  const sourceY = flatCamera ? label.point[1] : point.y;
+  const sourceX = flatCamera ? 0 : point.x;
+  const sourceY = flatCamera ? 0 : point.y;
   return (
     <text
       x={sourceX}
       y={sourceY}
-      transform={flatCamera ? mapPlaneLocalTransform(flatCamera, label.point[0], label.point[1]) : undefined}
+      transform={flatLabel?.transform}
       fill={color}
       className={`${className} ${language === 'fa' ? 'persian-text' : ''}`}
       textAnchor="middle"
@@ -1084,15 +1162,16 @@ function CityLabel({
 }) {
   const text = language === 'fa' ? label.nameFa : label.name;
   const shown = language === 'both' ? `${label.name} · ${label.nameFa}` : text;
-  const point = projectLayerPoint(label.point[0], label.point[1], globe, flatCamera);
+  const flatLabel = flatCamera ? projectFlatMapLabel(flatCamera, label.point[0], label.point[1]) : undefined;
+  const point = flatCamera ? flatLabel : projectLayerPoint(label.point[0], label.point[1], globe);
   if (!point) return null;
-  const sourceX = flatCamera ? label.point[0] : point.x;
-  const sourceY = flatCamera ? label.point[1] : point.y;
+  const sourceX = flatCamera ? 0 : point.x;
+  const sourceY = flatCamera ? 0 : point.y;
   return (
     <g
       className={`city-label ${label.capital ? 'capital-label' : ''}`}
       opacity={opacity}
-      transform={flatCamera ? mapPlaneLocalTransform(flatCamera, label.point[0], label.point[1]) : undefined}
+      transform={flatLabel?.transform}
     >
       <circle cx={sourceX} cy={sourceY} r={label.capital ? 1.8 : 1.2} fill={color} />
       <text

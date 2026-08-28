@@ -1,5 +1,5 @@
 import { findCountry } from '../data/worldMap';
-import type { CameraState, CanvasLayout, Layer, TransitionPreset, TransitionType } from './project';
+import type { CameraState, CanvasLayout, Layer, MapMode, TransitionPreset, TransitionType } from './project';
 
 export const CAMERA_VIEWPORT = { width: 1000, height: 560 };
 export const CAMERA_FOV_DEGREES = 45;
@@ -17,9 +17,54 @@ export const CAMERA_SETTINGS = {
   animatedZoomMs: 280,
   fitPadding: 54,
 };
+export const MIN_CAMERA_PITCH = -85;
+export const MAX_CAMERA_PITCH = 85;
 
 export type CameraTransitionPreset = TransitionPreset;
 export type CameraTransitionType = TransitionType;
+
+export type CameraWheelAction = 'zoom' | 'pitch' | 'bearing' | 'reserved';
+
+export const normalizeWheelDelta = (deltaY: number, deltaMode: number, pagePixels = CAMERA_VIEWPORT.height) =>
+  clamp(deltaY * (deltaMode === 1 ? 16 : deltaMode === 2 ? pagePixels : 1), -240, 240);
+
+/** Ctrl has deterministic precedence over Alt. Globe Alt-wheel is reserved. */
+export const cameraWheelAction = (mapMode: MapMode, ctrlKey: boolean, altKey: boolean): CameraWheelAction =>
+  ctrlKey ? 'pitch' : altKey ? (mapMode === 'flat' ? 'bearing' : 'reserved') : 'zoom';
+
+export const applyCameraWheel = (
+  camera: CameraState,
+  mapMode: MapMode,
+  deltaY: number,
+  deltaMode: number,
+  ctrlKey: boolean,
+  altKey: boolean,
+  pagePixels = CAMERA_VIEWPORT.height,
+) => {
+  const action = cameraWheelAction(mapMode, ctrlKey, altKey);
+  const delta = normalizeWheelDelta(deltaY, deltaMode, pagePixels);
+  if (action === 'reserved') return { action, camera } as const;
+  if (action === 'pitch')
+    return {
+      action,
+      camera: roundCamera({
+        ...camera,
+        ...(mapMode === 'globe' && camera.globeOrientation === undefined
+          ? { globeOrientation: { x: 0, y: 0, z: 0, w: 1 } }
+          : {}),
+        pitch: clamp((camera.pitch ?? 0) - delta * 0.06, MIN_CAMERA_PITCH, MAX_CAMERA_PITCH),
+      }),
+    } as const;
+  if (action === 'bearing')
+    return {
+      action,
+      camera: roundCamera({ ...camera, bearing: normalizeBearing((camera.bearing ?? 0) + delta * 0.08) }),
+    } as const;
+  return {
+    action,
+    camera: roundCamera({ ...camera, zoom: clamp(camera.zoom * Math.exp(-delta * 0.0014), 1, 6) }),
+  } as const;
+};
 
 /**
  * How strongly the zoom curve lags or leads the position curve.
@@ -76,7 +121,17 @@ export interface MapPlanePoint {
   y: number;
 }
 
-const cameraPitch = (camera: CameraState) => clamp(camera.pitch ?? 0, -60, 60);
+const cameraPitch = (camera: CameraState) => clamp(camera.pitch ?? 0, MIN_CAMERA_PITCH, MAX_CAMERA_PITCH);
+
+/** Perspective denominator for a Flat-map world point. */
+export const flatCameraDepth = (camera: CameraState, worldX: number, worldY: number) => {
+  const bearing = (normalizeBearing(camera.bearing) * Math.PI) / 180;
+  const pitch = (cameraPitch(camera) * Math.PI) / 180;
+  const northUpX = worldX * camera.zoom + camera.x - CAMERA_VIEWPORT.width / 2;
+  const northUpY = worldY * camera.zoom + camera.y - CAMERA_VIEWPORT.height / 2;
+  const rotatedY = northUpX * Math.sin(bearing) + northUpY * Math.cos(bearing);
+  return CAMERA_FOCAL_LENGTH + rotatedY * Math.sin(pitch);
+};
 
 export const screenRay = (camera: CameraState, screenX: number, screenY: number): CameraRay => {
   const pitch = (cameraPitch(camera) * Math.PI) / 180;
@@ -178,6 +233,7 @@ export const constrainCamera = (camera: CameraState): CameraState => {
   const minX = CAMERA_VIEWPORT.width - CAMERA_VIEWPORT.width * zoom;
   const minY = CAMERA_VIEWPORT.height - CAMERA_VIEWPORT.height * zoom;
   return roundCamera({
+    ...camera,
     x: clamp(camera.x, minX, 0),
     y: clamp(camera.y, minY, 0),
     zoom,
@@ -189,6 +245,7 @@ export const constrainCamera = (camera: CameraState): CameraState => {
 export const applyEdgeResistance = (camera: CameraState): CameraState => {
   const constrained = constrainCamera(camera);
   return roundCamera({
+    ...camera,
     x: constrained.x + (camera.x - constrained.x) * CAMERA_SETTINGS.edgeResistance,
     y: constrained.y + (camera.y - constrained.y) * CAMERA_SETTINGS.edgeResistance,
     zoom: constrained.zoom,
@@ -308,7 +365,14 @@ export const roundCamera = (camera: CameraState): CameraState => ({
   y: round(camera.y, 8),
   zoom: round(camera.zoom, 10),
   ...(camera.bearing !== undefined ? { bearing: round(normalizeBearing(camera.bearing), 8) } : {}),
-  ...(camera.pitch !== undefined ? { pitch: round(clamp(camera.pitch, -60, 60), 8) } : {}),
+  ...(camera.pitch !== undefined
+    ? { pitch: round(clamp(camera.pitch, MIN_CAMERA_PITCH, MAX_CAMERA_PITCH), 8) }
+    : {}),
+  // Globe orientation is an independent state component. Pitch/zoom updates
+  // must preserve it bit-for-bit; creation, drag, SLERP and persistence are
+  // the explicit quaternion-normalization boundaries.
+  ...(camera.globeOrientation !== undefined ? { globeOrientation: camera.globeOrientation } : {}),
+  ...(camera.globeFocus !== undefined ? { globeFocus: camera.globeFocus } : {}),
 });
 
 export const fitCountryCamera = (countryId: string): CameraState | null => {

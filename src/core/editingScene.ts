@@ -1,5 +1,7 @@
 import type { CameraState, Layer, Project, SegmentRef } from './project';
 import { interpolateCamera } from './camera';
+import { interpolateCameraChainTransition } from './cameraContinuity';
+import { interpolateGlobeCamera } from './globeMath';
 
 export interface EditingScene {
   camera: CameraState;
@@ -30,8 +32,13 @@ export function resolveEditingScene(
   const from = transition && project.views.find((view) => view.id === transition.fromViewId);
   const to = transition && project.views.find((view) => view.id === transition.toViewId);
   if (!transition || !from || !to) return { camera: { ...workingCamera }, layers };
+  const fromIndex = project.views.findIndex((view) => view.id === from.id);
   return {
-    camera: interpolateCamera(from.camera, to.camera, 0.5, transition.preset, transition.type),
+    camera:
+      interpolateCameraChainTransition(project, fromIndex, 0.5) ??
+      (from.mapMode === 'globe'
+        ? interpolateGlobeCamera(from.camera, to.camera, 0.5, transition.preset, transition.type)
+        : interpolateCamera(from.camera, to.camera, 0.5, transition.preset, transition.type)),
     layers,
   };
 }

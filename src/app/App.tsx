@@ -33,6 +33,7 @@ import {
   layerLabel,
   setTransitionLayerIncluded,
   setViewLayerIncluded,
+  sequenceMapMode,
   transitionAnimOf,
   transitionLayerConfigsOf,
   transitionMemberIds,
@@ -70,8 +71,11 @@ import {
   fitLayerCamera,
   fitSelectionCamera,
   fitWorldCamera,
+  MAX_CAMERA_PITCH,
+  MIN_CAMERA_PITCH,
   roundCamera,
 } from '../core/camera';
+import { cameraWithGlobeFocus } from '../core/globeMath';
 import { exportPortableProject, importPortableProjectDetailed } from '../core/portableProject';
 import { DEFAULT_EXPORT_PRESET_ID, EXPORT_PRESETS, type ExportPresetId } from '../core/exportPresets';
 import {
@@ -251,6 +255,10 @@ export function App() {
     [project.layers, search],
   );
   const sequence = useMemo(() => compileTimeline(project), [project]);
+  const lockedMapMode = sequenceMapMode(project);
+  useEffect(() => {
+    if (lockedMapMode && mapMode !== lockedMapMode) setMapMode(lockedMapMode);
+  }, [lockedMapMode, mapMode]);
   const selectedTimelineEntity = timelineSelection;
   const editingScene = useMemo(
     () => resolveEditingScene(project, selectedTimelineEntity, camera),
@@ -261,7 +269,6 @@ export function App() {
     selectedTransitionIndex !== null ? (project.transitions[selectedTransitionIndex] ?? null) : null;
   const thumbnailSignatures = useMemo(() => {
     const global = {
-      mapMode,
       mapSettings: project.mapSettings,
       canvasWidth: project.canvas.width,
       canvasHeight: project.canvas.height,
@@ -274,19 +281,13 @@ export function App() {
         view.id,
         JSON.stringify({
           global,
+          mapMode: view.mapMode,
           camera: view.camera,
           layers: viewLayersOf(project, view),
         }),
       ]),
     );
-  }, [
-    mapMode,
-    project.mapSettings,
-    project.canvas.width,
-    project.canvas.height,
-    project.views,
-    project.layers,
-  ]);
+  }, [project.mapSettings, project.canvas.width, project.canvas.height, project.views, project.layers]);
   useEffect(() => {
     let active = true;
     resolveProjectAssetUrls(project)
@@ -772,7 +773,14 @@ export function App() {
     });
   };
   const addView = () => {
-    const view = createView(`View ${project.views.length + 1}`, project.layers, camera, project.layers);
+    const viewMapMode = lockedMapMode ?? mapMode;
+    const view = createView(
+      `View ${project.views.length + 1}`,
+      project.layers,
+      camera,
+      project.layers,
+      viewMapMode,
+    );
     updateProject((p) => {
       const views = [...p.views];
       // Initialize the previous View's outgoing transition membership from its
@@ -798,6 +806,7 @@ export function App() {
     if (!view) return;
     setTimelineSelection({ kind: 'view', id });
     setCamera(view.camera);
+    setMapMode(view.mapMode);
     previewClock.stop();
     // Layer visual properties are project-global, so activating a View does
     // NOT change the editor canvas layers — only camera and the segment
@@ -816,7 +825,9 @@ export function App() {
     if (!activeViewId) return;
     updateProject((p) => ({
       ...p,
-      views: p.views.map((v) => (v.id === activeViewId ? { ...v, camera: { ...camera } } : v)),
+      views: p.views.map((v) =>
+        v.id === activeViewId ? { ...v, camera: { ...camera }, mapMode: sequenceMapMode(p) ?? mapMode } : v,
+      ),
     }));
     setNotice('View updated — project not saved yet');
   };
@@ -824,8 +835,8 @@ export function App() {
   const activeViewStale = useMemo(() => {
     const active = project.views.find((v) => v.id === activeViewId);
     if (!active) return false;
-    return JSON.stringify(active.camera) !== JSON.stringify(camera);
-  }, [project.views, activeViewId, camera]);
+    return JSON.stringify(active.camera) !== JSON.stringify(camera) || active.mapMode !== mapMode;
+  }, [project.views, activeViewId, camera, mapMode]);
 
   const duplicateView = (viewId = activeViewId) => {
     const source = project.views.find((v) => v.id === viewId);
@@ -1423,7 +1434,14 @@ export function App() {
               </select>
               <button
                 className={mapMode === 'flat' ? 'active' : ''}
+                disabled={lockedMapMode === 'globe'}
+                title={
+                  lockedMapMode === 'globe'
+                    ? 'View sequence is locked to Globe mode. Delete all Views to choose another map mode.'
+                    : 'Use Flat map mode'
+                }
                 onClick={() => {
+                  if (lockedMapMode === 'globe') return;
                   setMapMode('flat');
                   setNotice('Flat map mode');
                 }}
@@ -1432,8 +1450,16 @@ export function App() {
               </button>
               <button
                 className={mapMode === 'globe' ? 'active' : ''}
+                disabled={lockedMapMode === 'flat'}
+                title={
+                  lockedMapMode === 'flat'
+                    ? 'View sequence is locked to Flat mode. Delete all Views to choose another map mode.'
+                    : 'Use Globe map mode'
+                }
                 onClick={() => {
+                  if (lockedMapMode === 'flat') return;
                   setMapMode('globe');
+                  setCamera((current) => roundCamera(cameraWithGlobeFocus(current)));
                   setNotice('Globe map mode');
                 }}
               >
@@ -1544,7 +1570,8 @@ export function App() {
           )}
           <CameraInspector
             camera={camera}
-            disabled={playbackState !== 'stopped' || mapMode !== 'flat'}
+            mapMode={mapMode}
+            disabled={playbackState !== 'stopped'}
             onChange={(patch) => setCamera((current) => roundCamera({ ...current, ...patch }))}
           />
           {!projectMode && selectedTransition && (
@@ -2028,6 +2055,7 @@ function PreviewMap({
   return (
     <OfflineMap
       {...mapProps}
+      mapMode={previewState?.mapMode ?? mapProps.mapMode}
       layers={previewState?.layers ?? editingLayers}
       camera={previewState?.camera ?? editingCamera}
       interactionEnabled={playbackState === 'stopped'}
@@ -2345,16 +2373,18 @@ const exportStatusLabel = (status: ExportProgressState['status']) => {
 
 function CameraInspector({
   camera,
+  mapMode,
   disabled,
   onChange,
 }: {
   camera: CameraState;
+  mapMode: MapMode;
   disabled: boolean;
-  onChange: (patch: Partial<Pick<CameraState, 'bearing' | 'pitch'>>) => void;
+  onChange: (patch: Partial<CameraState>) => void;
 }) {
   const bearing = camera.bearing ?? 0;
   const pitch = camera.pitch ?? 0;
-  const pendingPatch = useRef<Partial<Pick<CameraState, 'bearing' | 'pitch'>> | null>(null);
+  const pendingPatch = useRef<Partial<CameraState> | null>(null);
   const pendingFrame = useRef<number | null>(null);
   useEffect(
     () => () => {
@@ -2362,7 +2392,7 @@ function CameraInspector({
     },
     [],
   );
-  const scheduleChange = (patch: Partial<Pick<CameraState, 'bearing' | 'pitch'>>) => {
+  const scheduleChange = (patch: Partial<CameraState>) => {
     pendingPatch.current = { ...pendingPatch.current, ...patch };
     if (pendingFrame.current !== null) return;
     pendingFrame.current = requestAnimationFrame(() => {
@@ -2375,40 +2405,57 @@ function CameraInspector({
   return (
     <div className="layer-inspector camera-inspector">
       <span className="type-chip">Camera</span>
-      <label>
-        Bearing
-        <input
-          type="range"
-          min="-180"
-          max="180"
-          step="1"
-          value={bearing}
+      {mapMode === 'flat' ? (
+        <>
+          <label>
+            Bearing
+            <input
+              type="range"
+              min="-180"
+              max="180"
+              step="1"
+              value={bearing}
+              disabled={disabled}
+              onChange={(event) => scheduleChange({ bearing: Number(event.target.value) })}
+            />
+            <input
+              type="number"
+              min="-180"
+              max="180"
+              step="1"
+              value={bearing}
+              disabled={disabled}
+              onChange={(event) => scheduleChange({ bearing: Number(event.target.value) })}
+            />
+          </label>
+          <button
+            type="button"
+            disabled={disabled || bearing === 0}
+            onClick={() => scheduleChange({ bearing: 0 })}
+          >
+            Reset Bearing
+          </button>
+        </>
+      ) : (
+        <button
+          type="button"
           disabled={disabled}
-          onChange={(event) => scheduleChange({ bearing: Number(event.target.value) })}
-        />
-        <input
-          type="number"
-          min="-180"
-          max="180"
-          step="1"
-          value={bearing}
-          disabled={disabled}
-          onChange={(event) => scheduleChange({ bearing: Number(event.target.value) })}
-        />
-      </label>
-      <button
-        type="button"
-        disabled={disabled || bearing === 0}
-        onClick={() => scheduleChange({ bearing: 0 })}
-      >
-        Reset Bearing
-      </button>
+          onClick={() =>
+            scheduleChange({
+              globeOrientation: { x: 0, y: 0, z: 0, w: 1 },
+              globeFocus: { x: 1, y: 0, z: 0 },
+            })
+          }
+        >
+          Reset Globe Orientation
+        </button>
+      )}
       <label>
         Pitch
         <input
           type="range"
-          min="-60"
-          max="60"
+          min={MIN_CAMERA_PITCH}
+          max={MAX_CAMERA_PITCH}
           step="1"
           value={pitch}
           disabled={disabled}
@@ -2416,8 +2463,8 @@ function CameraInspector({
         />
         <input
           type="number"
-          min="-60"
-          max="60"
+          min={MIN_CAMERA_PITCH}
+          max={MAX_CAMERA_PITCH}
           step="1"
           value={pitch}
           disabled={disabled}
@@ -2427,7 +2474,11 @@ function CameraInspector({
       <button type="button" disabled={disabled || pitch === 0} onClick={() => scheduleChange({ pitch: 0 })}>
         Reset Pitch
       </button>
-      <p className="transition-hint">0° is north-up; positive values rotate clockwise.</p>
+      <p className="transition-hint">
+        {mapMode === 'flat'
+          ? '0° is north-up; positive values rotate clockwise.'
+          : 'Pitch moves the observer. Dragging rotates the physical Globe independently.'}
+      </p>
     </div>
   );
 }

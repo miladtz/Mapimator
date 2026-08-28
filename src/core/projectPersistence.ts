@@ -1,6 +1,7 @@
 import type {
   CameraState,
   Layer,
+  MapMode,
   Project,
   ProjectAsset,
   SegmentLayerAnimation,
@@ -9,10 +10,12 @@ import type {
   View,
   ViewLayerConfig,
 } from './project';
-import { normalizeSegmentAnimation } from './project';
+import { hasConsistentViewMapMode, normalizeSegmentAnimation } from './project';
 import { normalizeBearing } from './camera';
+import { globeFocusOf, normalizeGlobeFocus, normalizeQuaternion } from './globeMath';
 
-type LegacyView = Omit<View, 'layerConfigs' | 'transitionLayerConfigs'> & {
+type LegacyView = Omit<View, 'layerConfigs' | 'transitionLayerConfigs' | 'mapMode'> & {
+  mapMode?: MapMode;
   layerConfigs?: Record<string, ViewLayerConfig>;
   transitionLayerConfigs?: Record<string, TransitionLayerConfig>;
   layers?: Layer[];
@@ -84,8 +87,25 @@ const validateCamera = (value: unknown, path: string): CameraState => {
     throw new Error(`${path} must contain finite x, y, and zoom values.`);
   if (value.bearing !== undefined && !isFiniteNumber(value.bearing))
     throw new Error(`${path}.bearing must be finite.`);
-  if (value.pitch !== undefined && (!isFiniteNumber(value.pitch) || value.pitch < -60 || value.pitch > 60))
-    throw new Error(`${path}.pitch must be between -60 and 60 degrees.`);
+  if (value.pitch !== undefined && (!isFiniteNumber(value.pitch) || value.pitch < -85 || value.pitch > 85))
+    throw new Error(`${path}.pitch must be between -85 and 85 degrees.`);
+  if (value.globeOrientation !== undefined) {
+    if (!isRecord(value.globeOrientation)) throw new Error(`${path}.globeOrientation must be an object.`);
+    for (const component of ['x', 'y', 'z', 'w'] as const)
+      if (!isFiniteNumber(value.globeOrientation[component]))
+        throw new Error(`${path}.globeOrientation.${component} must be finite.`);
+  }
+  if (value.globeFocus !== undefined) {
+    if (!isRecord(value.globeFocus)) throw new Error(`${path}.globeFocus must be an object.`);
+    for (const component of ['x', 'y', 'z'] as const)
+      if (!isFiniteNumber(value.globeFocus[component]))
+        throw new Error(`${path}.globeFocus.${component} must be finite.`);
+    if (
+      Math.hypot(value.globeFocus.x as number, value.globeFocus.y as number, value.globeFocus.z as number) <
+      1e-12
+    )
+      throw new Error(`${path}.globeFocus must have non-zero length.`);
+  }
   return value as unknown as CameraState;
 };
 
@@ -177,6 +197,8 @@ const validateView = (value: unknown, index: number): LegacyView => {
     throw new Error(`${path} has invalid identity fields.`);
   if (!isFiniteNumber(value.holdDuration) || value.holdDuration < 0)
     throw new Error(`${path} has invalid timing.`);
+  if (value.mapMode !== undefined && !oneOf(value.mapMode, ['flat', 'globe'] as const))
+    throw new Error(`${path}.mapMode is unsupported.`);
   if (
     value.transitionDuration !== undefined &&
     (!isFiniteNumber(value.transitionDuration) || value.transitionDuration < 0)
@@ -499,10 +521,20 @@ export function validateAndMigrateProject(value: unknown): Project {
     );
     return {
       ...runtimeView,
+      mapMode: runtimeView.mapMode === 'globe' ? 'globe' : 'flat',
       camera: {
         ...runtimeView.camera,
         bearing: normalizeBearing(runtimeView.camera.bearing),
         pitch: runtimeView.camera.pitch ?? 0,
+        ...(runtimeView.mapMode === 'globe'
+          ? {
+              globeOrientation: normalizeQuaternion(runtimeView.camera.globeOrientation),
+              globeFocus: normalizeGlobeFocus(
+                runtimeView.camera.globeFocus,
+                globeFocusOf(runtimeView.camera),
+              ),
+            }
+          : {}),
       },
       layerConfigs: vc,
     } as View;
@@ -551,6 +583,7 @@ export function validateAndMigrateProject(value: unknown): Project {
     if (!viewIds.has(transition.fromViewId) || !viewIds.has(transition.toViewId))
       throw new Error(`Transition ${transition.id} references a missing View.`);
   }
+  if (!hasConsistentViewMapMode(backfilled)) throw new Error('Project Views must all use the same map mode.');
   const { transitions: _inputTransitions, ...projectInput } = value;
   return { ...(projectInput as unknown as Project), layers: registry, views: backfilled, transitions };
 }

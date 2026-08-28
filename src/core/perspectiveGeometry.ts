@@ -1,4 +1,12 @@
-import { CAMERA_VIEWPORT, createWorldToScreenProjector } from './camera';
+import {
+  CAMERA_FOCAL_LENGTH,
+  CAMERA_VIEWPORT,
+  MAX_CAMERA_PITCH,
+  MIN_CAMERA_PITCH,
+  clamp,
+  createWorldToScreenProjector,
+  normalizeBearing,
+} from './camera';
 import type { CameraState } from './project';
 
 interface Bounds {
@@ -23,6 +31,78 @@ let parsedVertexCount = 0;
 let parsedSubpathCount = 0;
 let lastProjectedVertices = 0;
 let lastCulledSubpaths = 0;
+let lastVisibleClosedRings = 0;
+let lastHiddenClosedRings = 0;
+let lastMixedClosedRings = 0;
+
+export const FLAT_FILL_NEAR_DEPTH = CAMERA_FOCAL_LENGTH * 0.01;
+
+interface CameraSpacePoint {
+  x: number;
+  y: number;
+  depth: number;
+}
+
+const createFlatCameraSpace = (camera: CameraState) => {
+  const bearing = (normalizeBearing(camera.bearing) * Math.PI) / 180;
+  const bearingCosine = Math.cos(bearing);
+  const bearingSine = Math.sin(bearing);
+  const pitch = (clamp(camera.pitch ?? 0, MIN_CAMERA_PITCH, MAX_CAMERA_PITCH) * Math.PI) / 180;
+  const pitchCosine = Math.cos(pitch);
+  const pitchSine = Math.sin(pitch);
+  const depth = (worldX: number, worldY: number) => {
+    const northUpX = worldX * camera.zoom + camera.x - CAMERA_VIEWPORT.width / 2;
+    const northUpY = worldY * camera.zoom + camera.y - CAMERA_VIEWPORT.height / 2;
+    const rotatedY = northUpX * bearingSine + northUpY * bearingCosine;
+    return CAMERA_FOCAL_LENGTH + rotatedY * pitchSine;
+  };
+  const toCamera = (worldX: number, worldY: number): CameraSpacePoint => {
+    const northUpX = worldX * camera.zoom + camera.x - CAMERA_VIEWPORT.width / 2;
+    const northUpY = worldY * camera.zoom + camera.y - CAMERA_VIEWPORT.height / 2;
+    const x = northUpX * bearingCosine - northUpY * bearingSine;
+    const y = northUpX * bearingSine + northUpY * bearingCosine;
+    return { x, y, depth: CAMERA_FOCAL_LENGTH + y * pitchSine };
+  };
+  const project = (point: CameraSpacePoint) => {
+    const perspective = CAMERA_FOCAL_LENGTH / point.depth;
+    return {
+      x: CAMERA_VIEWPORT.width / 2 + point.x * perspective,
+      y: CAMERA_VIEWPORT.height / 2 + point.y * pitchCosine * perspective,
+    };
+  };
+  return { depth, toCamera, project };
+};
+
+const nearPlaneIntersection = (from: CameraSpacePoint, to: CameraSpacePoint): CameraSpacePoint => {
+  const denominator = to.depth - from.depth;
+  const unclamped = denominator === 0 ? 0 : (FLAT_FILL_NEAR_DEPTH - from.depth) / denominator;
+  const t = clamp(unclamped, 0, 1);
+  return {
+    x: from.x + (to.x - from.x) * t,
+    y: from.y + (to.y - from.y) * t,
+    depth: FLAT_FILL_NEAR_DEPTH,
+  };
+};
+
+const clipClosedRingToNearPlane = (
+  coordinates: Float64Array,
+  toCamera: (worldX: number, worldY: number) => CameraSpacePoint,
+) => {
+  const output: CameraSpacePoint[] = [];
+  const vertexCount = coordinates.length / 2;
+  if (vertexCount < 3) return output;
+  let previous = toCamera(coordinates[coordinates.length - 2], coordinates[coordinates.length - 1]);
+  let previousInside = previous.depth >= FLAT_FILL_NEAR_DEPTH;
+  for (let index = 0; index < coordinates.length; index += 2) {
+    const current = toCamera(coordinates[index], coordinates[index + 1]);
+    const currentInside = current.depth >= FLAT_FILL_NEAR_DEPTH;
+    if (currentInside !== previousInside) output.push(nearPlaneIntersection(previous, current));
+    if (currentInside) output.push(current);
+    previous = current;
+    previousInside = currentInside;
+  }
+  return output;
+};
 
 const boundsOf = (coordinates: readonly number[]): Bounds => {
   let minX = Number.POSITIVE_INFINITY;
@@ -122,10 +202,46 @@ const canContributeToViewport = (project: Projector, bounds: Bounds) => {
 export const projectSvgPath = (path: string, camera: CameraState) => {
   const parsed = parsePath(path);
   const project = createWorldToScreenProjector(camera);
+  const cameraSpace = (camera.pitch ?? 0) !== 0 ? createFlatCameraSpace(camera) : null;
   const output: string[] = [];
   lastProjectedVertices = 0;
   lastCulledSubpaths = 0;
+  lastVisibleClosedRings = 0;
+  lastHiddenClosedRings = 0;
+  lastMixedClosedRings = 0;
   for (const subpath of parsed.subpaths) {
+    if (subpath.closed && cameraSpace) {
+      let visibleVertices = 0;
+      for (let index = 0; index < subpath.coordinates.length; index += 2) {
+        if (
+          cameraSpace.depth(subpath.coordinates[index], subpath.coordinates[index + 1]) >=
+          FLAT_FILL_NEAR_DEPTH
+        )
+          visibleVertices += 1;
+      }
+      const vertexCount = subpath.coordinates.length / 2;
+      if (visibleVertices === 0) {
+        lastHiddenClosedRings += 1;
+        lastCulledSubpaths += 1;
+        continue;
+      }
+      if (visibleVertices < vertexCount) {
+        lastMixedClosedRings += 1;
+        const clipped = clipClosedRingToNearPlane(subpath.coordinates, cameraSpace.toCamera);
+        if (clipped.length < 3) {
+          lastCulledSubpaths += 1;
+          continue;
+        }
+        clipped.forEach((point, index) => {
+          const projected = cameraSpace.project(point);
+          output.push(`${index === 0 ? 'M' : 'L'}${rounded(projected.x)} ${rounded(projected.y)}`);
+        });
+        output.push('Z');
+        lastProjectedVertices += clipped.length;
+        continue;
+      }
+      lastVisibleClosedRings += 1;
+    }
     if (!canContributeToViewport(project, subpath.bounds)) {
       lastCulledSubpaths += 1;
       continue;
@@ -157,4 +273,7 @@ export const perspectiveGeometryCacheStats = () => ({
   vertexCount: parsedVertexCount,
   lastProjectedVertices,
   lastCulledSubpaths,
+  lastVisibleClosedRings,
+  lastHiddenClosedRings,
+  lastMixedClosedRings,
 });

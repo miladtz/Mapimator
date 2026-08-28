@@ -38,8 +38,10 @@ export class PreviewClock {
     this.cancelFrame();
     this.duration = Math.max(0, duration);
     this.completion = onComplete;
-    this.startedAt = this.scheduler.now() - this.time * 1000;
-    this.frame = this.scheduler.request(this.tick);
+    // Preserve one complete display frame at the exact current timestamp
+    // before elapsed-time advancement. This makes Preview's first visible
+    // frame byte-for-byte equivalent to the source View camera at t=0.
+    this.frame = this.scheduler.request(this.beginPlayback);
   }
 
   pause() {
@@ -77,6 +79,12 @@ export class PreviewClock {
       return;
     }
     this.time = next;
+    this.emit();
+    this.frame = this.scheduler.request(this.tick);
+  };
+
+  private beginPlayback = (timestamp: number) => {
+    this.startedAt = timestamp - this.time * 1000;
     this.emit();
     this.frame = this.scheduler.request(this.tick);
   };
