@@ -15,7 +15,9 @@ writeFileSync(
     `export * from '${join(root, 'src/core/project').replaceAll('\\', '/')}';`,
     `export * from '${join(root, 'src/core/camera').replaceAll('\\', '/')}';`,
     `export * from '${join(root, 'src/core/openFreeMapAdapter').replaceAll('\\', '/')}';`,
+    `export * from '${join(root, 'src/core/cameraZoomPolicy').replaceAll('\\', '/')}';`,
     `export * from '${join(root, 'src/core/projectRenderViewport').replaceAll('\\', '/')}';`,
+    `export * from '${join(root, 'src/core/projectFile').replaceAll('\\', '/')}';`,
   ].join('\n'),
   'utf8',
 );
@@ -60,6 +62,68 @@ const cameras = [
   { x: -1314.125, y: -524.75, zoom: 3.75, bearing: 0, pitch: 0 },
   { x: -2760.25, y: -1080.5, zoom: 5.8, bearing: 17, pitch: 38 },
 ];
+const authoredZoomPairs = [
+  [1, 2],
+  [2, 4],
+  [3, 6],
+  [5, 10],
+  [64, 128],
+  [65536, 131072],
+];
+for (const [fromZoom, toZoom] of authoredZoomPairs) {
+  const fromMapLibre = core.mapMotionZoomToMapLibreZoom(fromZoom);
+  const toMapLibre = core.mapMotionZoomToMapLibreZoom(toZoom);
+  assert.ok(
+    Math.abs(toMapLibre - fromMapLibre - 1) < 1e-12,
+    `Doubling authored zoom ${fromZoom} -> ${toZoom} advances MapLibre by exactly one level.`,
+  );
+  assert.ok(
+    Math.abs(core.mapLibreZoomToMapMotionZoom(fromMapLibre) - fromZoom) <= fromZoom * 1e-12,
+    `MapLibre zoom mapping round-trips authored zoom ${fromZoom}.`,
+  );
+}
+assert.ok(
+  Math.abs(core.mapMotionZoomToMapLibreZoom(1) - Math.log2(core.CAMERA_VIEWPORT.width / 512)) < 1e-12,
+  "Authored zoom 1 matches the Legacy 1000-unit world to MapLibre's 512-pixel zoom-0 world.",
+);
+assert.equal(core.getCameraZoomRange('legacy').max, 6, 'Legacy renderer keeps its safe zoom maximum.');
+assert.equal(
+  core.mapLibreMinimumZoom(),
+  core.mapMotionZoomToMapLibreZoom(core.getCameraZoomRange('online').min),
+  'MapLibre native minimum matches the Online authored minimum without inverse clamping.',
+);
+assert.equal(
+  core.mapMotionZoomToMapLibreZoom(core.getCameraZoomRange('online').max),
+  22,
+  'Online authored range reaches MapLibre practical zoom 22.',
+);
+const deepCamera = { x: -32718000, y: -18205600, zoom: 65536, bearing: 120, pitch: 60 };
+const deepOnline = core.mapMotionToMapLibreCamera(deepCamera);
+assert.ok(
+  deepOnline.zoom > core.mapMotionZoomToMapLibreZoom(6),
+  'Online accepts zoom beyond Legacy maximum.',
+);
+const deepRoundTrip = core.mapLibreToMapMotionCamera(
+  { lng: deepOnline.center[0], lat: deepOnline.center[1] },
+  deepOnline.zoom,
+  deepOnline.bearing,
+  deepOnline.pitch,
+);
+assert.ok(Math.abs(deepRoundTrip.zoom - deepCamera.zoom) < 1e-5, 'Deep native MapLibre zoom round-trips.');
+const legacyProjection = core.constrainCameraForRenderer(deepCamera, 'legacy');
+assert.equal(legacyProjection.zoom, 6, 'Legacy projection safely clamps deep authored zoom.');
+assert.equal(deepCamera.zoom, 65536, 'Legacy projection does not mutate the authored camera.');
+const persistedProject = core.createProject('Deep online persistence');
+const persistedView = core.createView('Deep View', [], deepCamera, []);
+persistedProject.views = [persistedView];
+const serializedDeepProject = core.serializeCanonicalProject(persistedProject);
+const reopenedDeepProject = core.parseProjectFile(serializedDeepProject.json);
+assert.equal(reopenedDeepProject.views[0].camera.zoom, deepCamera.zoom, 'Deep zoom survives Save/Open.');
+assert.deepEqual(
+  core.mapMotionToMapLibreCamera(reopenedDeepProject.views[0].camera),
+  deepOnline,
+  'Deep editor, Preview, thumbnail, and Export share the exact adapter result.',
+);
 for (const camera of cameras) {
   const editor = core.mapMotionToMapLibreCamera(camera);
   const preview = core.mapMotionToMapLibreCamera(camera);
@@ -68,7 +132,11 @@ for (const camera of cameras) {
   assert.deepEqual(editor, preview, 'Editor and Preview produce identical camera.');
   assert.deepEqual(editor, thumbnail, 'Editor and Thumbnail produce identical camera.');
   assert.deepEqual(editor, exportFrame, 'Editor and Export produce identical camera.');
-  assert.equal(editor.zoom, Math.log2(camera.zoom) * 4, 'MapLibre style zoom has one canonical formula.');
+  assert.equal(
+    editor.zoom,
+    Math.log2(camera.zoom) + core.MAPLIBRE_ZOOM_OFFSET,
+    'MapLibre style zoom uses the calibrated one-level-per-doubling formula.',
+  );
   const roundTrip = core.mapLibreToMapMotionCamera(
     { lng: editor.center[0], lat: editor.center[1] },
     editor.zoom,
@@ -114,6 +182,11 @@ const viewportMod = source('src/core/projectRenderViewport.ts');
 
 // Adapter must not have viewport-dependent zoom
 assert.doesNotMatch(adapter, /viewportZoomOffset|Math\.log2\(Math\.max\(1, viewportWidth\)/);
+assert.doesNotMatch(
+  adapter,
+  /MAPLIBRE_ZOOM_SCALE/,
+  'Obsolete four-level zoom amplification must remain removed.',
+);
 assert.equal(
   (adapter.match(/mapMotionToMapLibreCamera = \(camera: CameraState\)/g) ?? []).length,
   1,
@@ -129,6 +202,8 @@ assert.match(
   /container\.style\.width = `\$\{viewport\.width\}px`/,
   'Interactive sets canonical container width.',
 );
+assert.match(app, /getCameraZoomRange\(renderer\)/, 'Inspector resolves its range from renderer policy.');
+assert.match(app, /cameraAtZoomForRenderer/, 'Inspector preserves center across deep zoom edits.');
 assert.match(
   interactive,
   /container\.style\.height = `\$\{viewport\.height\}px`/,
@@ -149,6 +224,11 @@ assert.match(
 assert.match(interactive, /transformOrigin/, 'Interactive sets transform origin.');
 assert.match(interactive, /pixelRatio: interactivePixelRatioForDisplay/);
 assert.match(interactive, /fitProjectViewport\(viewport, stage\.clientWidth, stage\.clientHeight\)/);
+assert.match(
+  interactive,
+  /useLayoutEffect\(\(\) => \{[\s\S]*?mapMotionToMapLibreCamera\(camera\)[\s\S]*?map\.jumpTo\(next\)/,
+  'Canonical camera changes are applied before paint, including the exact first Preview View.',
+);
 
 // Export uses same canonical viewport
 assert.match(renderer, /projectRenderViewport/, 'Export uses projectRenderViewport for canonical viewport.');

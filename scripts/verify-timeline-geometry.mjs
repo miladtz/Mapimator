@@ -119,11 +119,8 @@ assert.match(css, /\.view-transition[\s\S]*?flex-shrink: 0/);
 assert.match(css, /\.view-card[\s\S]*?flex-shrink: 0/);
 assert.match(css, /\.scrub-playhead::after/);
 assert.match(css, /cursor: ew-resize/);
-assert.equal(
-  (app.match(/className="timeline-duration-input"/g) ?? []).length,
-  2,
-  'View Hold and Transition duration use the same native number-input wheel path',
-);
+assert.match(app, /className="timeline-duration-input"/);
+assert.match(app, /className=\{timeline \? 'timeline-duration-input' : undefined\}/);
 const durationWheelBypass = app.indexOf("event.target.closest('.timeline-duration-input')");
 const timelineWheelPrevention = app.indexOf('event.preventDefault()', durationWheelBypass);
 assert.ok(durationWheelBypass >= 0 && timelineWheelPrevention > durationWheelBypass);
@@ -138,7 +135,7 @@ assert.match(
 );
 assert.match(
   app,
-  /className="timeline-duration-input"[\s\S]{0,120}min="0"[\s\S]{0,120}max="30"[\s\S]{0,120}step="0\.5"/,
+  /className=\{timeline \? 'timeline-duration-input' : undefined\}[\s\S]{0,160}min=\{MIN_TRANSITION_DURATION\}[\s\S]{0,160}max=\{MAX_TRANSITION_DURATION\}[\s\S]{0,160}step="0\.001"/,
 );
 
 console.log(

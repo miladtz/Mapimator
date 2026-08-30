@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import maplibregl, { type Map as MapLibreMap } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { normalizeBearing } from '../core/camera';
 import {
   mapLibreToMapMotionCamera,
+  mapLibreMinimumZoom,
   mapLibreMaximumZoom,
   mapMotionToMapLibreCamera,
   isRecoverableOpenFreeMapResourceError,
@@ -104,6 +105,7 @@ export function OnlineOpenFreeMap({ camera, onCameraChange, styleId, interaction
       pitch: initial.pitch,
       attributionControl: { compact: false },
       maxPitch: 85,
+      minZoom: mapLibreMinimumZoom(),
       maxZoom: mapLibreMaximumZoom(),
       transformRequest: (url) => ({ url }),
       pixelRatio: interactivePixelRatioForDisplay(displayScale, window.devicePixelRatio),
@@ -206,7 +208,7 @@ export function OnlineOpenFreeMap({ camera, onCameraChange, styleId, interaction
     map.setStyle(style.url);
   }, [styleId]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     // A native MapLibre gesture already put the map at this camera. Its React
@@ -229,6 +231,21 @@ export function OnlineOpenFreeMap({ camera, onCameraChange, styleId, interaction
     if (import.meta.env.DEV && map.isMoving())
       console.debug('[OpenFreeMap Interactive] external camera applied while map is moving');
     map.jumpTo(next);
+    if (import.meta.env.DEV) {
+      const appliedCenter = map.getCenter();
+      console.debug('[OpenFreeMap Camera Semantics]', {
+        source: camera,
+        jumpTo: next,
+        resulting: {
+          center: [appliedCenter.lng, appliedCenter.lat],
+          zoom: map.getZoom(),
+          bearing: map.getBearing(),
+          pitch: map.getPitch(),
+          padding: map.getPadding(),
+        },
+        feedback: diagnosticsRef.current,
+      });
+    }
     applyingCanonicalCamera.current = false;
   }, [camera]);
 

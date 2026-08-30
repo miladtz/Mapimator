@@ -36,6 +36,7 @@ import {
   type Project,
 } from '../core/project';
 import { projectFlatMapLabel, selectMapLabels } from '../core/mapLabels';
+import { constrainCameraForRenderer } from '../core/cameraZoomPolicy';
 import { preparseSvgPaths, projectSvgPath } from '../core/perspectiveGeometry';
 import { formatNumbers, resolveTextDirection, resolveTextLanguage } from '../core/text';
 import { WebGLGlobe } from './WebGLGlobe';
@@ -132,8 +133,8 @@ export function OfflineMap({
   const globeVelocity = useRef({ lon: 0, lat: 0 });
   const animation = useRef<number | null>(null);
   const globeAnimation = useRef<number | null>(null);
-  const targetCamera = useRef(constrainCamera(camera));
-  const currentCamera = useRef(constrainCamera(camera));
+  const targetCamera = useRef(constrainCameraForRenderer(camera, 'legacy'));
+  const currentCamera = useRef(constrainCameraForRenderer(camera, 'legacy'));
   const spacePan = useRef(false);
   const moving = useRef<string | null>(null);
   const movedSinceDown = useRef(false);
@@ -176,7 +177,7 @@ export function OfflineMap({
   }, [cancelCameraFrames]);
   useEffect(() => {
     if (animation.current || globeAnimation.current) return;
-    currentCamera.current = constrainCamera(camera);
+    currentCamera.current = constrainCameraForRenderer(camera, 'legacy');
     targetCamera.current = currentCamera.current;
   }, [camera]);
   useEffect(() => {

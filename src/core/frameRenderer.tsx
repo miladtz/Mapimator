@@ -13,6 +13,7 @@ import { GlobeWebGLRenderer } from './globeRenderer';
 import { OnlineMapFrameRenderer } from './onlineMapFrameRenderer';
 import { projectThumbnailViewport } from './projectFrameFormat';
 import { projectRenderViewport, projectSceneViewBox } from './projectRenderViewport';
+import { constrainCameraForRenderer } from './cameraZoomPolicy';
 
 export const EXPORT_FRAME_WIDTH = 1920;
 export const EXPORT_FRAME_HEIGHT = 1080;
@@ -279,8 +280,9 @@ class PreparedFrameRenderer {
       };
     }
     if (resolvedMapMode === 'globe') {
+      const renderCamera = constrainCameraForRenderer(state.camera, 'legacy');
       if (!this.globeRenderer) throw new Error('The deterministic Globe renderer is unavailable.');
-      this.globeRenderer.render(state.camera, this.style);
+      this.globeRenderer.render(renderCamera, this.style);
       const pixels = this.globeRenderer.readPixels();
       this.context.putImageData(new ImageData(pixels, this.width, this.height), 0, 0);
       flushSync(() => {
@@ -289,7 +291,7 @@ class PreparedFrameRenderer {
             width={this.width}
             height={this.height}
             renderer={this.globeRenderer}
-            camera={state.camera}
+            camera={renderCamera}
             style={this.style}
             layers={state.layers}
             labelLanguage={this.project.mapSettings.labelLanguage}
@@ -320,13 +322,14 @@ class PreparedFrameRenderer {
         } satisfies FrameRenderTimings,
       };
     }
+    const renderCamera = constrainCameraForRenderer(state.camera, 'legacy');
     flushSync(() => {
       this.root.render(
         <MapScene
           style={this.style}
           mapMode="flat"
           layers={state.layers}
-          camera={state.camera}
+          camera={renderCamera}
           labelLanguage={this.project.mapSettings.labelLanguage}
           width={this.width}
           height={this.height}
@@ -641,15 +644,16 @@ export async function renderViewThumbnails(
         continue;
       }
       if (resolvedMapMode === 'globe') {
+        const renderCamera = constrainCameraForRenderer(state.camera, 'legacy');
         if (!globeRenderer) throw new Error('The deterministic Globe thumbnail renderer is unavailable.');
-        globeRenderer.render(state.camera, style);
+        globeRenderer.render(renderCamera, style);
         context.putImageData(new ImageData(globeRenderer.readPixels(), width, height), 0, 0);
         root.render(
           <GlobeOverlay
             width={width}
             height={height}
             renderer={globeRenderer}
-            camera={state.camera}
+            camera={renderCamera}
             style={style}
             layers={state.layers}
             labelLanguage={project.mapSettings.labelLanguage}
@@ -665,12 +669,13 @@ export async function renderViewThumbnails(
         await new Promise((resolve) => window.setTimeout(resolve, 0));
         continue;
       }
+      const renderCamera = constrainCameraForRenderer(state.camera, 'legacy');
       root.render(
         <MapScene
           style={style}
           mapMode="flat"
           layers={state.layers}
-          camera={state.camera}
+          camera={renderCamera}
           labelLanguage={project.mapSettings.labelLanguage}
           width={width}
           height={height}

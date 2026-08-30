@@ -1,4 +1,4 @@
-import { normalizeBearing, roundCamera } from './camera';
+import { CAMERA_SETTINGS, CAMERA_VIEWPORT, normalizeBearing, roundCamera } from './camera';
 import {
   conjugateQuaternion,
   globeOrientationOf,
@@ -52,6 +52,33 @@ const scalarVelocity = (project: Project, index: number, value: (camera: CameraS
   const before = transitionDuration(project, index - 1);
   const after = transitionDuration(project, index);
   return (value(project.views[index + 1].camera) - value(project.views[index - 1].camera)) / (before + after);
+};
+
+const cameraWorldCenter = (camera: CameraState) => ({
+  x: (CAMERA_VIEWPORT.width / 2 - camera.x) / camera.zoom,
+  y: (CAMERA_VIEWPORT.height / 2 - camera.y) / camera.zoom,
+});
+
+/**
+ * Online Smooth curvature is authored as a visual property. The geometric
+ * center direction remains geographic, while its velocity is calibrated to
+ * the geometric midpoint of Legacy's accepted multiplicative zoom domain.
+ * Dividing by the waypoint's actual authored zoom converts that stable visual
+ * velocity back into world units, so deep Online zoom cannot magnify it.
+ */
+export const SMOOTH_VISUAL_REFERENCE_ZOOM = Math.sqrt(CAMERA_SETTINGS.minZoom * CAMERA_SETTINGS.maxZoom);
+
+const onlineCenterVelocity = (project: Project, index: number, component: 'x' | 'y') => {
+  if (!isPassThroughCameraWaypoint(project, index)) return 0;
+  const before = transitionDuration(project, index - 1);
+  const after = transitionDuration(project, index);
+  const previous = cameraWorldCenter(project.views[index - 1].camera);
+  const next = cameraWorldCenter(project.views[index + 1].camera);
+  const waypointZoom = project.views[index].camera.zoom;
+  return (
+    ((next[component] - previous[component]) / (before + after)) *
+    (SMOOTH_VISUAL_REFERENCE_ZOOM / waypointZoom)
+  );
 };
 
 const unwrapNear = (value: number | undefined, reference: number) =>
@@ -140,21 +167,36 @@ export const interpolateCameraChainTransition = (
       duration,
       t,
     );
+  const onlineFlatCenter = project.mapSettings.basemapRenderer === 'online' && from.mapMode === 'flat';
+  const centerValue = (component: 'x' | 'y') => {
+    const start = cameraWorldCenter(from.camera);
+    const end = cameraWorldCenter(to.camera);
+    return hermite(
+      start[component],
+      end[component],
+      onlineCenterVelocity(project, fromIndex, component),
+      onlineCenterVelocity(project, fromIndex + 1, component),
+      duration,
+      t,
+    );
+  };
   const startBearing = from.camera.bearing ?? 0;
   const endBearing = unwrapNear(to.camera.bearing, startBearing);
-  const camera = roundCamera({
-    x: value((candidate) => candidate.x),
-    y: value((candidate) => candidate.y),
-    zoom: Math.exp(
-      hermite(
-        Math.log(from.camera.zoom),
-        Math.log(to.camera.zoom),
-        scalarVelocity(project, fromIndex, (candidate) => Math.log(candidate.zoom)),
-        scalarVelocity(project, fromIndex + 1, (candidate) => Math.log(candidate.zoom)),
-        duration,
-        t,
-      ),
+  const zoom = Math.exp(
+    hermite(
+      Math.log(from.camera.zoom),
+      Math.log(to.camera.zoom),
+      scalarVelocity(project, fromIndex, (candidate) => Math.log(candidate.zoom)),
+      scalarVelocity(project, fromIndex + 1, (candidate) => Math.log(candidate.zoom)),
+      duration,
+      t,
     ),
+  );
+  const center = onlineFlatCenter ? { x: centerValue('x'), y: centerValue('y') } : null;
+  const camera = roundCamera({
+    x: center ? CAMERA_VIEWPORT.width / 2 - center.x * zoom : value((candidate) => candidate.x),
+    y: center ? CAMERA_VIEWPORT.height / 2 - center.y * zoom : value((candidate) => candidate.y),
+    zoom,
     bearing: normalizeBearing(
       hermite(
         startBearing,

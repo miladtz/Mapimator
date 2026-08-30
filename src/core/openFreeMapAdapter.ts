@@ -1,11 +1,11 @@
+import { CAMERA_VIEWPORT, clamp, normalizeBearing, roundCamera, unwrapBearingNear } from './camera';
 import {
-  CAMERA_VIEWPORT,
-  clamp,
-  constrainCamera,
-  normalizeBearing,
-  roundCamera,
-  unwrapBearingNear,
-} from './camera';
+  constrainCameraForRenderer,
+  MAPLIBRE_PRACTICAL_MAX_ZOOM,
+  MAPLIBRE_ZOOM_OFFSET,
+  mapLibreZoomToMapMotionZoom,
+  mapMotionZoomToMapLibreZoom,
+} from './cameraZoomPolicy';
 import type { CameraState, OnlineBasemapStyleId } from './project';
 
 export const OPENFREEMAP_STYLES: ReadonlyArray<{
@@ -29,9 +29,11 @@ export const isRecoverableOpenFreeMapResourceError = (error: unknown) => {
 };
 
 const MAX_MERCATOR_LATITUDE = 85.051129;
-const MAPLIBRE_ZOOM_SCALE = 4;
-export const MAPLIBRE_MAX_ZOOM = Math.log2(6) * MAPLIBRE_ZOOM_SCALE;
+export { MAPLIBRE_ZOOM_OFFSET, mapLibreZoomToMapMotionZoom, mapMotionZoomToMapLibreZoom };
+export const MAPLIBRE_MIN_ZOOM = mapMotionZoomToMapLibreZoom(1);
+export const MAPLIBRE_MAX_ZOOM = MAPLIBRE_PRACTICAL_MAX_ZOOM;
 
+export const mapLibreMinimumZoom = () => MAPLIBRE_MIN_ZOOM;
 export const mapLibreMaximumZoom = () => MAPLIBRE_MAX_ZOOM;
 
 const worldToLngLat = (x: number, y: number): [number, number] => [
@@ -46,14 +48,14 @@ const lngLatToWorld = (longitude: number, latitude: number) => ({
 
 /** Canonical viewport-independent camera mapping. Both interactive and export use this. */
 export const mapMotionToMapLibreCamera = (camera: CameraState) => {
-  const normalized = constrainCamera(camera);
+  const normalized = constrainCameraForRenderer(camera, 'online');
   const centerWorld = {
     x: (CAMERA_VIEWPORT.width / 2 - normalized.x) / normalized.zoom,
     y: (CAMERA_VIEWPORT.height / 2 - normalized.y) / normalized.zoom,
   };
   return {
     center: worldToLngLat(centerWorld.x, centerWorld.y),
-    zoom: Math.log2(normalized.zoom) * MAPLIBRE_ZOOM_SCALE,
+    zoom: mapMotionZoomToMapLibreZoom(normalized.zoom),
     bearing: normalizeBearing(normalized.bearing),
     pitch: clamp(normalized.pitch ?? 0, 0, 85),
   };
@@ -67,8 +69,8 @@ export const mapLibreToMapMotionCamera = (
   authoredBearing = bearing,
 ): CameraState => {
   const world = lngLatToWorld(center.lng, center.lat);
-  const mapMotionZoom = clamp(Math.pow(2, zoom / MAPLIBRE_ZOOM_SCALE), 1, 6);
-  return constrainCamera(
+  const mapMotionZoom = mapLibreZoomToMapMotionZoom(zoom);
+  return constrainCameraForRenderer(
     roundCamera({
       x: CAMERA_VIEWPORT.width / 2 - world.x * mapMotionZoom,
       y: CAMERA_VIEWPORT.height / 2 - world.y * mapMotionZoom,
@@ -76,6 +78,7 @@ export const mapLibreToMapMotionCamera = (
       bearing: unwrapBearingNear(bearing, authoredBearing),
       pitch: clamp(pitch, 0, 85),
     }),
+    'online',
   );
 };
 

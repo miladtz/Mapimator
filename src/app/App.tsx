@@ -51,6 +51,7 @@ import {
   viewLayersOf,
   viewMemberIds,
   type AppLanguage,
+  type BasemapRenderer,
   type CameraState,
   type GeoEffectType,
   type Layer,
@@ -90,6 +91,16 @@ import {
   MAX_CAMERA_PITCH,
   roundCamera,
 } from '../core/camera';
+import { cameraAtZoomForRenderer, getCameraZoomRange } from '../core/cameraZoomPolicy';
+import {
+  MAX_TRANSITION_DURATION,
+  MIN_TRANSITION_DURATION,
+  TRANSITION_SPEED_STEP,
+  setTransitionDuration,
+  setTransitionSpeed,
+  transitionDisplaySpeed,
+  transitionSpeedRange,
+} from '../core/transitionTiming';
 import { cameraWithGlobeFocus } from '../core/globeMath';
 import { exportPortableProject, importPortableProjectDetailed } from '../core/portableProject';
 import {
@@ -998,12 +1009,20 @@ export function App() {
       views: p.views.map((v) => (v.id === activeViewId ? { ...v, ...patch } : v)),
     }));
   };
-  const updateSelectedTransition = (patch: Partial<Pick<Transition, 'duration' | 'preset' | 'type'>>) => {
+  const updateSelectedTransition = (
+    patch: Partial<Pick<Transition, 'duration' | 'speed' | 'preset' | 'type'>>,
+  ) => {
     if (!selectedTransitionId) return;
     updateProject((p) => ({
       ...p,
       transitions: p.transitions.map((transition) =>
-        transition.id === selectedTransitionId ? { ...transition, ...patch } : transition,
+        transition.id === selectedTransitionId
+          ? patch.speed !== undefined
+            ? setTransitionSpeed(transition, patch.speed)
+            : patch.duration !== undefined
+              ? setTransitionDuration(transition, patch.duration)
+              : { ...transition, ...patch }
+          : transition,
       ),
     }));
   };
@@ -1674,6 +1693,7 @@ export function App() {
           <CameraInspector
             camera={camera}
             mapMode={mapMode}
+            renderer={project.mapSettings.basemapRenderer}
             disabled={playbackState !== 'stopped'}
             onChange={(patch) => setCamera((current) => roundCamera({ ...current, ...patch }))}
           />
@@ -2360,6 +2380,91 @@ function TimelinePanel({ children }: { children: React.ReactNode }) {
 const TRANSITION_POPOVER_WIDTH = 188;
 const TRANSITION_POPOVER_MARGIN = 8;
 
+function TransitionSpeedInput({
+  transition,
+  onChange,
+}: {
+  transition: Transition;
+  onChange: (patch: Partial<Pick<Transition, 'duration' | 'speed' | 'preset' | 'type'>>) => void;
+}) {
+  const speed = transitionDisplaySpeed(transition);
+  const range = transitionSpeedRange(transition.referenceDuration);
+  const formatted = speed === null ? '' : speed.toFixed(3);
+  const [draft, setDraft] = useState(formatted);
+  useEffect(() => setDraft(formatted), [formatted]);
+  const commit = (value = draft) => {
+    const parsed = Number(value);
+    if (value.trim() && Number.isFinite(parsed)) onChange({ speed: parsed });
+    else setDraft(formatted);
+  };
+  return (
+    <label>
+      Speed
+      <span>
+        <input
+          className="transition-speed-input"
+          type="number"
+          min={range.min}
+          max={range.max}
+          step={TRANSITION_SPEED_STEP}
+          value={draft}
+          disabled={speed === null}
+          placeholder={'\u2014'}
+          title="Relative transition speed. Changing Speed updates Duration automatically."
+          onChange={(event) => {
+            setDraft(event.target.value);
+            if (!(event.nativeEvent as InputEvent).inputType) commit(event.target.value);
+          }}
+          onBlur={() => commit()}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') commit(event.currentTarget.value);
+          }}
+          onWheel={(event) => event.stopPropagation()}
+        />
+        {'\u00d7'}
+      </span>
+    </label>
+  );
+}
+
+function TransitionDurationInput({
+  transition,
+  onChange,
+  timeline = false,
+}: {
+  transition: Transition;
+  onChange: (patch: Partial<Pick<Transition, 'duration' | 'speed' | 'preset' | 'type'>>) => void;
+  timeline?: boolean;
+}) {
+  const formatted = transition.duration.toFixed(3);
+  const [draft, setDraft] = useState(formatted);
+  useEffect(() => setDraft(formatted), [formatted]);
+  const commit = (value = draft) => {
+    const parsed = Number(value);
+    if (value.trim() && Number.isFinite(parsed)) onChange({ duration: parsed });
+    else setDraft(formatted);
+  };
+  return (
+    <input
+      className={timeline ? 'timeline-duration-input' : undefined}
+      type="number"
+      min={MIN_TRANSITION_DURATION}
+      max={MAX_TRANSITION_DURATION}
+      step="0.001"
+      value={draft}
+      title="Changing Duration updates Speed automatically."
+      onChange={(event) => {
+        setDraft(event.target.value);
+        if (!(event.nativeEvent as InputEvent).inputType) commit(event.target.value);
+      }}
+      onBlur={() => commit()}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') commit(event.currentTarget.value);
+      }}
+    />
+  );
+}
+
 /**
  * Transition settings popover rendered through a portal into the document
  * body, so it is never clipped by the timeline's overflow container.
@@ -2379,7 +2484,7 @@ function TransitionPopover({
   transition: Transition;
   fromName: string;
   toName: string;
-  onChange: (patch: Partial<Pick<Transition, 'duration' | 'preset' | 'type'>>) => void;
+  onChange: (patch: Partial<Pick<Transition, 'duration' | 'speed' | 'preset' | 'type'>>) => void;
   onClose: () => void;
 }) {
   const [position, setPosition] = useState<{ top: number; left: number; openUp: boolean } | null>(null);
@@ -2425,7 +2530,7 @@ function TransitionPopover({
   }, [updatePosition, onClose]);
   useLayoutEffect(() => {
     updatePosition();
-  }, [updatePosition, transition.duration, transition.preset, transition.type]);
+  }, [updatePosition, transition.duration, transition.speed, transition.preset, transition.type]);
   if (!position) return null;
   return createPortal(
     <div
@@ -2441,18 +2546,10 @@ function TransitionPopover({
       <label>
         Duration
         <span>
-          <input
-            className="timeline-duration-input"
-            type="number"
-            min="0"
-            max="30"
-            step="0.5"
-            value={transition.duration}
-            onChange={(e) => onChange({ duration: Number(e.target.value) })}
-          />
-          s
+          <TransitionDurationInput transition={transition} onChange={onChange} timeline />s
         </span>
       </label>
+      <TransitionSpeedInput transition={transition} onChange={onChange} />
       <label>
         Type
         <select
@@ -2530,17 +2627,21 @@ const exportStatusLabel = (status: ExportProgressState['status']) => {
 function CameraInspector({
   camera,
   mapMode,
+  renderer,
   disabled,
   onChange,
 }: {
   camera: CameraState;
   mapMode: MapMode;
+  renderer: BasemapRenderer;
   disabled: boolean;
   onChange: (patch: Partial<CameraState>) => void;
 }) {
   const bearing = camera.bearing ?? 0;
   const pitch = camera.pitch ?? 0;
   const inspectorPitch = Math.min(MAX_CAMERA_PITCH, Math.max(0, pitch));
+  const zoomRange = getCameraZoomRange(renderer);
+  const inspectorZoom = Math.min(zoomRange.max, Math.max(zoomRange.min, camera.zoom));
   const pendingPatch = useRef<Partial<CameraState> | null>(null);
   const pendingFrame = useRef<number | null>(null);
   useEffect(
@@ -2563,9 +2664,34 @@ function CameraInspector({
     if (!Number.isFinite(value)) return;
     scheduleChange({ pitch: Math.min(MAX_CAMERA_PITCH, Math.max(0, value)) });
   };
+  const scheduleZoomChange = (value: number) => {
+    if (!Number.isFinite(value)) return;
+    scheduleChange(cameraAtZoomForRenderer(camera, value, renderer));
+  };
   return (
     <div className="layer-inspector camera-inspector">
       <span className="type-chip">Camera</span>
+      <label>
+        Zoom
+        <input
+          type="range"
+          min={Math.log2(zoomRange.min)}
+          max={Math.log2(zoomRange.max)}
+          step="0.01"
+          value={Math.log2(inspectorZoom)}
+          disabled={disabled}
+          onChange={(event) => scheduleZoomChange(Math.pow(2, Number(event.target.value)))}
+        />
+        <input
+          type="number"
+          min={zoomRange.min}
+          max={zoomRange.max}
+          step="0.1"
+          value={Number(inspectorZoom.toPrecision(8))}
+          disabled={disabled}
+          onChange={(event) => scheduleZoomChange(Number(event.target.value))}
+        />
+      </label>
       {mapMode === 'flat' ? (
         <>
           <label>
@@ -2669,7 +2795,7 @@ function TransitionInspector({
   transition: Transition;
   fromName: string;
   toName: string;
-  onChange: (patch: Partial<Pick<Transition, 'duration' | 'preset' | 'type'>>) => void;
+  onChange: (patch: Partial<Pick<Transition, 'duration' | 'speed' | 'preset' | 'type'>>) => void;
 }) {
   return (
     <div className="layer-inspector transition-inspector">
@@ -2679,6 +2805,11 @@ function TransitionInspector({
         <span className="transition-context-arrow">→</span>
         <span>{toName}</span>
       </div>
+      <label>
+        Duration (s)
+        <TransitionDurationInput transition={transition} onChange={onChange} />
+      </label>
+      <TransitionSpeedInput transition={transition} onChange={onChange} />
       <label>
         Type
         <select
@@ -2690,17 +2821,6 @@ function TransitionInspector({
           <option value="zoom">Zoom</option>
           <option value="fly-to">Fly To</option>
         </select>
-      </label>
-      <label>
-        Duration (s)
-        <input
-          type="number"
-          min="0"
-          max="30"
-          step="0.5"
-          value={transition.duration}
-          onChange={(e) => onChange({ duration: Number(e.target.value) })}
-        />
       </label>
       <label>
         Easing

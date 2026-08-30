@@ -16,6 +16,7 @@ writeFileSync(
     "export * from '" + join(root, 'src/core/exportRuntime').replaceAll('\\', '/') + "';",
     "export * from '" + join(root, 'src/core/exportProgress').replaceAll('\\', '/') + "';",
     "export * from '" + join(root, 'src/core/viewCompiler').replaceAll('\\', '/') + "';",
+    "export * from '" + join(root, 'src/core/transitionTiming').replaceAll('\\', '/') + "';",
   ].join('\n'),
   'utf8',
 );
@@ -50,6 +51,7 @@ const {
   ExportProgressEstimator,
   exportPercentage,
   evaluateProjectAtTime,
+  setTransitionDuration,
 } = mod;
 
 // Canonical Save round-trip preserves zero-Hold Views and standalone Transitions.
@@ -60,10 +62,8 @@ const last = createView('Last', [], { x: -400.5, y: -180.75, zoom: 4 }, []);
 first.holdDuration = 1;
 zeroHold.holdDuration = 0;
 last.holdDuration = 2;
-const firstTransition = createTransition(first.id, zeroHold.id, [], first);
-const secondTransition = createTransition(zeroHold.id, last.id, [], zeroHold);
-firstTransition.duration = 2;
-secondTransition.duration = 3;
+const firstTransition = setTransitionDuration(createTransition(first.id, zeroHold.id, [], first), 2);
+const secondTransition = setTransitionDuration(createTransition(zeroHold.id, last.id, [], zeroHold), 3);
 project.views = [first, zeroHold, last];
 project.transitions = [firstTransition, secondTransition];
 const saved = serializeCanonicalProject(project);

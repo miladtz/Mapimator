@@ -13,6 +13,7 @@ import type {
 import { hasConsistentViewMapMode, normalizeSegmentAnimation } from './project';
 import { globeFocusOf, normalizeGlobeFocus, normalizeQuaternion } from './globeMath';
 import { validateCustomFrameDimensions } from './projectFrameFormat';
+import { normalizeTransitionTiming } from './transitionTiming';
 
 type LegacyView = Omit<View, 'layerConfigs' | 'transitionLayerConfigs' | 'mapMode'> & {
   mapMode?: MapMode;
@@ -272,6 +273,15 @@ const validateTransition = (value: unknown, index: number): Transition => {
     throw new Error(`${path} has invalid identity fields.`);
   if (!isFiniteNumber(value.duration) || value.duration < 0) throw new Error(`${path}.duration is invalid.`);
   if (
+    value.referenceDuration !== undefined &&
+    (!isFiniteNumber(value.referenceDuration) || value.referenceDuration < 0)
+  )
+    throw new Error(`${path}.referenceDuration is invalid.`);
+  if (value.speed !== undefined && (!isFiniteNumber(value.speed) || value.speed <= 0))
+    throw new Error(`${path}.speed is invalid.`);
+  if (value.timingSource !== undefined && !oneOf(value.timingSource, ['duration', 'speed'] as const))
+    throw new Error(`${path}.timingSource is invalid.`);
+  if (
     !oneOf(value.preset, [
       'smooth',
       'cinematic',
@@ -292,7 +302,7 @@ const validateTransition = (value: unknown, index: number): Transition => {
     if (config.animation !== undefined)
       validateSegmentLayerAnimation(config.animation, `${path}.layerConfigs[${layerId}].animation`);
   }
-  return value as unknown as Transition;
+  return normalizeTransitionTiming(value as unknown as Transition);
 };
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -563,7 +573,7 @@ export function validateAndMigrateProject(value: unknown): Project {
     } as View;
   });
   const viewIds = new Set(backfilled.map((view) => view.id));
-  const existingTransitions = (value.transitions as Transition[] | undefined) ?? [];
+  const existingTransitions = ((value.transitions as unknown[] | undefined) ?? []).map(validateTransition);
   const transitions: Transition[] = existingTransitions.length
     ? existingTransitions.map((transition) => ({
         ...structuredClone(transition),
@@ -585,6 +595,9 @@ export function validateAndMigrateProject(value: unknown): Project {
         fromViewId: entry.runtimeView.id,
         toViewId: viewsWithUsage[index + 1].runtimeView.id,
         duration: entry.legacyTransitionDuration ?? 0,
+        referenceDuration: entry.legacyTransitionDuration ?? 0,
+        speed: 1,
+        timingSource: 'duration' as const,
         preset: entry.legacyTransitionPreset ?? 'smooth',
         type: entry.legacyTransitionType ?? 'smooth',
         layerConfigs: Object.fromEntries(

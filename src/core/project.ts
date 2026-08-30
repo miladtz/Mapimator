@@ -313,6 +313,9 @@ export interface Transition {
   fromViewId: string;
   toViewId: string;
   duration: number;
+  referenceDuration: number;
+  speed: number;
+  timingSource: 'duration' | 'speed';
   preset: TransitionPreset;
   type: TransitionType;
   layerConfigs: Record<string, TransitionLayerConfig>;
@@ -771,6 +774,9 @@ export const createTransition = (
   fromViewId,
   toViewId,
   duration: 2.5,
+  referenceDuration: 2.5,
+  speed: 1,
+  timingSource: 'duration',
   preset: 'smooth',
   type: 'smooth',
   layerConfigs: source

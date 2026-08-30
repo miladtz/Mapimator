@@ -2,6 +2,7 @@ import maplibregl, { type Map as MapLibreMap } from 'maplibre-gl';
 import {
   isRecoverableOpenFreeMapResourceError,
   mapLibreMaximumZoom,
+  mapLibreMinimumZoom,
   mapMotionToMapLibreCamera,
   openFreeMapStyleUrl,
 } from './openFreeMapAdapter';
@@ -150,6 +151,7 @@ export class OnlineMapFrameRenderer {
         pixelRatio,
         fadeDuration: 0,
         maxPitch: 85,
+        minZoom: mapLibreMinimumZoom(),
         maxZoom: mapLibreMaximumZoom(),
         refreshExpiredTiles: false,
       });
@@ -188,7 +190,22 @@ export class OnlineMapFrameRenderer {
   async render(camera: CameraState, destination: HTMLCanvasElement, signal?: AbortSignal) {
     signal?.throwIfAborted();
     this.map.resize();
-    this.map.jumpTo(mapMotionToMapLibreCamera(camera));
+    const resolvedCamera = mapMotionToMapLibreCamera(camera);
+    this.map.jumpTo(resolvedCamera);
+    if (import.meta.env.DEV) {
+      const appliedCenter = this.map.getCenter();
+      console.debug('[OpenFreeMap Export Camera Semantics]', {
+        source: camera,
+        jumpTo: resolvedCamera,
+        resulting: {
+          center: [appliedCenter.lng, appliedCenter.lat],
+          zoom: this.map.getZoom(),
+          bearing: this.map.getBearing(),
+          pitch: this.map.getPitch(),
+          padding: this.map.getPadding(),
+        },
+      });
+    }
     await waitForIdle(this.map, signal);
     await waitForFinalRender(this.map, signal);
     signal?.throwIfAborted();

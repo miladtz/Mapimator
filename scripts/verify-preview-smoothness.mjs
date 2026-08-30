@@ -37,7 +37,14 @@ try {
   rmSync(outDir, { recursive: true, force: true });
 }
 
-const { PreviewClock, interpolateCamera, createProject, createView, createTransition, evaluateProjectAtTime } = mod;
+const {
+  PreviewClock,
+  interpolateCamera,
+  createProject,
+  createView,
+  createTransition,
+  evaluateProjectAtTime,
+} = mod;
 
 class FakeScheduler {
   time = 0;
@@ -69,8 +76,15 @@ clock.subscribe(() => samples.push(clock.getSnapshot()));
 clock.play(3, () => completions++);
 for (const step of [7, 19, 5, 41, 16, 33]) scheduler.advance(step);
 assert.equal(scheduler.maxPending, 1, 'Preview must never schedule overlapping animation frames');
-assert.ok(samples.every((time, index) => index === 0 || time >= samples[index - 1]), 'clock must be monotonic');
-assert.equal(clock.getSnapshot(), 0.114, 'clock must use elapsed wall time after its exact first display frame');
+assert.ok(
+  samples.every((time, index) => index === 0 || time >= samples[index - 1]),
+  'clock must be monotonic',
+);
+assert.equal(
+  clock.getSnapshot(),
+  0.114,
+  'clock must use elapsed wall time after its exact first display frame',
+);
 
 clock.pause();
 const pausedAt = clock.getSnapshot();
@@ -89,14 +103,17 @@ const to = { x: -640, y: -250, zoom: 4.75 };
 for (const type of ['smooth', 'pan', 'zoom', 'fly-to']) {
   const at = (seconds) => interpolateCamera(from, to, seconds / 2, 'cinematic', type);
   for (const refreshRate of [60, 120, 240]) {
-    const sample = at((refreshRate / 2) / refreshRate);
+    const sample = at(refreshRate / 2 / refreshRate);
     assert.deepEqual(sample, at(0.5), `${type} must evaluate identically at ${refreshRate} Hz`);
   }
   assert.deepEqual(at(0), from, `${type} must preserve its exact source endpoint`);
   assert.deepEqual(at(2), to, `${type} must preserve its exact destination endpoint`);
   for (let step = 0; step <= 1000; step++) {
     const camera = at((step / 1000) * 2);
-    assert.ok(Object.values(camera).every(Number.isFinite), `${type} must never emit non-finite camera values`);
+    assert.ok(
+      Object.values(camera).every(Number.isFinite),
+      `${type} must never emit non-finite camera values`,
+    );
   }
 }
 
@@ -125,10 +142,59 @@ incoming.preset = outgoing.preset = 'linear';
 project.views = [first, anchor, last];
 project.transitions = [incoming, outgoing];
 const beforeEvaluation = JSON.stringify(project);
-assert.deepEqual(evaluateProjectAtTime(project, 2).camera, anchor.camera, 'zero-Hold boundary camera must be exact');
-assert.deepEqual(evaluateProjectAtTime(project, 4).camera, last.camera, 'final transition endpoint must be exact');
+assert.deepEqual(
+  evaluateProjectAtTime(project, 2).camera,
+  anchor.camera,
+  'zero-Hold boundary camera must be exact',
+);
+assert.deepEqual(
+  evaluateProjectAtTime(project, 4).camera,
+  last.camera,
+  'final transition endpoint must be exact',
+);
 for (const time of [0, 1, 2, 2 + 1 / 240, 3, 4]) evaluateProjectAtTime(project, time);
-assert.equal(JSON.stringify(project), beforeEvaluation, 'Preview evaluation must not write camera or layer state back');
+assert.equal(
+  JSON.stringify(project),
+  beforeEvaluation,
+  'Preview evaluation must not write camera or layer state back',
+);
+
+// Every first-transition variant begins at the exact first authored View and
+// moves only by a small continuous delta at the first nonzero sample.
+const firstCamera = { x: -180, y: -70, zoom: 5, bearing: 0, pitch: 0 };
+const firstTransitionVariants = {
+  center: { ...firstCamera, x: -260, y: -105 },
+  bearing: { ...firstCamera, bearing: 120 },
+  pitch: { ...firstCamera, pitch: 60 },
+  zoom: { ...firstCamera, zoom: 6 },
+  full: { x: -260, y: -105, zoom: 6, bearing: 120, pitch: 60 },
+};
+for (const [name, secondCamera] of Object.entries(firstTransitionVariants)) {
+  const initialProject = createProject(`First transition ${name}`);
+  const view1 = createView('View 1', [], firstCamera, []);
+  const view2 = createView('View 2', [], secondCamera, []);
+  view1.holdDuration = 0;
+  view2.holdDuration = 1;
+  const transition = createTransition(view1.id, view2.id, [], view1);
+  transition.duration = 2;
+  transition.preset = 'smooth';
+  initialProject.views = [view1, view2];
+  initialProject.transitions = [transition];
+  assert.deepEqual(
+    evaluateProjectAtTime(initialProject, 0).camera,
+    firstCamera,
+    `${name}: t=0 is View 1 exactly`,
+  );
+  const epsilonCamera = evaluateProjectAtTime(initialProject, 1 / 1000).camera;
+  for (const key of ['x', 'y', 'zoom', 'bearing', 'pitch']) {
+    const source = firstCamera[key] ?? 0;
+    const destination = secondCamera[key] ?? 0;
+    assert.ok(
+      Math.abs((epsilonCamera[key] ?? 0) - source) <= Math.abs(destination - source) * 0.01 + 1e-9,
+      `${name}: ${key} has no first-frame correction at epsilon`,
+    );
+  }
+}
 
 const appSource = readFileSync(join(root, 'src', 'app', 'App.tsx'), 'utf8');
 assert.ok(!appSource.includes('setPreviewTime('), 'root App must not own display-rate Preview time state');
@@ -136,6 +202,9 @@ assert.ok(
   appSource.includes('scroller.scrollLeft = position - scroller.clientWidth + edgePadding'),
   'display-rate timeline following must use direct scrolling',
 );
-assert.ok(appSource.includes('useSyncExternalStore'), 'Preview consumers must subscribe without re-rendering the editor shell');
+assert.ok(
+  appSource.includes('useSyncExternalStore'),
+  'Preview consumers must subscribe without re-rendering the editor shell',
+);
 
 console.log('Preview smoothness verification passed');
