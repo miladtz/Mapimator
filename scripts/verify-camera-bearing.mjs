@@ -15,6 +15,7 @@ writeFileSync(
     `export * from '${join(root, 'src/core/project').replaceAll('\\', '/')}';`,
     `export * from '${join(root, 'src/core/projectPersistence').replaceAll('\\', '/')}';`,
     `export * from '${join(root, 'src/core/viewCompiler').replaceAll('\\', '/')}';`,
+    `export * from '${join(root, 'src/core/openFreeMapAdapter').replaceAll('\\', '/')}';`,
   ].join('\n'),
 );
 let mod;
@@ -43,9 +44,13 @@ const {
   evaluateProjectAtTime,
   interpolateBearing,
   interpolateCamera,
+  mapLibreToMapMotionCamera,
+  mapMotionToMapLibreCamera,
   normalizeBearing,
   projectWorldToScreen,
+  roundCamera,
   unprojectScreenToWorld,
+  unwrapBearingNear,
   validateAndMigrateProject,
 } = mod;
 
@@ -58,6 +63,38 @@ for (const [input, expected] of [
   [350, -10],
 ])
   assert.equal(normalizeBearing(input), expected);
+
+for (const [renderer, authored, expected] of [
+  [355, 350, 355],
+  [2, 355, 362],
+  [10, 362, 370],
+  [-355, -350, -355],
+  [2, -355, -358],
+  [-2, 355, 358],
+  [90, 720, 810],
+  [-90, -720, -810],
+])
+  assert.equal(unwrapBearingNear(renderer, authored), expected);
+
+for (const authored of [0, 360, 720, -360, 450, -810])
+  assert.equal(roundCamera({ x: 0, y: 0, zoom: 1, bearing: authored }).bearing, authored);
+
+for (const authored of [720, 450, -810]) {
+  const source = { x: -100, y: -50, zoom: 2, bearing: authored, pitch: 20 };
+  const renderer = mapMotionToMapLibreCamera(source);
+  assert.equal(renderer.bearing, normalizeBearing(authored), 'MapLibre receives a normalized equivalent');
+  assert.equal(
+    mapLibreToMapMotionCamera(
+      { lng: renderer.center[0], lat: renderer.center[1] },
+      renderer.zoom,
+      renderer.bearing,
+      renderer.pitch,
+      authored,
+    ).bearing,
+    authored,
+    'MapLibre telemetry unwraps back to the authored revolution',
+  );
+}
 
 for (const [from, to, midpoint] of [
   [0, 90, 45],
@@ -121,6 +158,12 @@ const interpolated = interpolateCamera(first.camera, middle.camera, 0.5, 'linear
 assert.equal(interpolated.bearing, -180);
 const reopened = validateAndMigrateProject(JSON.parse(canonicalProjectJson(project)));
 assert.equal(reopened.views[1].camera.bearing, -170);
+reopened.views[1].camera.bearing = 450;
+assert.equal(
+  validateAndMigrateProject(JSON.parse(canonicalProjectJson(reopened))).views[1].camera.bearing,
+  450,
+  'authored bearing survives Save/Open without renderer normalization',
+);
 const duplicate = structuredClone(reopened.views[1]);
 duplicate.id = 'duplicate-bearing';
 assert.equal(duplicate.camera.bearing, reopened.views[1].camera.bearing);
@@ -140,5 +183,5 @@ assert.match(appSource, /Update View/, 'View camera capture remains available');
 assert.ok(!appSource.includes('setCamera(previewState'), 'Preview does not write evaluated camera into editor state');
 
 console.log(
-  'Camera bearing verification: migration, normalization, shortest paths, endpoints, projection inverse, center invariant, zero-Hold, persistence, duplicate semantics, upright Pins, thumbnails/Export scene parity, and read-only Preview passed.',
+  'Camera bearing verification: authored multi-revolution persistence, renderer unwrapping, shortest playback paths, projection inverse, center invariant, zero-Hold, duplicate semantics, upright Pins, thumbnails/Export scene parity, and read-only Preview passed.',
 );

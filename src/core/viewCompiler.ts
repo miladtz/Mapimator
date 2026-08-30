@@ -106,7 +106,12 @@ export const compileViews = (views: View[]): AnimationSequence =>
     version: 1,
     metadata: { name: '', createdAt: '', updatedAt: '' },
     canvas: { width: 1920, height: 1080, fps: 30, layoutId: 'landscape', safeArea: 0, showSafeArea: false },
-    mapSettings: { styleId: 'documentary-dark', labelLanguage: 'en' },
+    mapSettings: {
+      styleId: 'documentary-dark',
+      labelLanguage: 'en',
+      basemapRenderer: 'legacy',
+      onlineStyleId: 'liberty',
+    },
     assets: [],
     animation: {},
     exportSettings: {},

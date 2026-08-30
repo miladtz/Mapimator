@@ -104,7 +104,12 @@ export function createRendererMilestoneProject(): Project {
     safeArea: 96,
     showSafeArea: false,
   };
-  project.mapSettings = { styleId: 'documentary-dark', labelLanguage: 'both' };
+  project.mapSettings = {
+    styleId: 'documentary-dark',
+    labelLanguage: 'both',
+    basemapRenderer: 'legacy',
+    onlineStyleId: 'liberty',
+  };
   project.layers = layers;
   project.views = [
     makeView(

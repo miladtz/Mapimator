@@ -58,7 +58,7 @@ export const applyCameraWheel = (
   if (action === 'bearing')
     return {
       action,
-      camera: roundCamera({ ...camera, bearing: normalizeBearing((camera.bearing ?? 0) + delta * 0.08) }),
+      camera: roundCamera({ ...camera, bearing: (camera.bearing ?? 0) + delta * 0.08 }),
     } as const;
   return {
     action,
@@ -96,6 +96,12 @@ export const clamp = (value: number, min: number, max: number) => Math.max(min, 
 export const normalizeBearing = (bearing = 0) => {
   const normalized = ((((bearing + 180) % 360) + 360) % 360) - 180;
   return Object.is(normalized, -0) ? 0 : normalized;
+};
+
+/** Choose the renderer angle's equivalent revolution nearest an authored angle. */
+export const unwrapBearingNear = (bearing: number | undefined, reference: number | undefined) => {
+  const anchor = reference ?? 0;
+  return anchor + normalizeBearing((bearing ?? 0) - anchor);
 };
 
 export const interpolateBearing = (from: number | undefined, to: number | undefined, t: number) => {
@@ -364,7 +370,7 @@ export const roundCamera = (camera: CameraState): CameraState => ({
   x: round(camera.x, 8),
   y: round(camera.y, 8),
   zoom: round(camera.zoom, 10),
-  ...(camera.bearing !== undefined ? { bearing: round(normalizeBearing(camera.bearing), 8) } : {}),
+  ...(camera.bearing !== undefined ? { bearing: round(camera.bearing, 8) } : {}),
   ...(camera.pitch !== undefined
     ? { pitch: round(clamp(camera.pitch, MIN_CAMERA_PITCH, MAX_CAMERA_PITCH), 8) }
     : {}),

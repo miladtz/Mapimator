@@ -13,6 +13,9 @@ import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { OfflineMap } from '../components/OfflineMap';
 import type { MapMode } from '../components/OfflineMap';
+import { OnlineOpenFreeMap } from '../components/OnlineOpenFreeMap';
+import { projectRenderViewport } from '../core/projectRenderViewport';
+import { OPENFREEMAP_3D_CAMERA, OPENFREEMAP_STYLES } from '../core/openFreeMapAdapter';
 import {
   getPinStyles,
   savePinStyle,
@@ -46,6 +49,7 @@ import {
   type GeoEffectType,
   type Layer,
   type LayerType,
+  type OnlineBasemapStyleId,
   type Project,
   type SegmentRef,
   type Transition,
@@ -203,7 +207,7 @@ const VIEW_CARD_GAP = 9;
 export function App() {
   const [project, setProject] = useState<Project>(() => createProject('Untitled documentary'));
   const [language, setLanguage] = useState<AppLanguage>('en');
-  const [notice, setNotice] = useState('Offline map data loaded');
+  const [notice, setNotice] = useState('Experimental OpenFreeMap renderer');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   /** The sole authoritative stable-ID View/Transition selection. Null means Map Mode while stopped. */
   const [timelineSelection, setTimelineSelection] = useState<SegmentRef | null>(null);
@@ -1377,6 +1381,43 @@ export function App() {
             </div>
             <div className="style-switch">
               <select
+                aria-label="Experimental basemap renderer"
+                value={project.mapSettings.basemapRenderer}
+                onChange={(event) => {
+                  const renderer = event.target.value as 'legacy' | 'online';
+                  updateProject((current) => ({
+                    ...current,
+                    mapSettings: { ...current.mapSettings, basemapRenderer: renderer },
+                  }));
+                  setNotice(
+                    renderer === 'online' ? 'Experimental OpenFreeMap renderer' : 'Legacy map renderer',
+                  );
+                }}
+              >
+                <option value="legacy">Legacy Map</option>
+                <option value="online">Online OpenFreeMap</option>
+              </select>
+              {project.mapSettings.basemapRenderer === 'online' && (
+                <select
+                  aria-label="OpenFreeMap style"
+                  value={project.mapSettings.onlineStyleId}
+                  onChange={(event) => {
+                    const onlineStyle = event.target.value as OnlineBasemapStyleId;
+                    updateProject((current) => ({
+                      ...current,
+                      mapSettings: { ...current.mapSettings, onlineStyleId: onlineStyle },
+                    }));
+                    if (onlineStyle === '3d') setCamera(OPENFREEMAP_3D_CAMERA);
+                  }}
+                >
+                  {OPENFREEMAP_STYLES.map((onlineStyle) => (
+                    <option key={onlineStyle.id} value={onlineStyle.id}>
+                      {onlineStyle.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <select
                 aria-label="Map label language"
                 value={project.mapSettings.labelLanguage}
                 onChange={(e) =>
@@ -1486,35 +1527,54 @@ export function App() {
             </div>
           </div>
           <div className={`map-frame ${placing ? 'placing' : ''}`}>
-            <PreviewMap
-              clock={previewClock}
-              playbackState={playbackState}
-              project={project}
-              editingLayers={
-                allEyesHidden
-                  ? []
-                  : editingScene.layers.filter((l) => !eyeHidden[l.id]).map((l) => ({ ...l, visible: true }))
-              }
-              editingCamera={selectedTimelineEntity?.kind === 'view' ? camera : editingScene.camera}
-              mapProps={{
-                style,
-                mapMode,
-                onCameraChange: handleCameraChange,
-                labelLanguage: project.mapSettings.labelLanguage,
-                selectedId,
-                onSelect: selectLayer,
-                onMoveLayer: (id, x, y) => updateLayer(id, { x, y }),
-                onDeleteSelected: projectMode ? remove : undefined,
-                onBackgroundClick: (point) => {
-                  if (placing && point) placeLayerAt(placing, point);
-                  else clearSelection();
-                },
-                safeArea: project.canvas.safeArea,
-                showSafeArea: project.canvas.showSafeArea,
-                assetUrls,
-                editorMode: true,
-              }}
-            />
+            {project.mapSettings.basemapRenderer === 'online' ? (
+              mapMode === 'flat' ? (
+                <OnlinePreviewMap
+                  clock={previewClock}
+                  playbackState={playbackState}
+                  project={project}
+                  editingCamera={selectedTimelineEntity?.kind === 'view' ? camera : editingScene.camera}
+                  onCameraChange={handleCameraChange}
+                  styleId={project.mapSettings.onlineStyleId}
+                />
+              ) : (
+                <div className="online-map-unavailable" role="status">
+                  Online OpenFreeMap is currently Flat-only. Select Legacy Map for Globe rendering.
+                </div>
+              )
+            ) : (
+              <PreviewMap
+                clock={previewClock}
+                playbackState={playbackState}
+                project={project}
+                editingLayers={
+                  allEyesHidden
+                    ? []
+                    : editingScene.layers
+                        .filter((l) => !eyeHidden[l.id])
+                        .map((l) => ({ ...l, visible: true }))
+                }
+                editingCamera={selectedTimelineEntity?.kind === 'view' ? camera : editingScene.camera}
+                mapProps={{
+                  style,
+                  mapMode,
+                  onCameraChange: handleCameraChange,
+                  labelLanguage: project.mapSettings.labelLanguage,
+                  selectedId,
+                  onSelect: selectLayer,
+                  onMoveLayer: (id, x, y) => updateLayer(id, { x, y }),
+                  onDeleteSelected: projectMode ? remove : undefined,
+                  onBackgroundClick: (point) => {
+                    if (placing && point) placeLayerAt(placing, point);
+                    else clearSelection();
+                  },
+                  safeArea: project.canvas.safeArea,
+                  showSafeArea: project.canvas.showSafeArea,
+                  assetUrls,
+                  editorMode: true,
+                }}
+              />
+            )}
             <div className="add-toolbar">
               {layerTypes.map((type) => (
                 <button
@@ -2063,6 +2123,34 @@ function PreviewMap({
   );
 }
 
+function OnlinePreviewMap({
+  clock,
+  playbackState,
+  project,
+  editingCamera,
+  onCameraChange,
+  styleId,
+}: {
+  clock: PreviewClock;
+  playbackState: PlaybackState;
+  project: Project;
+  editingCamera: CameraState;
+  onCameraChange: (camera: CameraState) => void;
+  styleId: OnlineBasemapStyleId;
+}) {
+  const time = usePreviewClockTime(clock);
+  const previewState = playbackState === 'stopped' ? null : evaluateProjectAtTime(project, Math.max(0, time));
+  return (
+    <OnlineOpenFreeMap
+      camera={previewState?.camera ?? editingCamera}
+      onCameraChange={onCameraChange}
+      styleId={styleId}
+      interactionEnabled={playbackState === 'stopped'}
+      viewport={projectRenderViewport(project)}
+    />
+  );
+}
+
 /** Keeps display-rate timeline work local and uses direct scrolling so rAF ticks
  * never stack browser smooth-scroll animations. */
 function PreviewTimelineRuntime({
@@ -2410,18 +2498,7 @@ function CameraInspector({
           <label>
             Bearing
             <input
-              type="range"
-              min="-180"
-              max="180"
-              step="1"
-              value={bearing}
-              disabled={disabled}
-              onChange={(event) => scheduleChange({ bearing: Number(event.target.value) })}
-            />
-            <input
               type="number"
-              min="-180"
-              max="180"
               step="1"
               value={bearing}
               disabled={disabled}

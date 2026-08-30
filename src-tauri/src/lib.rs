@@ -1107,22 +1107,33 @@ fn start_project_export(
     let ffmpeg = ffmpeg_resource_path(app)?;
     let video_size = format!("{width}x{height}");
     let frame_rate = fps.to_string();
-    let mut child = Command::new(ffmpeg)
+    let mut command = Command::new(ffmpeg);
+    command.args([
+        "-y",
+        "-f",
+        "rawvideo",
+        "-pixel_format",
+        "rgba",
+        "-video_size",
+        video_size.as_str(),
+        "-framerate",
+        frame_rate.as_str(),
+        "-i",
+        "-",
+        "-an",
+        "-c:v",
+        encoder.as_str(),
+    ]);
+    command.args(match encoder.as_str() {
+        "h264_nvenc" => [
+            "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", "17", "-b:v", "0",
+        ]
+        .as_slice(),
+        "libx264" => ["-preset", "slow", "-crf", "17"].as_slice(),
+        _ => unreachable!("encoder was validated above"),
+    });
+    let mut child = command
         .args([
-            "-y",
-            "-f",
-            "rawvideo",
-            "-pixel_format",
-            "rgba",
-            "-video_size",
-            video_size.as_str(),
-            "-framerate",
-            frame_rate.as_str(),
-            "-i",
-            "-",
-            "-an",
-            "-c:v",
-            encoder.as_str(),
             "-pix_fmt",
             "yuv420p",
             "-movflags",

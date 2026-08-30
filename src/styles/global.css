@@ -298,6 +298,100 @@ button:disabled {
 .map-frame.placing .offline-map:active {
   cursor: crosshair;
 }
+.online-map-poc {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.online-map-poc {
+  overflow: hidden;
+  background: #0b1322;
+}
+.online-map-display-frame {
+  position: relative;
+  flex: 0 0 auto;
+  overflow: hidden;
+  background: #0b1322;
+  contain: layout paint size;
+}
+.online-map-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  will-change: transform;
+}
+.online-map-navigation {
+  position: absolute;
+  z-index: 5;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  overflow: hidden;
+  border: 1px solid rgb(62 77 92 / 75%);
+  border-radius: 4px;
+  box-shadow: 0 1px 5px rgb(0 0 0 / 32%);
+}
+.online-map-navigation button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid #d7d7d7;
+  border-radius: 0;
+  background: rgb(255 255 255 / 94%);
+  color: #24303b;
+  font:
+    600 20px/30px Inter,
+    sans-serif;
+}
+.online-map-navigation button:last-child {
+  border-bottom: 0;
+}
+.online-map-navigation button:hover:not(:disabled) {
+  background: #f0f3f5;
+}
+.online-map-navigation button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.online-map-navigation .online-map-compass {
+  font-size: 11px;
+}
+/* .online-safe-area removed — video frame IS the map viewport */
+.online-map-status {
+  position: absolute;
+  z-index: 4;
+  top: 10px;
+  left: 10px;
+  max-width: min(440px, calc(100% - 90px));
+  padding: 5px 8px;
+  border: 1px solid #425468;
+  border-radius: 2px;
+  background: #101a2ae6;
+  color: #a7b9c9;
+  font-size: 9px;
+  pointer-events: none;
+}
+.online-map-poc[data-online-map-status='error'] .online-map-status {
+  border-color: #a7524c;
+  color: #ffd3ce;
+}
+.online-map-unavailable {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background: #0b1322;
+  color: #ffd3ce;
+  font-size: 12px;
+  text-align: center;
+}
+.online-map-poc .maplibregl-ctrl-attrib {
+  font-size: 10px;
+}
 .placement-hint {
   position: absolute;
   bottom: 46px;

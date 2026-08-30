@@ -1,5 +1,7 @@
 export type AppLanguage = 'en' | 'fa';
 export type MapStyleId = 'documentary-dark' | 'documentary-light' | 'modern' | 'ink' | 'terrain';
+export type BasemapRenderer = 'legacy' | 'online';
+export type OnlineBasemapStyleId = '3d' | 'liberty' | 'dark' | 'bright';
 export type LayerType = 'region' | 'pin' | 'text' | 'shape' | 'arrow' | 'image' | 'route' | 'geo-effect';
 export type GeoEffectType =
   | 'impact-pulse'
@@ -284,7 +286,12 @@ export interface Project {
     safeArea: number;
     showSafeArea: boolean;
   };
-  mapSettings: { styleId: MapStyleId; labelLanguage: 'en' | 'fa' | 'both' | 'none' };
+  mapSettings: {
+    styleId: MapStyleId;
+    labelLanguage: 'en' | 'fa' | 'both' | 'none';
+    basemapRenderer: BasemapRenderer;
+    onlineStyleId: OnlineBasemapStyleId;
+  };
   layers: Layer[];
   views: View[];
   transitions: Transition[];
@@ -497,7 +504,12 @@ export const createProject = (name = 'Untitled map'): Project => {
     version: 1,
     metadata: { name, createdAt: now, updatedAt: now },
     canvas: { width: 1920, height: 1080, fps: 30, layoutId: 'landscape', safeArea: 96, showSafeArea: true },
-    mapSettings: { styleId: 'documentary-dark', labelLanguage: 'en' },
+    mapSettings: {
+      styleId: 'documentary-dark',
+      labelLanguage: 'en',
+      basemapRenderer: 'online',
+      onlineStyleId: 'liberty',
+    },
     layers: [],
     views: [],
     transitions: [],

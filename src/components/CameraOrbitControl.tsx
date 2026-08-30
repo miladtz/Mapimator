@@ -1,5 +1,12 @@
 import React, { useRef, type PointerEvent } from 'react';
-import { clamp, MAX_CAMERA_PITCH, MIN_CAMERA_PITCH, normalizeBearing, roundCamera } from '../core/camera';
+import {
+  clamp,
+  MAX_CAMERA_PITCH,
+  MIN_CAMERA_PITCH,
+  normalizeBearing,
+  roundCamera,
+  unwrapBearingNear,
+} from '../core/camera';
 import { IDENTITY_QUATERNION, type CameraState, type MapMode } from '../core/project';
 
 interface Props {
@@ -11,19 +18,24 @@ interface Props {
 
 export function CameraOrbitControl({ camera, mapMode, disabled, onChange }: Props) {
   const ringRef = useRef<HTMLDivElement>(null);
-  const bearing = normalizeBearing(camera.bearing);
+  const dragBearingRef = useRef(camera.bearing ?? 0);
+  const bearing = camera.bearing ?? 0;
   const pitch = clamp(camera.pitch ?? 0, MIN_CAMERA_PITCH, MAX_CAMERA_PITCH);
   const setBearingAtPointer = (event: PointerEvent<HTMLDivElement>) => {
     const rect = ringRef.current?.getBoundingClientRect();
     if (!rect) return;
     const x = event.clientX - (rect.left + rect.width / 2);
     const y = event.clientY - (rect.top + rect.height / 2);
-    onChange(roundCamera({ ...camera, bearing: normalizeBearing((Math.atan2(x, -y) * 180) / Math.PI) }));
+    const rendererBearing = (Math.atan2(x, -y) * 180) / Math.PI;
+    const nextBearing = unwrapBearingNear(rendererBearing, dragBearingRef.current);
+    dragBearingRef.current = nextBearing;
+    onChange(roundCamera({ ...camera, bearing: nextBearing }));
   };
   const beginBearing = (event: PointerEvent<HTMLDivElement>) => {
     if (disabled) return;
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
+    dragBearingRef.current = camera.bearing ?? 0;
     setBearingAtPointer(event);
   };
   if (mapMode === 'globe')
@@ -139,8 +151,6 @@ export function CameraOrbitControl({ camera, mapMode, disabled, onChange }: Prop
         ref={ringRef}
         role="slider"
         aria-label="Bearing"
-        aria-valuemin={-180}
-        aria-valuemax={180}
         aria-valuenow={Math.round(bearing)}
         title={`Bearing ${Math.round(bearing)}°`}
         onPointerDown={beginBearing}
@@ -163,7 +173,7 @@ export function CameraOrbitControl({ camera, mapMode, disabled, onChange }: Prop
           <text x="10" y="36" textAnchor="middle" fill="#7f9ab4" fontSize="7">
             W
           </text>
-          <g transform={`rotate(${bearing} 33 33)`}>
+          <g transform={`rotate(${normalizeBearing(bearing)} 33 33)`}>
             <path d="M33 14 L37 31 L33 35 L29 31 Z" fill="#58c9f3" />
             <circle cx="33" cy="33" r="3.2" fill="#dcecf9" />
           </g>

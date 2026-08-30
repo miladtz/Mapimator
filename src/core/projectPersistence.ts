@@ -11,7 +11,6 @@ import type {
   ViewLayerConfig,
 } from './project';
 import { hasConsistentViewMapMode, normalizeSegmentAnimation } from './project';
-import { normalizeBearing } from './camera';
 import { globeFocusOf, normalizeGlobeFocus, normalizeQuaternion } from './globeMath';
 
 type LegacyView = Omit<View, 'layerConfigs' | 'transitionLayerConfigs' | 'mapMode'> & {
@@ -373,9 +372,20 @@ export function validateAndMigrateProject(value: unknown): Project {
       'ink',
       'terrain',
     ] as const) ||
-    !oneOf(value.mapSettings.labelLanguage, ['en', 'fa', 'both', 'none'] as const)
+    !oneOf(value.mapSettings.labelLanguage, ['en', 'fa', 'both', 'none'] as const) ||
+    (value.mapSettings.basemapRenderer !== undefined &&
+      !oneOf(value.mapSettings.basemapRenderer, ['legacy', 'online'] as const)) ||
+    (value.mapSettings.onlineStyleId !== undefined &&
+      !oneOf(value.mapSettings.onlineStyleId, ['3d', 'liberty', 'dark', 'bright'] as const))
   )
     throw new Error('Project map settings are malformed.');
+  value.mapSettings = {
+    ...value.mapSettings,
+    basemapRenderer: value.mapSettings.basemapRenderer === 'online' ? 'online' : 'legacy',
+    onlineStyleId: oneOf(value.mapSettings.onlineStyleId, ['3d', 'liberty', 'dark', 'bright'] as const)
+      ? value.mapSettings.onlineStyleId
+      : 'liberty',
+  };
   if (!Array.isArray(value.layers)) throw new Error('Project layers must be an array.');
   value.layers.forEach((layer, index) => validateLayer(layer, `project.layers[${index}]`));
   const projectLayerIds = new Set<string>();
@@ -524,7 +534,7 @@ export function validateAndMigrateProject(value: unknown): Project {
       mapMode: runtimeView.mapMode === 'globe' ? 'globe' : 'flat',
       camera: {
         ...runtimeView.camera,
-        bearing: normalizeBearing(runtimeView.camera.bearing),
+        bearing: runtimeView.camera.bearing ?? 0,
         pitch: runtimeView.camera.pitch ?? 0,
         ...(runtimeView.mapMode === 'globe'
           ? {

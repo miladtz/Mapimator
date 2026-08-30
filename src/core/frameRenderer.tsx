@@ -10,6 +10,7 @@ import { projectExportSettings, validateExportSettings, type ExportVideoSettings
 import { compileTimeline, evaluateProjectAtTime } from './viewCompiler';
 import { resolveProjectAssetUrls } from './projectAssets';
 import { GlobeWebGLRenderer } from './globeRenderer';
+import { OnlineMapFrameRenderer } from './onlineMapFrameRenderer';
 
 export const EXPORT_FRAME_WIDTH = 1920;
 export const EXPORT_FRAME_HEIGHT = 1080;
@@ -172,6 +173,7 @@ class PreparedFrameRenderer {
     private readonly globeRenderer: GlobeWebGLRenderer | null,
     private readonly overlayCanvas: HTMLCanvasElement,
     private readonly overlayContext: CanvasRenderingContext2D,
+    private readonly onlineRenderer: OnlineMapFrameRenderer | null,
   ) {}
 
   static async create(project: Project, width: number, height: number, mapMode: MapMode) {
@@ -216,6 +218,16 @@ class PreparedFrameRenderer {
     overlayCanvas.height = height;
     const overlayContext = overlayCanvas.getContext('2d');
     if (!overlayContext) throw new Error('Unable to create the Globe overlay canvas.');
+    const onlineRenderer =
+      project.mapSettings.basemapRenderer === 'online'
+        ? await OnlineMapFrameRenderer.create(
+            project,
+            width,
+            height,
+            project.mapSettings.onlineStyleId,
+            evaluateProjectAtTime(project, 0).camera,
+          )
+        : null;
     return new PreparedFrameRenderer(
       project,
       width,
@@ -233,15 +245,37 @@ class PreparedFrameRenderer {
       globeRenderer,
       overlayCanvas,
       overlayContext,
+      onlineRenderer,
     );
   }
 
-  async render<T>(time: number, consumeCanvas: FrameCanvasConsumer<T>) {
+  async render<T>(time: number, consumeCanvas: FrameCanvasConsumer<T>, signal?: AbortSignal) {
     const evaluateStarted = performance.now();
     const state = evaluateProjectAtTime(this.project, time);
     const evaluateMs = performance.now() - evaluateStarted;
     const sceneStarted = performance.now();
     const resolvedMapMode = this.project.views.length > 0 ? state.mapMode : this.mapMode;
+    if (this.onlineRenderer) {
+      if (resolvedMapMode !== 'flat')
+        throw new Error(
+          'The experimental online renderer does not support Globe export; no Legacy fallback was used.',
+        );
+      const onlineDiagnostics = await this.onlineRenderer.render(state.camera, this.canvas, signal);
+      const rgbaStarted = performance.now();
+      const value = await consumeCanvas(this.canvas);
+      return {
+        value,
+        timings: {
+          evaluateMs,
+          sceneMs: performance.now() - sceneStarted,
+          serializeMs: 0,
+          blobMs: 0,
+          imageDecodeMs: 0,
+          canvasDrawMs: onlineDiagnostics.drawMs,
+          rgbaMs: performance.now() - rgbaStarted,
+        } satisfies FrameRenderTimings,
+      };
+    }
     if (resolvedMapMode === 'globe') {
       if (!this.globeRenderer) throw new Error('The deterministic Globe renderer is unavailable.');
       this.globeRenderer.render(state.camera, this.style);
@@ -326,6 +360,7 @@ class PreparedFrameRenderer {
   dispose() {
     this.root.unmount();
     this.globeRenderer?.dispose();
+    this.onlineRenderer?.dispose();
     this.host.remove();
     this.freezeStyles.remove();
   }
@@ -479,12 +514,16 @@ export async function renderProjectRgbaSequence(
       signal?.throwIfAborted();
       const time = index / settings.fps;
       const renderStarted = performance.now();
-      const frame = await renderer.render(time, (canvas) => {
-        const context = canvas.getContext('2d', { alpha: false });
-        if (!context) throw new Error('Unable to read the deterministic frame canvas.');
-        const pixels = context.getImageData(0, 0, settings.width, settings.height).data;
-        return new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength);
-      });
+      const frame = await renderer.render(
+        time,
+        (canvas) => {
+          const context = canvas.getContext('2d', { alpha: false });
+          if (!context) throw new Error('Unable to read the deterministic frame canvas.');
+          const pixels = context.getImageData(0, 0, settings.width, settings.height).data;
+          return new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength);
+        },
+        signal,
+      );
       const frameRenderMs = performance.now() - renderStarted;
       renderMs += frameRenderMs;
       for (const key of Object.keys(stageTotals) as (keyof FrameRenderTimings)[])
@@ -566,6 +605,19 @@ export async function renderViewThumbnails(
   const overlayContext = overlayCanvas.getContext('2d');
   if (!overlayContext) throw new Error('Unable to create the deterministic Globe thumbnail overlay.');
   const indexById = new Map(project.views.map((view, index) => [view.id, index]));
+  const onlineRenderer =
+    project.mapSettings.basemapRenderer === 'online'
+      ? await OnlineMapFrameRenderer.create(
+          project,
+          width,
+          height,
+          project.mapSettings.onlineStyleId,
+          evaluateProjectAtTime(project, 0).camera,
+          signal,
+          0.5,
+          'thumbnail',
+        )
+      : null;
   try {
     for (const viewId of viewIds) {
       signal?.throwIfAborted();
@@ -575,6 +627,17 @@ export async function renderViewThumbnails(
       if (!segment) continue;
       const state = evaluateProjectAtTime(project, segment.start);
       const resolvedMapMode = project.views.length > 0 ? state.mapMode : mapMode;
+      if (onlineRenderer) {
+        if (resolvedMapMode !== 'flat')
+          throw new Error(
+            'The experimental online renderer does not support Globe thumbnails; no Legacy fallback was used.',
+          );
+        await onlineRenderer.render(state.camera, canvas, signal);
+        signal?.throwIfAborted();
+        onThumbnail({ viewId, dataUrl: canvasToJpegDataUrl(canvas) });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+        continue;
+      }
       if (resolvedMapMode === 'globe') {
         if (!globeRenderer) throw new Error('The deterministic Globe thumbnail renderer is unavailable.');
         globeRenderer.render(state.camera, style);
@@ -624,6 +687,7 @@ export async function renderViewThumbnails(
   } finally {
     root.unmount();
     globeRenderer?.dispose();
+    onlineRenderer?.dispose();
     host.remove();
     freezeStyles.remove();
   }

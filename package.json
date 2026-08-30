@@ -42,6 +42,12 @@
     "test:camera-pitch-parity": "node scripts/verify-camera-pitch-parity.mjs",
     "test:flat-label-projection": "node scripts/verify-flat-label-projection.mjs",
     "test:flat-surface-bounds": "node scripts/verify-flat-surface-bounds.mjs",
+    "test:openfreemap-poc": "node scripts/verify-openfreemap-poc.mjs",
+    "test:online-renderer-parity": "node scripts/verify-online-renderer-parity.mjs",
+    "test:online-export-quality": "node scripts/verify-online-export-quality.mjs",
+    "test:online-scene-parity": "node scripts/verify-online-scene-parity.mjs",
+    "test:online-interactive-layout-performance": "node scripts/verify-online-interactive-layout-performance.mjs",
+    "test:online-renderer-lifecycle": "node scripts/verify-online-renderer-lifecycle.mjs",
     "benchmark:globe-runtime": "node scripts/benchmark-globe-runtime.mjs"
   },
   "dependencies": {
@@ -50,6 +56,7 @@
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "@vitejs/plugin-react": "latest",
+    "maplibre-gl": "^5.24.0",
     "react": "latest",
     "react-dom": "latest",
     "typescript": "latest",
