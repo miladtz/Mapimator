@@ -82,7 +82,6 @@ import {
   fitSelectionCamera,
   fitWorldCamera,
   MAX_CAMERA_PITCH,
-  MIN_CAMERA_PITCH,
   roundCamera,
 } from '../core/camera';
 import { cameraWithGlobeFocus } from '../core/globeMath';
@@ -2611,6 +2610,7 @@ function CameraInspector({
 }) {
   const bearing = camera.bearing ?? 0;
   const pitch = camera.pitch ?? 0;
+  const inspectorPitch = Math.min(MAX_CAMERA_PITCH, Math.max(0, pitch));
   const pendingPatch = useRef<Partial<CameraState> | null>(null);
   const pendingFrame = useRef<number | null>(null);
   useEffect(
@@ -2628,6 +2628,10 @@ function CameraInspector({
       pendingPatch.current = null;
       if (latest) onChange(latest);
     });
+  };
+  const schedulePitchChange = (value: number) => {
+    if (!Number.isFinite(value)) return;
+    scheduleChange({ pitch: Math.min(MAX_CAMERA_PITCH, Math.max(0, value)) });
   };
   return (
     <div className="layer-inspector camera-inspector">
@@ -2670,21 +2674,21 @@ function CameraInspector({
         Pitch
         <input
           type="range"
-          min={MIN_CAMERA_PITCH}
+          min={0}
           max={MAX_CAMERA_PITCH}
           step="1"
-          value={pitch}
+          value={inspectorPitch}
           disabled={disabled}
-          onChange={(event) => scheduleChange({ pitch: Number(event.target.value) })}
+          onChange={(event) => schedulePitchChange(Number(event.target.value))}
         />
         <input
           type="number"
-          min={MIN_CAMERA_PITCH}
+          min={0}
           max={MAX_CAMERA_PITCH}
           step="1"
-          value={pitch}
+          value={inspectorPitch}
           disabled={disabled}
-          onChange={(event) => scheduleChange({ pitch: Number(event.target.value) })}
+          onChange={(event) => schedulePitchChange(Number(event.target.value))}
         />
       </label>
       <button type="button" disabled={disabled || pitch === 0} onClick={() => scheduleChange({ pitch: 0 })}>

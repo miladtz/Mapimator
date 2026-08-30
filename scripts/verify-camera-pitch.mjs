@@ -181,7 +181,32 @@ assert.match(mapSource, /screenRotation=\{mapMode === 'globe' \|\| flatPerspecti
 assert.match(mapSource, /cameraForWorldAtScreen/, 'pitched pan uses ground anchoring');
 assert.match(frameSource, /<MapScene/, 'Preview thumbnails and Export share the pitched scene');
 assert.match(appSource, /Reset Pitch/, 'Camera inspector exposes Pitch');
+assert.match(
+  appSource,
+  /const inspectorPitch = Math\.min\(MAX_CAMERA_PITCH, Math\.max\(0, pitch\)\)/,
+  'Camera inspector safely displays legacy negative Pitch at the positive lower bound',
+);
+assert.match(
+  appSource,
+  /scheduleChange\(\{ pitch: Math\.min\(MAX_CAMERA_PITCH, Math\.max\(0, value\)\) \}\)/,
+  'Camera inspector clamps newly entered Pitch values to its supported positive range',
+);
+assert.ok(
+  (appSource.match(/min=\{0\}/g) ?? []).length >= 2,
+  'Pitch slider and number input both start at zero',
+);
+assert.ok(
+  (appSource.match(/max=\{MAX_CAMERA_PITCH\}/g) ?? []).length >= 2,
+  'Pitch slider and number input preserve the renderer positive maximum',
+);
+assert.ok(
+  (appSource.match(/schedulePitchChange\(Number\(event\.target\.value\)\)/g) ?? []).length >= 2,
+  'Pitch slider and number input share positive-only validation',
+);
+assert.match(appSource, /scheduleChange\(\{ pitch: 0 \}\)/, 'Reset Pitch retains the neutral zero value');
 assert.match(appSource, /pendingFrame\.current !== null/, 'inspector camera input allows only one pending rAF update');
 assert.ok(!appSource.includes('setCamera(previewState'), 'Preview remains read-only against View camera state');
 
-console.log('Camera pitch verification: clamp, exact Pitch 0, deterministic perspective rays, 500 randomized round trips, center invariant, migration, persistence, duplicate Views, combined transitions, zero-Hold continuity, projected SVG geography, ground interactions, upright fixed-size Pins, thumbnails/Export parity, and read-only Preview passed.');
+console.log(
+  'Camera pitch verification: positive-only inspector controls, legacy signed-Pitch persistence, exact Pitch 0, deterministic perspective rays, 500 randomized round trips, center invariant, migration, duplicate Views, combined transitions, zero-Hold continuity, projected SVG geography, ground interactions, upright fixed-size Pins, thumbnails/Export parity, and read-only Preview passed.',
+);
