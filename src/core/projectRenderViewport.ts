@@ -22,15 +22,17 @@ export interface LogicalViewport {
  * Fixed, independent of window size, DPR, or output resolution.
  * Maps cleanly to common output resolutions (960×540 → 1920×1080 @ 2×).
  */
-const CANONICAL_LOGICAL_VIEWPORT: LogicalViewport = {
+const LANDSCAPE_LOGICAL_VIEWPORT: LogicalViewport = {
   width: 960,
   height: 540,
   aspectRatio: 960 / 540,
 };
 
 /** Returns the fixed canonical online logical viewport. */
-export function projectRenderViewport(_project?: unknown): LogicalViewport {
-  return CANONICAL_LOGICAL_VIEWPORT;
+export function projectRenderViewport(project?: Pick<Project, 'canvas'>): LogicalViewport {
+  if (!project) return LANDSCAPE_LOGICAL_VIEWPORT;
+  const format = resolveProjectFrameFormat(project);
+  return { width: format.logicalWidth, height: format.logicalHeight, aspectRatio: format.aspectRatio };
 }
 
 export interface FitResult {
@@ -52,11 +54,11 @@ export interface FitResult {
  * displayWidth/displayHeight change to fit the available area.
  */
 export function fitProjectViewport(
-  _viewport: LogicalViewport,
+  viewport: LogicalViewport,
   availableWidth: number,
   availableHeight: number,
 ): FitResult {
-  const { width, height, aspectRatio } = CANONICAL_LOGICAL_VIEWPORT;
+  const { width, height, aspectRatio } = viewport;
   const containerAspect = availableWidth / availableHeight;
 
   let displayWidth: number;
@@ -71,3 +73,18 @@ export function fitProjectViewport(
 
   return { width, height, displayWidth, displayHeight };
 }
+
+/** Shared Legacy SVG composition window; interactive, thumbnails and Export use it unchanged. */
+export function projectSceneViewBox(viewport: LogicalViewport) {
+  const sceneWidth = 1000;
+  const sceneHeight = 560;
+  const sceneAspect = sceneWidth / sceneHeight;
+  if (viewport.aspectRatio < sceneAspect) {
+    const fittedWidth = sceneHeight * viewport.aspectRatio;
+    return `${(sceneWidth - fittedWidth) / 2} 0 ${fittedWidth} ${sceneHeight}`;
+  }
+  const fittedHeight = sceneWidth / viewport.aspectRatio;
+  return `0 ${(sceneHeight - fittedHeight) / 2} ${sceneWidth} ${fittedHeight}`;
+}
+import type { Project } from './project';
+import { resolveProjectFrameFormat } from './projectFrameFormat';

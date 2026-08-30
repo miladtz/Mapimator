@@ -47,12 +47,13 @@ assert.equal(viewport.height, 540, 'Canonical logical viewport height is fixed a
 assert.ok(Math.abs(viewport.aspectRatio - 16 / 9) < 1e-12, 'Canonical viewport has 16:9 aspect ratio.');
 
 // Verify viewport is independent of project canvas dimensions
-const project2 = core.createProject('Different canvas');
+const project2 = core.createProject('Square canvas');
+project2.canvas.layoutId = 'square';
 project2.canvas.width = 1080;
 project2.canvas.height = 1080;
 const viewport2 = core.projectRenderViewport(project2);
-assert.equal(viewport2.width, 960, 'Canonical viewport does not change for different canvas.');
-assert.equal(viewport2.height, 540, 'Canonical viewport does not change for different canvas.');
+assert.equal(viewport2.width, 720, 'Square canonical viewport width is fixed at 720.');
+assert.equal(viewport2.height, 720, 'Square canonical viewport height is fixed at 720.');
 
 // ── 2. Camera mapping is viewport-independent (canonical 960) ──
 const cameras = [
@@ -170,8 +171,8 @@ assert.match(
 // Viewport module defines a fixed canonical constant
 assert.match(
   viewportMod,
-  /CANONICAL_LOGICAL_VIEWPORT|const.*VIEWPORT.*=.*\{/,
-  'Viewport module defines a canonical constant.',
+  /resolveProjectFrameFormat/,
+  'Viewport module resolves one deterministic canonical scene from project format.',
 );
 assert.match(viewportMod, /960|540/, 'Canonical viewport dimensions appear in viewport module.');
 
@@ -189,5 +190,5 @@ const state60 = { viewport, camera: core.mapMotionToMapLibreCamera(cameras[0]), 
 assert.deepEqual(state30, state60, 'FPS cannot alter logical MapLibre state.');
 
 console.log(
-  'Online scene parity: canonical 960x540 logical viewport, fixed/viewport-independent, identical Editor/Preview/Export zoom, CSS-transform interactive, no hidden crop, thumbnail density separation, and 60 state parity passed.',
+  'Online scene parity: project-format canonical viewport, window-independent camera mapping, identical Editor/Preview/Export zoom, CSS-transform interactive, no hidden crop, thumbnail density separation, and FPS parity passed.',
 );

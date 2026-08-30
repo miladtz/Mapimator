@@ -11,6 +11,8 @@ import { compileTimeline, evaluateProjectAtTime } from './viewCompiler';
 import { resolveProjectAssetUrls } from './projectAssets';
 import { GlobeWebGLRenderer } from './globeRenderer';
 import { OnlineMapFrameRenderer } from './onlineMapFrameRenderer';
+import { projectThumbnailViewport } from './projectFrameFormat';
+import { projectRenderViewport, projectSceneViewBox } from './projectRenderViewport';
 
 export const EXPORT_FRAME_WIDTH = 1920;
 export const EXPORT_FRAME_HEIGHT = 1080;
@@ -328,7 +330,7 @@ class PreparedFrameRenderer {
           labelLanguage={this.project.mapSettings.labelLanguage}
           width={this.width}
           height={this.height}
-          viewBox={exportViewBox(this.width, this.height)}
+          viewBox={projectSceneViewBox(projectRenderViewport(this.project))}
           assetUrls={this.assetUrls}
         />,
       );
@@ -385,8 +387,8 @@ async function renderProjectFrameCanvas<T>(
 export async function renderProjectFrame(
   project: Project,
   time: number,
-  width = EXPORT_FRAME_WIDTH,
-  height = EXPORT_FRAME_HEIGHT,
+  width = project.canvas.width,
+  height = project.canvas.height,
   mapMode: MapMode = 'flat',
 ) {
   return renderProjectFrameCanvas(project, time, width, height, mapMode, canvasToPng);
@@ -395,8 +397,8 @@ export async function renderProjectFrame(
 export async function renderProjectFrameRgba(
   project: Project,
   time: number,
-  width = EXPORT_FRAME_WIDTH,
-  height = EXPORT_FRAME_HEIGHT,
+  width = project.canvas.width,
+  height = project.canvas.height,
   mapMode: MapMode = 'flat',
 ) {
   return renderProjectFrameCanvas(project, time, width, height, mapMode, (canvas) => {
@@ -555,8 +557,8 @@ export interface ViewThumbnailResult {
 export async function renderViewThumbnails(
   project: Project,
   viewIds: string[],
-  width = VIEW_THUMBNAIL_WIDTH,
-  height = VIEW_THUMBNAIL_HEIGHT,
+  width = projectThumbnailViewport(project).width,
+  height = projectThumbnailViewport(project).height,
   mapMode: MapMode = 'flat',
   onThumbnail: (result: ViewThumbnailResult) => void,
   signal?: AbortSignal,
@@ -672,7 +674,7 @@ export async function renderViewThumbnails(
           labelLanguage={project.mapSettings.labelLanguage}
           width={width}
           height={height}
-          viewBox={exportViewBox(width, height)}
+          viewBox={projectSceneViewBox(projectRenderViewport(project))}
           assetUrls={assetUrls}
         />,
       );
@@ -692,16 +694,3 @@ export async function renderViewThumbnails(
     freezeStyles.remove();
   }
 }
-
-const exportViewBox = (width: number, height: number) => {
-  const sceneWidth = 1000;
-  const sceneHeight = 560;
-  const targetAspect = width / height;
-  const sceneAspect = sceneWidth / sceneHeight;
-  if (targetAspect < sceneAspect) {
-    const fittedWidth = sceneHeight * targetAspect;
-    return `${(sceneWidth - fittedWidth) / 2} 0 ${fittedWidth} ${sceneHeight}`;
-  }
-  const fittedHeight = sceneWidth / targetAspect;
-  return `0 ${(sceneHeight - fittedHeight) / 2} ${sceneWidth} ${fittedHeight}`;
-};

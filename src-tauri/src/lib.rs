@@ -1055,6 +1055,16 @@ fn select_h264_encoder(app: tauri::AppHandle) -> Result<EncoderProbeResult, Stri
     }
 }
 
+fn is_supported_export_size(width: u32, height: u32) -> bool {
+    width >= 240
+        && height >= 240
+        && width <= 2160
+        && height <= 2160
+        && width % 2 == 0
+        && height % 2 == 0
+        && u64::from(width) * u64::from(height) <= 2_500_000
+}
+
 #[tauri::command]
 fn start_project_export(
     app: tauri::AppHandle,
@@ -1080,10 +1090,7 @@ fn start_project_export(
     {
         return Err("Video destination must use the .mp4 extension.".into());
     }
-    let supported_size = matches!(
-        (width, height),
-        (1920, 1080) | (1080, 1920) | (1080, 1080) | (1080, 1350) | (1440, 1080)
-    );
+    let supported_size = is_supported_export_size(width, height);
     if !supported_size {
         return Err(format!(
             "Unsupported H.264 export resolution: {width}x{height}."
@@ -1367,6 +1374,30 @@ mod portable_project_tests {
     use super::*;
     use std::io::Cursor;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn export_dimensions_accept_presets_and_safe_custom_sizes() {
+        for dimensions in [
+            (1920, 1080),
+            (1080, 1920),
+            (1080, 1080),
+            (1080, 1350),
+            (1440, 1080),
+            (1200, 1500),
+            (2160, 1080),
+        ] {
+            assert!(is_supported_export_size(dimensions.0, dimensions.1));
+        }
+        for dimensions in [
+            (0, 1080),
+            (1081, 1920),
+            (2160, 2160),
+            (240, 239),
+            (2200, 800),
+        ] {
+            assert!(!is_supported_export_size(dimensions.0, dimensions.1));
+        }
+    }
 
     fn test_path(label: &str) -> PathBuf {
         let nonce = SystemTime::now()

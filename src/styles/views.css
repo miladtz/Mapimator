@@ -192,7 +192,7 @@
 .view-thumb {
   position: relative;
   display: block;
-  height: 64px;
+  width: 100%;
   border-radius: 2px;
   overflow: hidden;
   background: #28415a;

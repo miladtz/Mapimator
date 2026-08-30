@@ -12,6 +12,7 @@ import type {
 } from './project';
 import { hasConsistentViewMapMode, normalizeSegmentAnimation } from './project';
 import { globeFocusOf, normalizeGlobeFocus, normalizeQuaternion } from './globeMath';
+import { validateCustomFrameDimensions } from './projectFrameFormat';
 
 type LegacyView = Omit<View, 'layerConfigs' | 'transitionLayerConfigs' | 'mapMode'> & {
   mapMode?: MapMode;
@@ -345,6 +346,11 @@ export function validateAndMigrateProject(value: unknown): Project {
   )
     throw new Error('Project metadata is malformed.');
   if (!isRecord(value.canvas)) throw new Error('Project canvas is malformed.');
+  if (value.canvas.layoutId === undefined) {
+    value.canvas.layoutId = 'landscape';
+    value.canvas.width = 1920;
+    value.canvas.height = 1080;
+  }
   if (
     !isFiniteNumber(value.canvas.width) ||
     value.canvas.width <= 0 ||
@@ -363,6 +369,13 @@ export function validateAndMigrateProject(value: unknown): Project {
     !isBoolean(value.canvas.showSafeArea)
   )
     throw new Error('Project canvas settings are malformed.');
+  if (value.canvas.layoutId === 'custom') {
+    try {
+      validateCustomFrameDimensions(value.canvas.width, value.canvas.height);
+    } catch (error) {
+      throw new Error(`Project custom frame settings are malformed: ${String(error)}`);
+    }
+  }
   if (
     !isRecord(value.mapSettings) ||
     !oneOf(value.mapSettings.styleId, [

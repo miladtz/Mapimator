@@ -1,4 +1,5 @@
 import type { CanvasLayoutId, Project } from './project';
+import { MAX_CUSTOM_FRAME_DIMENSION, MAX_CUSTOM_FRAME_PIXELS } from './projectFrameFormat';
 
 export type ExportFps = 30 | 60;
 
@@ -54,11 +55,22 @@ export type ExportPresetId = (typeof EXPORT_PRESETS)[number]['id'];
 
 export const DEFAULT_EXPORT_PRESET_ID: ExportPresetId = 'youtube-1080p30';
 
-const supportedProjectSizes = new Set(['1920x1080', '1080x1920', '1080x1080', '1080x1350', '1440x1080']);
-
 export function validateExportSettings(settings: ExportVideoSettings) {
   const key = `${settings.width}x${settings.height}`;
-  if (!supportedProjectSizes.has(key)) throw new Error(`Unsupported H.264 export resolution: ${key}.`);
+  if (
+    !Number.isInteger(settings.width) ||
+    !Number.isInteger(settings.height) ||
+    settings.width <= 0 ||
+    settings.height <= 0 ||
+    settings.width % 2 !== 0 ||
+    settings.height % 2 !== 0 ||
+    settings.width > MAX_CUSTOM_FRAME_DIMENSION ||
+    settings.height > MAX_CUSTOM_FRAME_DIMENSION ||
+    settings.width * settings.height > MAX_CUSTOM_FRAME_PIXELS
+  )
+    throw new Error(
+      `Unsupported H.264 export resolution: ${key}. Dimensions must be even and within limits.`,
+    );
   if (settings.fps !== 30 && settings.fps !== 60) throw new Error(`Unsupported export FPS: ${settings.fps}.`);
   if (settings.fps === 60 && key !== '1920x1080')
     throw new Error('60 FPS export is supported only at 1920x1080.');

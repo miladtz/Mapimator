@@ -81,14 +81,56 @@ export interface CanvasLayout {
   name: string;
   width: number;
   height: number;
+  logicalWidth: number;
+  logicalHeight: number;
   safeArea: number;
 }
 export const CANVAS_LAYOUTS: CanvasLayout[] = [
-  { id: 'landscape', name: 'Landscape 16:9', width: 1920, height: 1080, safeArea: 96 },
-  { id: 'portrait', name: 'Portrait 9:16', width: 1080, height: 1920, safeArea: 96 },
-  { id: 'square', name: 'Square 1:1', width: 1080, height: 1080, safeArea: 80 },
-  { id: 'portrait-4-5', name: 'Portrait 4:5', width: 1080, height: 1350, safeArea: 90 },
-  { id: 'classic-4-3', name: 'Classic 4:3', width: 1440, height: 1080, safeArea: 80 },
+  {
+    id: 'landscape',
+    name: 'Landscape 16:9',
+    width: 1920,
+    height: 1080,
+    logicalWidth: 960,
+    logicalHeight: 540,
+    safeArea: 96,
+  },
+  {
+    id: 'portrait',
+    name: 'Portrait 9:16',
+    width: 1080,
+    height: 1920,
+    logicalWidth: 540,
+    logicalHeight: 960,
+    safeArea: 96,
+  },
+  {
+    id: 'square',
+    name: 'Square 1:1',
+    width: 1080,
+    height: 1080,
+    logicalWidth: 720,
+    logicalHeight: 720,
+    safeArea: 80,
+  },
+  {
+    id: 'portrait-4-5',
+    name: 'Portrait 4:5',
+    width: 1080,
+    height: 1350,
+    logicalWidth: 648,
+    logicalHeight: 810,
+    safeArea: 90,
+  },
+  {
+    id: 'classic-4-3',
+    name: 'Classic 4:3',
+    width: 1440,
+    height: 1080,
+    logicalWidth: 800,
+    logicalHeight: 600,
+    safeArea: 80,
+  },
 ];
 
 export interface MapStylePreset {

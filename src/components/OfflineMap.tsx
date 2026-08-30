@@ -77,6 +77,7 @@ interface Props {
   assetUrls?: Readonly<Record<string, string>>;
   /** Render editor-only placeholders (e.g. custom pin with no image yet). */
   editorMode?: boolean;
+  viewBox?: string;
 }
 
 export type { MapMode } from '../core/project';
@@ -122,6 +123,7 @@ export function OfflineMap({
   showSafeArea,
   assetUrls,
   editorMode = true,
+  viewBox,
 }: Props) {
   const drag = useRef<{ worldX: number; worldY: number } | null>(null);
   const lastPan = useRef<{ x: number; y: number; time: number } | null>(null);
@@ -547,6 +549,7 @@ export function OfflineMap({
         assetUrls={assetUrls}
         onBackgroundClick={onBackgroundClick ?? (() => onSelect(null))}
         editorMode={editorMode}
+        viewBox={viewBox}
         onLayerPointerDown={beginLayerMove}
         svgProps={{
           ref: svgRef,

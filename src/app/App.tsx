@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
@@ -14,7 +15,12 @@ import { invoke } from '@tauri-apps/api/core';
 import { OfflineMap } from '../components/OfflineMap';
 import type { MapMode } from '../components/OfflineMap';
 import { OnlineOpenFreeMap } from '../components/OnlineOpenFreeMap';
-import { projectRenderViewport } from '../core/projectRenderViewport';
+import {
+  fitProjectViewport,
+  projectRenderViewport,
+  projectSceneViewBox,
+  type LogicalViewport,
+} from '../core/projectRenderViewport';
 import { OPENFREEMAP_3D_CAMERA, OPENFREEMAP_STYLES } from '../core/openFreeMapAdapter';
 import {
   getPinStyles,
@@ -81,13 +87,18 @@ import {
 } from '../core/camera';
 import { cameraWithGlobeFocus } from '../core/globeMath';
 import { exportPortableProject, importPortableProjectDetailed } from '../core/portableProject';
-import { DEFAULT_EXPORT_PRESET_ID, EXPORT_PRESETS, type ExportPresetId } from '../core/exportPresets';
+import {
+  isProjectFrameFormatLocked,
+  projectThumbnailViewport,
+  resolveProjectFrameFormat,
+  validateCustomFrameDimensions,
+} from '../core/projectFrameFormat';
 import {
   cancelProjectVideoExport,
   exportProjectVideo,
   type ExportProgressState,
 } from '../core/videoExporter';
-import { renderViewThumbnails, VIEW_THUMBNAIL_HEIGHT, VIEW_THUMBNAIL_WIDTH } from '../core/frameRenderer';
+import { renderViewThumbnails } from '../core/frameRenderer';
 import {
   ingestProjectImage,
   ingestProjectImageBytes,
@@ -231,7 +242,7 @@ export function App() {
     totalFrames: 0,
     percentage: 0,
   });
-  const [exportPresetId, setExportPresetId] = useState<ExportPresetId>(DEFAULT_EXPORT_PRESET_ID);
+  const [customFrameDraft, setCustomFrameDraft] = useState<{ width: string; height: string } | null>(null);
   const [portableBusy, setPortableBusy] = useState(false);
   const [projectFilePath, setProjectFilePath] = useState<string | null>(null);
   const [assetUrls, setAssetUrls] = useState<Record<string, string>>({});
@@ -243,7 +254,8 @@ export function App() {
   projectRef.current = project;
   const thumbnailRenderIdRef = useRef(0);
   const renderedThumbnailSignaturesRef = useRef<Record<string, string>>({});
-  const exportPreset = EXPORT_PRESETS.find((preset) => preset.id === exportPresetId)!;
+  const frameFormat = resolveProjectFrameFormat(project);
+  const frameFormatLocked = isProjectFrameFormatLocked(project);
   const words = t(language);
   const style = MAP_STYLES.find((item) => item.id === project.mapSettings.styleId)!;
   const selected = project.layers.find((l) => l.id === selectedId) ?? null;
@@ -344,11 +356,12 @@ export function App() {
     const renderId = ++thumbnailRenderIdRef.current;
     const timer = window.setTimeout(() => {
       const latestProject = projectRef.current;
+      const thumbnailViewport = projectThumbnailViewport(latestProject);
       void renderViewThumbnails(
         latestProject,
         pending.map((view) => view.id),
-        VIEW_THUMBNAIL_WIDTH,
-        VIEW_THUMBNAIL_HEIGHT,
+        thumbnailViewport.width,
+        thumbnailViewport.height,
         mapMode,
         (result) => {
           if (renderId !== thumbnailRenderIdRef.current) return;
@@ -1012,11 +1025,12 @@ export function App() {
     return () => scroller.removeEventListener('wheel', onWheel);
   }, []);
   const setCanvasLayout = (layoutId: Project['canvas']['layoutId']) => {
+    if (project.views.length > 0) {
+      setNotice('Frame size is locked after the first View is created.');
+      return;
+    }
     if (layoutId === 'custom') {
-      const width = Number(window.prompt('Canvas width', String(project.canvas.width)));
-      const height = Number(window.prompt('Canvas height', String(project.canvas.height)));
-      if (width > 0 && height > 0)
-        updateProject((p) => ({ ...p, canvas: { ...p.canvas, layoutId, width, height } }));
+      setCustomFrameDraft({ width: String(project.canvas.width), height: String(project.canvas.height) });
       return;
     }
     const layout = CANVAS_LAYOUTS.find((item) => item.id === layoutId);
@@ -1028,10 +1042,34 @@ export function App() {
         layoutId,
         width: layout.width,
         height: layout.height,
+        fps: layout.id === 'landscape' ? p.canvas.fps : 30,
         safeArea: layout.safeArea,
       },
     }));
     setNotice(`${layout.name} selected`);
+  };
+  const applyCustomFrame = () => {
+    if (!customFrameDraft || project.views.length > 0) return;
+    try {
+      const dimensions = validateCustomFrameDimensions(
+        Number(customFrameDraft.width),
+        Number(customFrameDraft.height),
+      );
+      updateProject((current) => ({
+        ...current,
+        canvas: {
+          ...current.canvas,
+          layoutId: 'custom',
+          width: dimensions.width,
+          height: dimensions.height,
+          fps: 30,
+        },
+      }));
+      setCustomFrameDraft(null);
+      setNotice(`Custom frame ${dimensions.width} × ${dimensions.height} selected`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
   };
   const reframe = () => {
     const layout = CANVAS_LAYOUTS.find((item) => item.id === project.canvas.layoutId);
@@ -1086,7 +1124,6 @@ export function App() {
         return;
       }
       const result = await exportProjectVideo(project, outputPath, {
-        settings: exportPreset,
         mapMode,
         signal: controller.signal,
         onProgress: setExportState,
@@ -1234,18 +1271,10 @@ export function App() {
           </button>
           <label className="export-preset">
             <span>H.264 MP4 · Auto encoder</span>
-            <select
-              aria-label="Export preset"
-              value={exportPresetId}
-              disabled={exportIsActive}
-              onChange={(event) => setExportPresetId(event.target.value as ExportPresetId)}
-            >
-              {EXPORT_PRESETS.map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  {preset.name} · {preset.width}×{preset.height} · {preset.fps} FPS
-                </option>
-              ))}
-            </select>
+            <strong>
+              {frameFormat.label} · {frameFormat.exportWidth}×{frameFormat.exportHeight} ·{' '}
+              {project.canvas.fps} FPS
+            </strong>
           </label>
           <button className="export" onClick={exportProof} disabled={exportIsActive}>
             {exportIsActive ? 'Exporting…' : `${words.export} Video`}
@@ -1266,7 +1295,9 @@ export function App() {
               <div className="mini-map">◇</div>
               <div>
                 <strong>{project.metadata.name}</strong>
-                <small>1920 × 1080 · {project.canvas.fps} FPS</small>
+                <small>
+                  {frameFormat.exportWidth} × {frameFormat.exportHeight} · {project.canvas.fps} FPS
+                </small>
               </div>
             </div>
             <div className="panel-heading layers-heading">
@@ -1464,6 +1495,10 @@ export function App() {
               <select
                 aria-label="Canvas layout"
                 value={project.canvas.layoutId}
+                disabled={frameFormatLocked}
+                title={
+                  frameFormatLocked ? 'Frame size is locked after the first View is created.' : 'Frame size'
+                }
                 onChange={(e) => setCanvasLayout(e.target.value as Project['canvas']['layoutId'])}
               >
                 {CANVAS_LAYOUTS.map((layout) => (
@@ -1543,37 +1578,40 @@ export function App() {
                 </div>
               )
             ) : (
-              <PreviewMap
-                clock={previewClock}
-                playbackState={playbackState}
-                project={project}
-                editingLayers={
-                  allEyesHidden
-                    ? []
-                    : editingScene.layers
-                        .filter((l) => !eyeHidden[l.id])
-                        .map((l) => ({ ...l, visible: true }))
-                }
-                editingCamera={selectedTimelineEntity?.kind === 'view' ? camera : editingScene.camera}
-                mapProps={{
-                  style,
-                  mapMode,
-                  onCameraChange: handleCameraChange,
-                  labelLanguage: project.mapSettings.labelLanguage,
-                  selectedId,
-                  onSelect: selectLayer,
-                  onMoveLayer: (id, x, y) => updateLayer(id, { x, y }),
-                  onDeleteSelected: projectMode ? remove : undefined,
-                  onBackgroundClick: (point) => {
-                    if (placing && point) placeLayerAt(placing, point);
-                    else clearSelection();
-                  },
-                  safeArea: project.canvas.safeArea,
-                  showSafeArea: project.canvas.showSafeArea,
-                  assetUrls,
-                  editorMode: true,
-                }}
-              />
+              <FittedProjectFrame viewport={projectRenderViewport(project)}>
+                <PreviewMap
+                  clock={previewClock}
+                  playbackState={playbackState}
+                  project={project}
+                  editingLayers={
+                    allEyesHidden
+                      ? []
+                      : editingScene.layers
+                          .filter((l) => !eyeHidden[l.id])
+                          .map((l) => ({ ...l, visible: true }))
+                  }
+                  editingCamera={selectedTimelineEntity?.kind === 'view' ? camera : editingScene.camera}
+                  mapProps={{
+                    style,
+                    mapMode,
+                    onCameraChange: handleCameraChange,
+                    labelLanguage: project.mapSettings.labelLanguage,
+                    selectedId,
+                    onSelect: selectLayer,
+                    onMoveLayer: (id, x, y) => updateLayer(id, { x, y }),
+                    onDeleteSelected: projectMode ? remove : undefined,
+                    onBackgroundClick: (point) => {
+                      if (placing && point) placeLayerAt(placing, point);
+                      else clearSelection();
+                    },
+                    safeArea: project.canvas.safeArea,
+                    showSafeArea: project.canvas.showSafeArea,
+                    assetUrls,
+                    editorMode: true,
+                    viewBox: projectSceneViewBox(projectRenderViewport(project)),
+                  }}
+                />
+              </FittedProjectFrame>
             )}
             <div className="add-toolbar">
               {layerTypes.map((type) => (
@@ -1791,6 +1829,8 @@ export function App() {
           <select
             aria-label="Canvas format"
             value={project.canvas.layoutId}
+            disabled={frameFormatLocked}
+            title={frameFormatLocked ? 'Frame size is locked after the first View is created.' : 'Frame size'}
             onChange={(e) => setCanvasLayout(e.target.value as Project['canvas']['layoutId'])}
           >
             {CANVAS_LAYOUTS.map((layout) => (
@@ -1929,7 +1969,10 @@ export function App() {
                         setDraggedViewId(null);
                       }}
                     >
-                      <span className="view-thumb" style={{ background: view.thumbnailColor }}>
+                      <span
+                        className="view-thumb"
+                        style={{ background: view.thumbnailColor, aspectRatio: frameFormat.aspectRatio }}
+                      >
                         {viewThumbnails[view.id] && (
                           <img
                             src={viewThumbnails[view.id]}
@@ -2074,12 +2117,108 @@ export function App() {
             onClose={() => setTransitionPopoverId(null)}
           />
         )}
+      {customFrameDraft &&
+        createPortal(
+          <div className="frame-format-dialog-backdrop" role="presentation">
+            <form
+              className="frame-format-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="custom-frame-title"
+              onSubmit={(event) => {
+                event.preventDefault();
+                applyCustomFrame();
+              }}
+            >
+              <h2 id="custom-frame-title">Custom Frame Size</h2>
+              <p>Use even dimensions between 240 and 2160 pixels for H.264 export.</p>
+              <div className="frame-format-fields">
+                <label>
+                  Width
+                  <input
+                    autoFocus
+                    type="number"
+                    min="240"
+                    max="2160"
+                    step="2"
+                    value={customFrameDraft.width}
+                    onChange={(event) =>
+                      setCustomFrameDraft((current) =>
+                        current ? { ...current, width: event.target.value } : current,
+                      )
+                    }
+                  />
+                </label>
+                <span>×</span>
+                <label>
+                  Height
+                  <input
+                    type="number"
+                    min="240"
+                    max="2160"
+                    step="2"
+                    value={customFrameDraft.height}
+                    onChange={(event) =>
+                      setCustomFrameDraft((current) =>
+                        current ? { ...current, height: event.target.value } : current,
+                      )
+                    }
+                  />
+                </label>
+              </div>
+              <small>
+                Aspect ratio:{' '}
+                {Number(customFrameDraft.width) > 0 && Number(customFrameDraft.height) > 0
+                  ? (Number(customFrameDraft.width) / Number(customFrameDraft.height)).toFixed(3)
+                  : '—'}
+              </small>
+              <div className="frame-format-dialog-actions">
+                <button type="button" onClick={() => setCustomFrameDraft(null)}>
+                  Cancel
+                </button>
+                <button type="submit" className="primary">
+                  Apply Frame Size
+                </button>
+              </div>
+            </form>
+          </div>,
+          document.body,
+        )}
     </main>
   );
 }
 
 function usePreviewClockTime(clock: PreviewClock) {
   return useSyncExternalStore(clock.subscribe, clock.getSnapshot, clock.getSnapshot);
+}
+
+function FittedProjectFrame({ viewport, children }: { viewport: LogicalViewport; children: ReactNode }) {
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const [display, setDisplay] = useState({ width: 0, height: 0 });
+  useLayoutEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const fit = () => {
+      const next = fitProjectViewport(viewport, stage.clientWidth, stage.clientHeight);
+      setDisplay((current) =>
+        Math.abs(current.width - next.displayWidth) < 0.01 &&
+        Math.abs(current.height - next.displayHeight) < 0.01
+          ? current
+          : { width: next.displayWidth, height: next.displayHeight },
+      );
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, [viewport.aspectRatio, viewport.height, viewport.width]);
+  return (
+    <div ref={stageRef} className="project-frame-stage">
+      <div className="project-frame-display" style={{ width: display.width, height: display.height }}>
+        {children}
+      </div>
+    </div>
+  );
 }
 
 function activePreviewTransitionIndex(

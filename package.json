@@ -48,6 +48,7 @@
     "test:online-scene-parity": "node scripts/verify-online-scene-parity.mjs",
     "test:online-interactive-layout-performance": "node scripts/verify-online-interactive-layout-performance.mjs",
     "test:online-renderer-lifecycle": "node scripts/verify-online-renderer-lifecycle.mjs",
+    "test:project-frame-format": "node scripts/verify-project-frame-format.mjs",
     "benchmark:globe-runtime": "node scripts/benchmark-globe-runtime.mjs"
   },
   "dependencies": {
