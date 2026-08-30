@@ -64,6 +64,12 @@ import {
 } from '../core/project';
 import { t } from '../core/i18n';
 import { compileTimeline, evaluateProjectAtTime } from '../core/viewCompiler';
+import {
+  buildTimelineLayout,
+  resolveTimelineAtTime,
+  timelinePosition,
+  timelineTimeAtPosition,
+} from '../core/timelineGeometry';
 import { resolveEditingScene } from '../core/editingScene';
 import { PreviewClock } from '../core/previewClock';
 import {
@@ -207,12 +213,6 @@ const geoEffectCycle: { type: GeoEffectType; name: string }[] = [
   { type: 'influence-zone', name: 'Influence zone' },
 ];
 type PlaybackState = 'stopped' | 'playing' | 'paused';
-
-const HOLD_PIXELS_PER_SECOND = 36;
-const TRANSITION_PIXELS_PER_SECOND = 36;
-const MIN_VIEW_CARD_WIDTH = 160;
-const MIN_TRANSITION_WIDTH = 58;
-const VIEW_CARD_GAP = 9;
 
 export function App() {
   const [project, setProject] = useState<Project>(() => createProject('Untitled documentary'));
@@ -986,7 +986,9 @@ export function App() {
     if (playbackState === 'stopped') setPlaybackState('paused');
   };
   const scrubTimeline = (event: React.PointerEvent<HTMLDivElement>) => {
-    const bounds = event.currentTarget.getBoundingClientRect();
+    const scrubTrack = timelineScrollRef.current?.querySelector<HTMLElement>('.timeline-scrub-track');
+    if (!scrubTrack) return;
+    const bounds = scrubTrack.getBoundingClientRect();
     seekPreview(timelineTimeAtPosition(project, event.clientX - bounds.left, timelineZoom));
   };
   const updateTransition = (patch: Partial<Pick<View, 'holdDuration'>>) => {
@@ -1011,6 +1013,10 @@ export function App() {
     const scroller = timelineScrollRef.current;
     if (!scroller) return;
     const onWheel = (event: WheelEvent) => {
+      if (event.target instanceof Element && event.target.closest('.timeline-duration-input')) {
+        event.stopPropagation();
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       if (event.ctrlKey) {
@@ -1855,8 +1861,8 @@ export function App() {
           <span className="timeline-preview-state">
             {playbackState !== 'stopped'
               ? `${formatTimelineTime(previewClock.getSnapshot())} / ${formatTimelineTime(sequence.duration)} · ${
-                  activePreviewTransitionIndex(project, sequence, previewClock.getSnapshot()) !== null
-                    ? `Transition ${activePreviewTransitionIndex(project, sequence, previewClock.getSnapshot())! + 1} → ${activePreviewTransitionIndex(project, sequence, previewClock.getSnapshot())! + 2}`
+                  activePreviewTransitionIndex(project, previewClock.getSnapshot()) !== null
+                    ? `Transition ${activePreviewTransitionIndex(project, previewClock.getSnapshot())! + 1} → ${activePreviewTransitionIndex(project, previewClock.getSnapshot())! + 2}`
                     : `View ${evaluateProjectAtTime(project, previewClock.getSnapshot()).activeViewIndex + 1}`
                 } · ${playbackState}`
               : projectMode
@@ -1893,12 +1899,19 @@ export function App() {
                 />
               )}
             </div>
-            <div className="timeline-track">
+            <div className="timeline-track" style={{ width: timelineLayout.width }}>
               {project.views.length > 0 && playbackState !== 'stopped' && (
                 <div
                   className="timeline-playhead"
                   style={{ left: timelinePosition(project, previewClock.getSnapshot(), timelineZoom) }}
                   aria-label={`Playhead at ${formatTimelineTime(previewClock.getSnapshot())}`}
+                  onPointerDown={(event) => {
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                    scrubTimeline(event);
+                  }}
+                  onPointerMove={(event) => {
+                    if (event.currentTarget.hasPointerCapture(event.pointerId)) scrubTimeline(event);
+                  }}
                 >
                   <span />
                 </div>
@@ -1908,7 +1921,7 @@ export function App() {
                   (candidate) =>
                     candidate.fromViewId === view.id && candidate.toViewId === project.views[index + 1]?.id,
                 );
-                const cardWidth = holdCardWidth(view.holdDuration, timelineZoom);
+                const cardWidth = timelineLayout.items.find((item) => item.id === view.id)?.width ?? 0;
                 const isLast = index === project.views.length - 1;
                 const transitionLayerIds = transition ? transitionMemberIds(transition) : new Set<string>();
                 const animatedTransitionLayers = transition
@@ -1922,7 +1935,7 @@ export function App() {
                     <div
                       data-view-id={view.id}
                       className={`view-card ${activeViewId === view.id ? 'active' : ''}`}
-                      style={{ flexBasis: cardWidth }}
+                      style={{ flex: `0 0 ${cardWidth}px` }}
                       draggable
                       tabIndex={0}
                       onClick={() => {
@@ -2005,6 +2018,7 @@ export function App() {
                         <span className="view-duration-exact">
                           Hold{' '}
                           <input
+                            className="timeline-duration-input"
                             type="number"
                             min="0"
                             max="60"
@@ -2058,7 +2072,9 @@ export function App() {
                         role="button"
                         tabIndex={0}
                         className={`view-transition ${selectedTransitionId === transition.id ? 'selected' : ''}`}
-                        style={{ flexBasis: transitionWidth(transition.duration, timelineZoom) }}
+                        style={{
+                          flex: `0 0 ${timelineLayout.items.find((item) => item.id === transition.id)?.width ?? 0}px`,
+                        }}
                         data-transition-index={index}
                         title={`Transition ${view.name} → ${project.views[index + 1].name}: ${transition.duration.toFixed(1)}s ${transitionTypeLabel(transition.type)} — click to edit`}
                         onClick={() => {
@@ -2220,16 +2236,10 @@ function FittedProjectFrame({ viewport, children }: { viewport: LogicalViewport;
   );
 }
 
-function activePreviewTransitionIndex(
-  project: Project,
-  sequence: ReturnType<typeof compileTimeline>,
-  time: number,
-) {
-  const segment = sequence.segments.find(
-    (candidate) => candidate.kind === 'transition' && time >= candidate.start && time < candidate.end,
-  );
-  if (!segment || segment.kind !== 'transition') return null;
-  const index = project.transitions.findIndex((transition) => transition.id === segment.id);
+function activePreviewTransitionIndex(project: Project, time: number) {
+  const resolved = resolveTimelineAtTime(buildTimelineLayout(project), time);
+  if (!resolved || resolved.item.kind !== 'transition') return null;
+  const index = project.transitions.findIndex((transition) => transition.id === resolved.item.id);
   return index >= 0 ? index : null;
 }
 
@@ -2312,7 +2322,7 @@ function PreviewTimelineRuntime({
     document.querySelectorAll<HTMLElement>('.scrub-playhead, .timeline-playhead').forEach((element) => {
       element.style.left = `${position}px`;
     });
-    const activeTransition = activePreviewTransitionIndex(project, sequence, time);
+    const activeTransition = activePreviewTransitionIndex(project, time);
     document.querySelectorAll<HTMLElement>('.view-transition.active').forEach((element) => {
       element.classList.remove('active');
     });
@@ -2432,6 +2442,7 @@ function TransitionPopover({
         Duration
         <span>
           <input
+            className="timeline-duration-input"
             type="number"
             min="0"
             max="30"
@@ -2480,87 +2491,6 @@ function TimelineToolbar({ children }: { children: React.ReactNode }) {
 
 function TimelineViewport({ children }: { children: React.ReactNode }) {
   return <div className="timeline-viewport">{children}</div>;
-}
-
-function holdCardWidth(holdDuration: number, zoom = 1) {
-  return Math.max(MIN_VIEW_CARD_WIDTH, holdDuration * HOLD_PIXELS_PER_SECOND) * zoom;
-}
-
-function transitionWidth(duration: number, zoom = 1) {
-  return Math.max(MIN_TRANSITION_WIDTH, duration * TRANSITION_PIXELS_PER_SECOND) * zoom;
-}
-
-export function buildTimelineLayout(project: Project, zoom = 1) {
-  const sequence = compileTimeline(project);
-  let x = 0;
-  let boundary = 0;
-  const items: Array<{
-    id: string;
-    kind: 'view' | 'transition';
-    x: number;
-    width: number;
-    projectStartTime: number;
-    projectEndTime: number;
-  }> = [];
-  project.views.forEach((view, index) => {
-    const width = holdCardWidth(view.holdDuration, zoom);
-    items.push({
-      id: view.id,
-      kind: 'view',
-      x,
-      width,
-      projectStartTime: boundary,
-      projectEndTime: boundary + view.holdDuration,
-    });
-    x += width + VIEW_CARD_GAP;
-    boundary += view.holdDuration;
-    const next = project.views[index + 1];
-    const transition =
-      next &&
-      project.transitions.find(
-        (candidate) => candidate.fromViewId === view.id && candidate.toViewId === next.id,
-      );
-    if (transition) {
-      const transitionVisualWidth = transitionWidth(transition.duration, zoom);
-      items.push({
-        id: transition.id,
-        kind: 'transition',
-        x,
-        width: transitionVisualWidth,
-        projectStartTime: boundary,
-        projectEndTime: boundary + transition.duration,
-      });
-      x += transitionVisualWidth + VIEW_CARD_GAP;
-      boundary += transition.duration;
-    }
-  });
-  return { duration: sequence.duration, items, width: x };
-}
-
-function timelinePosition(project: Project, time: number, zoom = 1) {
-  const layout = buildTimelineLayout(project, zoom);
-  if (!layout.items.length) return 0;
-  const clampedTime = Math.max(0, Math.min(layout.duration, time));
-  let position = 0;
-  for (const item of layout.items) {
-    position = item.x;
-    if (clampedTime <= item.projectEndTime) {
-      const duration = item.projectEndTime - item.projectStartTime;
-      const progress = duration > 0 ? (clampedTime - item.projectStartTime) / duration : 0;
-      return item.x + Math.max(0, Math.min(1, progress)) * item.width;
-    }
-  }
-  return position;
-}
-
-function timelineTimeAtPosition(project: Project, x: number, zoom = 1) {
-  const layout = buildTimelineLayout(project, zoom);
-  const item = layout.items.find((candidate) => x >= candidate.x && x <= candidate.x + candidate.width);
-  if (!item) return x < 0 ? 0 : layout.duration;
-  const duration = item.projectEndTime - item.projectStartTime;
-  if (duration <= 0) return item.projectStartTime;
-  const progress = Math.max(0, Math.min(1, (x - item.x) / item.width));
-  return item.projectStartTime + progress * duration;
 }
 
 function transitionTypeLabel(type: Transition['type']) {
