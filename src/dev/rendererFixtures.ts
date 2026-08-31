@@ -107,6 +107,7 @@ export function createRendererMilestoneProject(): Project {
   project.mapSettings = {
     styleId: 'documentary-dark',
     labelLanguage: 'both',
+    onlineLabelPolicyVersion: 1,
     basemapRenderer: 'legacy',
     onlineStyleId: 'liberty',
   };

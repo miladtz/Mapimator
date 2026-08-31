@@ -11,8 +11,9 @@ import {
   OPENFREEMAP_STYLES,
 } from '../core/openFreeMapAdapter';
 import { registerOnlineMapInstance } from '../core/onlineMapLifecycle';
+import { applyOnlineMapLabelLanguage, ensureMapLibreRtlSupport } from '../core/onlineMapLabels';
 import { fitProjectViewport, type LogicalViewport } from '../core/projectRenderViewport';
-import type { CameraState, OnlineBasemapStyleId } from '../core/project';
+import type { CameraState, MapLabelLanguageMode, OnlineBasemapStyleId } from '../core/project';
 
 export const ONLINE_INTERACTIVE_MIN_PIXEL_RATIO = 0.75;
 export const ONLINE_INTERACTIVE_MAX_PIXEL_RATIO = 1.25;
@@ -30,11 +31,19 @@ interface Props {
   camera: CameraState;
   onCameraChange: (camera: CameraState) => void;
   styleId: OnlineBasemapStyleId;
+  labelLanguage: MapLabelLanguageMode;
   interactionEnabled: boolean;
   viewport: LogicalViewport;
 }
 
-export function OnlineOpenFreeMap({ camera, onCameraChange, styleId, interactionEnabled, viewport }: Props) {
+export function OnlineOpenFreeMap({
+  camera,
+  onCameraChange,
+  styleId,
+  labelLanguage,
+  interactionEnabled,
+  viewport,
+}: Props) {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const displayRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -42,19 +51,38 @@ export function OnlineOpenFreeMap({ camera, onCameraChange, styleId, interaction
   const loadedStyleRef = useRef<OnlineBasemapStyleId | null>(null);
   const cameraRef = useRef(camera);
   const onCameraChangeRef = useRef(onCameraChange);
+  const labelLanguageRef = useRef(labelLanguage);
   const applyingCanonicalCamera = useRef(false);
   const nativeCameraSignaturesRef = useRef(new Set<string>());
   const diagnosticsRef = useRef({ nativeSyncs: 0, externalApplications: 0 });
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState('Loading online map...');
+  const [rtlSettled, setRtlSettled] = useState(false);
+  const [rtlFailure, setRtlFailure] = useState<string | null>(null);
   cameraRef.current = camera;
   onCameraChangeRef.current = onCameraChange;
+  labelLanguageRef.current = labelLanguage;
+
+  useEffect(() => {
+    let active = true;
+    ensureMapLibreRtlSupport()
+      .catch((rtlError: unknown) => {
+        if (!active) return;
+        const message = rtlError instanceof Error ? rtlError.message : String(rtlError);
+        console.error('[OpenFreeMap RTL] initialization failed', rtlError);
+        setRtlFailure(message);
+      })
+      .finally(() => active && setRtlSettled(true));
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     const stage = stageRef.current;
     const display = displayRef.current;
     const container = containerRef.current;
-    if (!stage || !display || !container) return;
+    if (!stage || !display || !container || !rtlSettled) return;
     const startedAt = performance.now();
 
     container.style.width = `${viewport.width}px`;
@@ -92,10 +120,10 @@ export function OnlineOpenFreeMap({ camera, onCameraChange, styleId, interaction
         });
     };
     applyDisplayFit();
-
     const initial = mapMotionToMapLibreCamera(cameraRef.current);
     const style = OPENFREEMAP_STYLES.find((candidate) => candidate.id === styleId)!;
     loadedStyleRef.current = styleId;
+    container.style.visibility = 'hidden';
     map = new maplibregl.Map({
       container,
       style: style.url,
@@ -173,6 +201,12 @@ export function OnlineOpenFreeMap({ camera, onCameraChange, styleId, interaction
         mapZoom: map!.getZoom(),
       });
     });
+    map.on('style.load', () => {
+      applyOnlineMapLabelLanguage(map!, labelLanguageRef.current, true);
+      map!.once('idle', () => {
+        container.style.visibility = 'visible';
+      });
+    });
     map.once('idle', () => {
       const milliseconds = Math.round(performance.now() - startedAt);
       console.info(`[OpenFreeMap POC] first idle/tiles ready: ${milliseconds} ms`);
@@ -195,7 +229,7 @@ export function OnlineOpenFreeMap({ camera, onCameraChange, styleId, interaction
       map?.remove();
       releaseLifecycle();
     };
-  }, [viewport.height, viewport.width]);
+  }, [rtlSettled, viewport.height, viewport.width]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -205,8 +239,16 @@ export function OnlineOpenFreeMap({ camera, onCameraChange, styleId, interaction
     loadedStyleRef.current = styleId;
     setError(null);
     setStatus(`Loading ${style.label}...`);
+    const container = containerRef.current;
+    if (container) container.style.visibility = 'hidden';
     map.setStyle(style.url);
   }, [styleId]);
+
+  useLayoutEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+    applyOnlineMapLabelLanguage(map, labelLanguage);
+  }, [labelLanguage]);
 
   useLayoutEffect(() => {
     const map = mapRef.current;
@@ -264,8 +306,16 @@ export function OnlineOpenFreeMap({ camera, onCameraChange, styleId, interaction
     interactionEnabled ? map.touchZoomRotate.enable() : map.touchZoomRotate.disable();
   }, [interactionEnabled]);
 
+  const rtlStatus =
+    rtlFailure && (labelLanguage === 'fa' || labelLanguage === 'both')
+      ? `Persian text rendering could not initialize · ${rtlFailure}`
+      : null;
   return (
-    <div ref={stageRef} className="online-map-poc" data-online-map-status={error ? 'error' : 'ready'}>
+    <div
+      ref={stageRef}
+      className="online-map-poc"
+      data-online-map-status={error || rtlStatus ? 'error' : 'ready'}
+    >
       <div ref={displayRef} className="online-map-display-frame">
         <div ref={containerRef} className="online-map-canvas" />
         <div className="online-map-navigation" role="group" aria-label="Map navigation">
@@ -296,7 +346,7 @@ export function OnlineOpenFreeMap({ camera, onCameraChange, styleId, interaction
           </button>
         </div>
       </div>
-      <div className="online-map-status">{error ?? status}</div>
+      <div className="online-map-status">{rtlStatus ?? error ?? status}</div>
     </div>
   );
 }

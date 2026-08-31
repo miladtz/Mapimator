@@ -396,14 +396,21 @@ export function validateAndMigrateProject(value: unknown): Project {
       'terrain',
     ] as const) ||
     !oneOf(value.mapSettings.labelLanguage, ['en', 'fa', 'both', 'none'] as const) ||
+    (value.mapSettings.onlineLabelPolicyVersion !== undefined &&
+      value.mapSettings.onlineLabelPolicyVersion !== 1) ||
     (value.mapSettings.basemapRenderer !== undefined &&
       !oneOf(value.mapSettings.basemapRenderer, ['legacy', 'online'] as const)) ||
     (value.mapSettings.onlineStyleId !== undefined &&
       !oneOf(value.mapSettings.onlineStyleId, ['3d', 'liberty', 'dark', 'bright'] as const))
   )
     throw new Error('Project map settings are malformed.');
+  const migrateOriginalOnlineLabels =
+    value.mapSettings.basemapRenderer === 'online' &&
+    value.mapSettings.onlineLabelPolicyVersion === undefined;
   value.mapSettings = {
     ...value.mapSettings,
+    labelLanguage: migrateOriginalOnlineLabels ? 'both' : value.mapSettings.labelLanguage,
+    onlineLabelPolicyVersion: 1,
     basemapRenderer: value.mapSettings.basemapRenderer === 'online' ? 'online' : 'legacy',
     onlineStyleId: oneOf(value.mapSettings.onlineStyleId, ['3d', 'liberty', 'dark', 'bright'] as const)
       ? value.mapSettings.onlineStyleId

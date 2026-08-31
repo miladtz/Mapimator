@@ -1,6 +1,7 @@
 export type AppLanguage = 'en' | 'fa';
 export type MapStyleId = 'documentary-dark' | 'documentary-light' | 'modern' | 'ink' | 'terrain';
 export type BasemapRenderer = 'legacy' | 'online';
+export type MapLabelLanguageMode = 'en' | 'fa' | 'both' | 'none';
 export type OnlineBasemapStyleId = '3d' | 'liberty' | 'dark' | 'bright';
 export type LayerType = 'region' | 'pin' | 'text' | 'shape' | 'arrow' | 'image' | 'route' | 'geo-effect';
 export type GeoEffectType =
@@ -333,7 +334,8 @@ export interface Project {
   };
   mapSettings: {
     styleId: MapStyleId;
-    labelLanguage: 'en' | 'fa' | 'both' | 'none';
+    labelLanguage: MapLabelLanguageMode;
+    onlineLabelPolicyVersion: 1;
     basemapRenderer: BasemapRenderer;
     onlineStyleId: OnlineBasemapStyleId;
   };
@@ -552,6 +554,7 @@ export const createProject = (name = 'Untitled map'): Project => {
     mapSettings: {
       styleId: 'documentary-dark',
       labelLanguage: 'en',
+      onlineLabelPolicyVersion: 1,
       basemapRenderer: 'online',
       onlineStyleId: 'liberty',
     },

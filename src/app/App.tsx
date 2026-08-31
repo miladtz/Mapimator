@@ -1485,10 +1485,10 @@ export function App() {
                   }))
                 }
               >
-                <option value="en">EN labels</option>
-                <option value="fa">فا labels</option>
-                <option value="both">EN + فا</option>
-                <option value="none">No labels</option>
+                <option value="en">English</option>
+                <option value="fa">Persian</option>
+                <option value="both">Persian + English</option>
+                <option value="none">None</option>
               </select>
               {MAP_STYLES.map((preset) => (
                 <button
@@ -1595,6 +1595,7 @@ export function App() {
                   editingCamera={selectedTimelineEntity?.kind === 'view' ? camera : editingScene.camera}
                   onCameraChange={handleCameraChange}
                   styleId={project.mapSettings.onlineStyleId}
+                  labelLanguage={project.mapSettings.labelLanguage}
                 />
               ) : (
                 <div className="online-map-unavailable" role="status">
@@ -2298,6 +2299,7 @@ function OnlinePreviewMap({
   editingCamera,
   onCameraChange,
   styleId,
+  labelLanguage,
 }: {
   clock: PreviewClock;
   playbackState: PlaybackState;
@@ -2305,6 +2307,7 @@ function OnlinePreviewMap({
   editingCamera: CameraState;
   onCameraChange: (camera: CameraState) => void;
   styleId: OnlineBasemapStyleId;
+  labelLanguage: Project['mapSettings']['labelLanguage'];
 }) {
   const time = usePreviewClockTime(clock);
   const previewState = playbackState === 'stopped' ? null : evaluateProjectAtTime(project, Math.max(0, time));
@@ -2313,6 +2316,7 @@ function OnlinePreviewMap({
       camera={previewState?.camera ?? editingCamera}
       onCameraChange={onCameraChange}
       styleId={styleId}
+      labelLanguage={labelLanguage}
       interactionEnabled={playbackState === 'stopped'}
       viewport={projectRenderViewport(project)}
     />

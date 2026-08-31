@@ -8,7 +8,9 @@ import {
 } from './openFreeMapAdapter';
 import { projectRenderViewport } from './projectRenderViewport';
 import { registerOnlineMapInstance, type OnlineMapPurpose } from './onlineMapLifecycle';
-import type { CameraState, OnlineBasemapStyleId, Project } from './project';
+import { applyOnlineMapLabelLanguage, ensureMapLibreRtlSupport } from './onlineMapLabels';
+import { requiresMapLibreRtl } from './mapLibreRtlAsset';
+import type { CameraState, MapLabelLanguageMode, OnlineBasemapStyleId, Project } from './project';
 
 const ONLINE_MAP_READY_TIMEOUT_MS = 30_000;
 export const ONLINE_EXPORT_PIXEL_RATIO = 1.5;
@@ -35,6 +37,43 @@ export interface OnlineMapFrameDiagnostics {
 }
 
 const abortError = () => new DOMException('Online map rendering was cancelled.', 'AbortError');
+
+const waitForStyleAndApplyLabels = (
+  map: MapLibreMap,
+  labelLanguage: MapLabelLanguageMode,
+  signal?: AbortSignal,
+) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(abortError());
+    const onStyleLoad = () => {
+      cleanup();
+      applyOnlineMapLabelLanguage(map, labelLanguage, true);
+      resolve();
+    };
+    const onError = (event: maplibregl.ErrorEvent) => {
+      if (isRecoverableOpenFreeMapResourceError(event.error)) return;
+      cleanup();
+      reject(event.error ?? new Error('Online map style failed to load.'));
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(abortError());
+    };
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      map.off('style.load', onStyleLoad);
+      map.off('error', onError);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error('Online map style did not load within 30 seconds.'));
+    }, ONLINE_MAP_READY_TIMEOUT_MS);
+    map.on('style.load', onStyleLoad);
+    map.on('error', onError);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (map.isStyleLoaded()) onStyleLoad();
+  });
 
 const waitForIdle = (map: MapLibreMap, signal?: AbortSignal) =>
   new Promise<void>((resolve, reject) => {
@@ -135,6 +174,7 @@ export class OnlineMapFrameRenderer {
     let map: MapLibreMap | undefined;
     let releaseLifecycle: (() => void) | undefined;
     try {
+      if (requiresMapLibreRtl(project.mapSettings.labelLanguage)) await ensureMapLibreRtlSupport();
       map = new maplibregl.Map({
         container: host,
         style: openFreeMapStyleUrl(styleId),
@@ -157,6 +197,7 @@ export class OnlineMapFrameRenderer {
       });
       releaseLifecycle = registerOnlineMapInstance(purpose);
       map.resize();
+      await waitForStyleAndApplyLabels(map, project.mapSettings.labelLanguage, signal);
       await waitForIdle(map, signal);
       await waitForFinalRender(map, signal);
       const canvas = map.getCanvas();

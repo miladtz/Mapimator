@@ -112,6 +112,7 @@ export const compileViews = (views: View[]): AnimationSequence =>
     mapSettings: {
       styleId: 'documentary-dark',
       labelLanguage: 'en',
+      onlineLabelPolicyVersion: 1,
       basemapRenderer: 'legacy',
       onlineStyleId: 'liberty',
     },
