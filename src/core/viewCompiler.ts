@@ -200,6 +200,7 @@ const layerLifecycle = (
 
 /** Merge a lifecycle phase into a layer clone (transients are render-only). */
 const applyPhaseToLayer = (layer: Layer, phase: LayerLifecyclePhase) => {
+  layer.pinSceneOpacity = phase.opacityMul;
   layer.opacity = layer.opacity * phase.opacityMul;
   layer.visible = phase.visible;
   if (phase.popScale !== undefined) layer.pinPopScale = phase.popScale;

@@ -89,13 +89,13 @@ assert.match(
 );
 assert.match(
   frame,
-  /onlineRenderer\.render\(state\.camera, this\.canvas, signal\)/,
-  'Export propagates camera.',
+  /onlineRenderer\.render\(\s*state\.camera,\s*state\.layers,\s*this\.canvas,\s*signal,?\s*\)/,
+  'Export propagates camera and evaluated project overlays.',
 );
 assert.match(
   frame,
-  /onlineRenderer\.render\(state\.camera, canvas, signal\)/,
-  'Thumbnails propagate camera.',
+  /onlineRenderer\.render\(state\.camera, state\.layers, canvas, signal\)/,
+  'Thumbnails propagate camera and evaluated project overlays.',
 );
 assert.match(frame, /no Legacy fallback was used/, 'Unsupported online states fail explicitly.');
 assert.match(exporter, /renderProjectRgbaSequence/, 'Video export consumes the shared prepared frame path.');

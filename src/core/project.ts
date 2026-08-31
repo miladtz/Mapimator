@@ -189,7 +189,12 @@ export interface Layer {
   pinBorderWidth?: number;
   pinLabelVisible?: boolean;
   pinLabelSize?: number;
+  pinLabelOpacity?: number;
   pinLabelColor?: string;
+  pinLabelBorderColor?: string;
+  pinLabelBorderWidth?: number;
+  pinLabelAngle?: number;
+  /** @deprecated Read only when migrating pre-angle projects. */
   pinLabelPosition?: PinLabelPosition;
   pinLabelGap?: number;
   pinAppear?: PinAppear;
@@ -213,6 +218,8 @@ export interface Layer {
   pinPopScale?: number;
   /** Transient evaluator output (drop Y offset in screen px). Never persisted. */
   pinDropOffsetY?: number;
+  /** Render-only View/Transition appearance multiplier; never authored or persisted. */
+  pinSceneOpacity?: number;
 }
 export interface CameraState {
   x: number;
@@ -470,9 +477,12 @@ export const createLayer = (type: LayerType, offset = 0): Layer => {
       pinBorderWidth: 2.5,
       pinLabelVisible: true,
       pinLabelSize: 12,
+      pinLabelOpacity: 1,
       pinLabelColor: '#ffffff',
-      pinLabelPosition: 'right',
-      pinLabelGap: 6,
+      pinLabelBorderColor: '#ffffff',
+      pinLabelBorderWidth: 1,
+      pinLabelAngle: 0,
+      pinLabelGap: 2,
       pinAppearEnabled: true,
       pinAppearType: 'fade',
       pinAppearDelay: 0,
@@ -530,7 +540,11 @@ export const PIN_DEFAULTS = {
   borderWidth: 3,
   labelVisible: true,
   labelSize: 11,
+  labelOpacity: 1,
   labelColor: '#ffffff',
+  labelBorderColor: '#ffffff',
+  labelBorderWidth: 1,
+  labelAngle: 0,
   labelPosition: 'right' as PinLabelPosition,
   labelGap: 5,
   appear: 'fade' as PinAppear,
@@ -544,6 +558,17 @@ export const PIN_DEFAULTS = {
 
 export const pinStyleOf = (layer: Layer): PinStyle => layer.pinStyle ?? PIN_DEFAULTS.style;
 export const pinSizeOf = (layer: Layer): number => layer.pinSize ?? PIN_DEFAULTS.size;
+export const normalizePinLabelAngle = (angle: number): number => {
+  if (!Number.isFinite(angle)) return 0;
+  const normalized = angle % 360;
+  return normalized < 0 ? normalized + 360 : normalized;
+};
+export const pinLabelOffsetOf = (layer: Layer): { x: number; y: number } => {
+  const angle = normalizePinLabelAngle(layer.pinLabelAngle ?? PIN_DEFAULTS.labelAngle);
+  const radius = layer.pinLabelGap ?? PIN_DEFAULTS.labelGap;
+  const radians = (angle * Math.PI) / 180;
+  return { x: radius * Math.cos(radians), y: -radius * Math.sin(radians) };
+};
 export const pinAppearOf = (layer: Layer): PinAppear => layer.pinAppear ?? PIN_DEFAULTS.appear;
 export const createProject = (name = 'Untitled map'): Project => {
   const now = new Date().toISOString();

@@ -263,7 +263,12 @@ class PreparedFrameRenderer {
         throw new Error(
           'The experimental online renderer does not support Globe export; no Legacy fallback was used.',
         );
-      const onlineDiagnostics = await this.onlineRenderer.render(state.camera, this.canvas, signal);
+      const onlineDiagnostics = await this.onlineRenderer.render(
+        state.camera,
+        state.layers,
+        this.canvas,
+        signal,
+      );
       const rgbaStarted = performance.now();
       const value = await consumeCanvas(this.canvas);
       return {
@@ -637,7 +642,7 @@ export async function renderViewThumbnails(
           throw new Error(
             'The experimental online renderer does not support Globe thumbnails; no Legacy fallback was used.',
           );
-        await onlineRenderer.render(state.camera, canvas, signal);
+        await onlineRenderer.render(state.camera, state.layers, canvas, signal);
         signal?.throwIfAborted();
         onThumbnail({ viewId, dataUrl: canvasToJpegDataUrl(canvas) });
         await new Promise((resolve) => window.setTimeout(resolve, 0));

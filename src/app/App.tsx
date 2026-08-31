@@ -10,8 +10,9 @@ import {
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
+import { confirm as confirmDialog, open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
+import { normalizeHexColor } from '../core/color';
 import { OfflineMap } from '../components/OfflineMap';
 import type { MapMode } from '../components/OfflineMap';
 import { OnlineOpenFreeMap } from '../components/OnlineOpenFreeMap';
@@ -769,18 +770,20 @@ export function App() {
     updateProject((p) => addProjectLayer(p, layer));
     selectLayer(layer.id);
   };
-  const remove = async () => {
-    if (!selected) return;
-    const name = selected.name;
-    const ok = window.confirm(
+  const removeLayerById = async (layerId: string) => {
+    const target = project.layers.find((layer) => layer.id === layerId);
+    if (!target) return;
+    const name = target.name;
+    const ok = await confirmDialog(
       `Delete ${name} from the project?\nIt will be removed from all Views and Transitions.`,
+      { title: 'Delete Project Layer', kind: 'warning' },
     );
     if (!ok) return;
     // Centralized project-level cascade: removes the Layer from the registry
     // and from every View/Transition usage.
-    const deleted = deleteProjectLayer(project, selected.id);
+    const deleted = deleteProjectLayer(project, layerId);
     setProject(deleted);
-    selectLayer(null);
+    if (selectedId === layerId) selectLayer(null);
     try {
       const cleaned = await cleanupProjectAssets(deleted);
       setProject(cleaned.project);
@@ -789,6 +792,7 @@ export function App() {
       setNotice(`${name} deleted; asset cleanup will retry later: ${String(error)}`);
     }
   };
+  const remove = () => (selected ? removeLayerById(selected.id) : Promise.resolve());
   const move = (direction: -1 | 1) => {
     if (!selected) return;
     updateProject((p) => {
@@ -976,7 +980,7 @@ export function App() {
       setTimelineSelection(null);
       setTransitionPopoverId(null);
       previewClock.stop();
-      setNotice('Map Mode â€” editing Project Layers');
+      setNotice('Map Mode — editing Project Layers');
       return;
     }
     const first = project.views[0];
@@ -1415,6 +1419,20 @@ export function App() {
                       <strong>{layer.name}</strong>
                       <small>{layerLabel[layer.type].toUpperCase()}</small>
                     </span>
+                    <button
+                      type="button"
+                      className="layer-delete"
+                      aria-label={`Delete ${layer.name}`}
+                      title={`Delete ${layer.name}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void removeLayerById(layer.id);
+                      }}
+                    >
+                      <svg viewBox="0 0 16 16" aria-hidden="true">
+                        <path d="M3.5 4.5h9M6 4.5V3h4v1.5m-5.5 0 .6 9h5.8l.6-9M6.8 7v4m2.4-4v4" />
+                      </svg>
+                    </button>
                     <span className="row-status">{layer.locked ? '▣' : '◉'}</span>
                   </div>
                 ))
@@ -1592,10 +1610,25 @@ export function App() {
                   clock={previewClock}
                   playbackState={playbackState}
                   project={project}
+                  editingLayers={
+                    allEyesHidden
+                      ? []
+                      : editingScene.layers
+                          .filter((layer) => !eyeHidden[layer.id])
+                          .map((layer) => ({ ...layer, visible: true }))
+                  }
                   editingCamera={selectedTimelineEntity?.kind === 'view' ? camera : editingScene.camera}
                   onCameraChange={handleCameraChange}
                   styleId={project.mapSettings.onlineStyleId}
                   labelLanguage={project.mapSettings.labelLanguage}
+                  selectedId={selectedId}
+                  onSelect={selectLayer}
+                  onMovePin={(id, x, y) => updateLayer(id, { x, y })}
+                  onBackgroundClick={(point) => {
+                    if (placing === 'pin') placeLayerAt('pin', point);
+                    else clearSelection();
+                  }}
+                  assetUrls={assetUrls}
                 />
               ) : (
                 <div className="online-map-unavailable" role="status">
@@ -2296,18 +2329,30 @@ function OnlinePreviewMap({
   clock,
   playbackState,
   project,
+  editingLayers,
   editingCamera,
   onCameraChange,
   styleId,
   labelLanguage,
+  selectedId,
+  onSelect,
+  onMovePin,
+  onBackgroundClick,
+  assetUrls,
 }: {
   clock: PreviewClock;
   playbackState: PlaybackState;
   project: Project;
+  editingLayers: Layer[];
   editingCamera: CameraState;
   onCameraChange: (camera: CameraState) => void;
   styleId: OnlineBasemapStyleId;
   labelLanguage: Project['mapSettings']['labelLanguage'];
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
+  onMovePin: (id: string, x: number, y: number) => void;
+  onBackgroundClick: (point: { x: number; y: number }) => void;
+  assetUrls: Readonly<Record<string, string>>;
 }) {
   const time = usePreviewClockTime(clock);
   const previewState = playbackState === 'stopped' ? null : evaluateProjectAtTime(project, Math.max(0, time));
@@ -2319,6 +2364,12 @@ function OnlinePreviewMap({
       labelLanguage={labelLanguage}
       interactionEnabled={playbackState === 'stopped'}
       viewport={projectRenderViewport(project)}
+      layers={previewState?.layers ?? editingLayers}
+      selectedId={playbackState === 'stopped' ? selectedId : null}
+      onSelect={onSelect}
+      onMovePin={onMovePin}
+      onBackgroundClick={onBackgroundClick}
+      assetUrls={assetUrls}
     />
   );
 }
@@ -2872,6 +2923,39 @@ interface ViewLayerContext {
   onPatchAnim: (patch: Partial<import('../core/project').SegmentLayerAnimation>) => void;
 }
 
+function HexColorField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const canonical = normalizeHexColor(value) ?? '#FFFFFF';
+  return (
+    <span className="hex-color-control">
+      <input
+        type="color"
+        value={canonical}
+        onChange={(event) => onChange(event.target.value.toUpperCase())}
+      />
+      <input
+        key={canonical}
+        type="text"
+        aria-label="HEX color"
+        defaultValue={canonical}
+        maxLength={7}
+        spellCheck={false}
+        onChange={(event) => {
+          const next = normalizeHexColor(event.target.value);
+          if (next) onChange(next);
+        }}
+        onBlur={(event) => {
+          const next = normalizeHexColor(event.target.value);
+          if (next) onChange(next);
+          else event.currentTarget.value = canonical;
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') event.currentTarget.blur();
+        }}
+      />
+    </span>
+  );
+}
+
 function Inspector({
   layer,
   onChange,
@@ -2982,7 +3066,7 @@ function Inspector({
   };
   return (
     <div className="layer-inspector">
-      <span className="pin-section-title">Project Layer â€” {layer.name}</span>
+      <span className="pin-section-title">Project Layer — {layer.name}</span>
       <span className="type-chip">
         {icons[layer.type]} {layerLabel[layer.type]}
       </span>
@@ -3060,28 +3144,41 @@ function Inspector({
             <div className="two-col">
               <label>
                 Size
-                <span className="pin-size-control">
+                <span className="pin-number-with-unit">
                   <input
-                    type="range"
+                    aria-label="Pin size value"
+                    type="number"
                     min="4"
                     max="200"
-                    step="1"
+                    step="0.1"
                     value={layer.pinSize ?? 15}
-                    onChange={(e) => onChange({ pinSize: Number(e.target.value) })}
+                    onWheel={(event) => event.stopPropagation()}
+                    onChange={(event) =>
+                      onChange({ pinSize: Math.max(4, Math.min(200, Number(event.target.value))) })
+                    }
                   />
-                  <b>{Math.round(layer.pinSize ?? 15)}px</b>
+                  <span>px</span>
                 </span>
               </label>
               <label>
                 Opacity
-                <input
-                  type="range"
-                  min="0.05"
-                  max="1"
-                  step="0.05"
-                  value={layer.opacity}
-                  onChange={(e) => onChange({ opacity: Number(e.target.value) })}
-                />
+                <span className="pin-number-with-unit">
+                  <input
+                    aria-label="Pin opacity percentage"
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value={Math.round(layer.opacity * 1000) / 10}
+                    onWheel={(event) => event.stopPropagation()}
+                    onChange={(event) => {
+                      const value = Number(event.target.value);
+                      if (Number.isFinite(value))
+                        onChange({ opacity: Math.max(0, Math.min(1, value / 100)) });
+                    }}
+                  />
+                  <span>%</span>
+                </span>
               </label>
             </div>
             {isCustom ? (
@@ -3160,20 +3257,18 @@ function Inspector({
                   </label>
                   <label>
                     Tint color
-                    <input
-                      type="color"
+                    <HexColorField
                       value={layer.pinTintColor ?? '#e8533e'}
-                      onChange={(e) => onChange({ pinTintColor: e.target.value })}
+                      onChange={(value) => onChange({ pinTintColor: value })}
                     />
                   </label>
                 </div>
                 <div className="two-col">
                   <label>
                     Border
-                    <input
-                      type="color"
+                    <HexColorField
                       value={layer.pinBorderColor ?? '#ffffff'}
-                      onChange={(e) => onChange({ pinBorderColor: e.target.value })}
+                      onChange={(value) => onChange({ pinBorderColor: value })}
                     />
                   </label>
                   <label>
@@ -3184,6 +3279,7 @@ function Inspector({
                       max="12"
                       step="0.5"
                       value={layer.pinBorderWidth ?? 0}
+                      onWheel={(event) => event.stopPropagation()}
                       onChange={(e) => onChange({ pinBorderWidth: Number(e.target.value) })}
                     />
                   </label>
@@ -3194,18 +3290,13 @@ function Inspector({
                 <div className="two-col">
                   <label>
                     Fill
-                    <input
-                      type="color"
-                      value={layer.color}
-                      onChange={(e) => onChange({ color: e.target.value })}
-                    />
+                    <HexColorField value={layer.color} onChange={(value) => onChange({ color: value })} />
                   </label>
                   <label>
                     Border
-                    <input
-                      type="color"
+                    <HexColorField
                       value={layer.pinBorderColor ?? '#ffffff'}
-                      onChange={(e) => onChange({ pinBorderColor: e.target.value })}
+                      onChange={(value) => onChange({ pinBorderColor: value })}
                     />
                   </label>
                 </div>
@@ -3218,6 +3309,7 @@ function Inspector({
                       max="12"
                       step="0.5"
                       value={layer.pinBorderWidth ?? 3}
+                      onWheel={(event) => event.stopPropagation()}
                       onChange={(e) => onChange({ pinBorderWidth: Number(e.target.value) })}
                     />
                   </label>
@@ -3248,50 +3340,112 @@ function Inspector({
               <label>
                 Label size
                 <input
-                  type="range"
+                  aria-label="Pin label size value"
+                  type="number"
                   min="9"
                   max="26"
-                  step="0.5"
+                  step="0.1"
                   value={layer.pinLabelSize ?? 11}
-                  onChange={(e) => onChange({ pinLabelSize: Number(e.target.value) })}
+                  onWheel={(event) => event.stopPropagation()}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    if (Number.isFinite(value)) onChange({ pinLabelSize: Math.max(9, Math.min(26, value)) });
+                  }}
                 />
               </label>
               <label>
-                Label color
-                <input
-                  type="color"
+                Label opacity
+                <span className="pin-number-with-unit">
+                  <input
+                    aria-label="Pin label opacity percentage"
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value={Math.round((layer.pinLabelOpacity ?? 1) * 1000) / 10}
+                    onWheel={(event) => event.stopPropagation()}
+                    onChange={(event) => {
+                      const value = Number(event.target.value);
+                      if (Number.isFinite(value))
+                        onChange({ pinLabelOpacity: Math.max(0, Math.min(1, value / 100)) });
+                    }}
+                  />
+                  <span>%</span>
+                </span>
+              </label>
+            </div>
+            <div className="two-col">
+              <label>
+                Text color
+                <HexColorField
                   value={layer.pinLabelColor ?? '#ffffff'}
-                  onChange={(e) => onChange({ pinLabelColor: e.target.value })}
+                  onChange={(value) => onChange({ pinLabelColor: value })}
+                />
+              </label>
+              <label>
+                Border color
+                <HexColorField
+                  value={layer.pinLabelBorderColor ?? '#ffffff'}
+                  onChange={(value) => onChange({ pinLabelBorderColor: value })}
                 />
               </label>
             </div>
             <div className="two-col">
               <label>
-                Label position
-                <select
-                  value={layer.pinLabelPosition ?? 'right'}
-                  onChange={(e) =>
-                    onChange({ pinLabelPosition: e.target.value as Layer['pinLabelPosition'] })
-                  }
-                >
-                  <option value="right">Right</option>
-                  <option value="left">Left</option>
-                  <option value="top">Top</option>
-                  <option value="bottom">Bottom</option>
-                </select>
+                Border width
+                <input
+                  aria-label="Pin label border width"
+                  type="number"
+                  min="0"
+                  max="12"
+                  step="0.1"
+                  value={layer.pinLabelBorderWidth ?? 1}
+                  onWheel={(event) => event.stopPropagation()}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    if (Number.isFinite(value))
+                      onChange({ pinLabelBorderWidth: Math.max(0, Math.min(12, value)) });
+                  }}
+                />
               </label>
               <label>
                 Label gap
                 <input
                   type="number"
-                  min="0"
-                  max="20"
-                  step="1"
+                  min="-50"
+                  max="40"
+                  step="0.5"
                   value={layer.pinLabelGap ?? 5}
-                  onChange={(e) => onChange({ pinLabelGap: Number(e.target.value) })}
+                  onWheel={(event) => event.stopPropagation()}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    if (Number.isFinite(value)) onChange({ pinLabelGap: Math.max(-50, Math.min(40, value)) });
+                  }}
                 />
               </label>
             </div>
+            <label>
+              Label angle
+              <span className="pin-number-with-unit">
+                <input
+                  aria-label="Pin label angle"
+                  type="number"
+                  min="0"
+                  max="360"
+                  step="1"
+                  value={layer.pinLabelAngle ?? 0}
+                  onWheel={(event) => event.stopPropagation()}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    if (Number.isFinite(value)) {
+                      const normalized = ((value % 360) + 360) % 360;
+                      onChange({ pinLabelAngle: normalized });
+                    }
+                  }}
+                />
+                <span>°</span>
+              </span>
+            </label>
           </div>
           <p className="global-layer-note">
             Layer properties apply everywhere this Layer is used. Animate it per View / Transition in the
@@ -3644,7 +3798,7 @@ function Inspector({
         <div className="two-col">
           <label>
             Color
-            <input type="color" value={layer.color} onChange={(e) => onChange({ color: e.target.value })} />
+            <HexColorField value={layer.color} onChange={(value) => onChange({ color: value })} />
           </label>
           <label>
             Opacity

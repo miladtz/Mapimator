@@ -36,12 +36,12 @@ export const MAPLIBRE_MAX_ZOOM = MAPLIBRE_PRACTICAL_MAX_ZOOM;
 export const mapLibreMinimumZoom = () => MAPLIBRE_MIN_ZOOM;
 export const mapLibreMaximumZoom = () => MAPLIBRE_MAX_ZOOM;
 
-const worldToLngLat = (x: number, y: number): [number, number] => [
+export const mapMotionWorldToLngLat = (x: number, y: number): [number, number] => [
   (x / CAMERA_VIEWPORT.width) * 360 - 180,
   clamp(90 - (y / CAMERA_VIEWPORT.height) * 180, -MAX_MERCATOR_LATITUDE, MAX_MERCATOR_LATITUDE),
 ];
 
-const lngLatToWorld = (longitude: number, latitude: number) => ({
+export const lngLatToMapMotionWorld = (longitude: number, latitude: number) => ({
   x: ((longitude + 180) / 360) * CAMERA_VIEWPORT.width,
   y: ((90 - clamp(latitude, -MAX_MERCATOR_LATITUDE, MAX_MERCATOR_LATITUDE)) / 180) * CAMERA_VIEWPORT.height,
 });
@@ -54,7 +54,7 @@ export const mapMotionToMapLibreCamera = (camera: CameraState) => {
     y: (CAMERA_VIEWPORT.height / 2 - normalized.y) / normalized.zoom,
   };
   return {
-    center: worldToLngLat(centerWorld.x, centerWorld.y),
+    center: mapMotionWorldToLngLat(centerWorld.x, centerWorld.y),
     zoom: mapMotionZoomToMapLibreZoom(normalized.zoom),
     bearing: normalizeBearing(normalized.bearing),
     pitch: clamp(normalized.pitch ?? 0, 0, 85),
@@ -68,7 +68,7 @@ export const mapLibreToMapMotionCamera = (
   pitch: number,
   authoredBearing = bearing,
 ): CameraState => {
-  const world = lngLatToWorld(center.lng, center.lat);
+  const world = lngLatToMapMotionWorld(center.lng, center.lat);
   const mapMotionZoom = mapLibreZoomToMapMotionZoom(zoom);
   return constrainCameraForRenderer(
     roundCamera({

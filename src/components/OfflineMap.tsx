@@ -26,6 +26,7 @@ import {
 } from '../core/camera';
 import {
   PIN_DEFAULTS,
+  pinLabelOffsetOf,
   pinSizeOf,
   pinStyleOf,
   type CameraState,
@@ -1271,11 +1272,14 @@ function PinGraphic({
   const showLabel = (layer.pinLabelVisible ?? PIN_DEFAULTS.labelVisible) && text.length > 0;
   const labelSize = layer.pinLabelSize ?? PIN_DEFAULTS.labelSize;
   const labelColor = layer.pinLabelColor ?? PIN_DEFAULTS.labelColor;
-  const labelPosition = layer.pinLabelPosition ?? PIN_DEFAULTS.labelPosition;
-  const labelGap = layer.pinLabelGap ?? PIN_DEFAULTS.labelGap;
+  const labelOpacity = (layer.pinLabelOpacity ?? PIN_DEFAULTS.labelOpacity) * (layer.pinSceneOpacity ?? 1);
+  const labelBorderColor = layer.pinLabelBorderColor ?? PIN_DEFAULTS.labelBorderColor;
+  const labelBorderWidth = layer.pinLabelBorderWidth ?? PIN_DEFAULTS.labelBorderWidth;
   const bounds = pinBounds(style, size);
   const centerX = (bounds.left + bounds.right) / 2;
   const centerY = (bounds.top + bounds.bottom) / 2;
+  const visualCenterX = style === 'custom' ? 0 : centerX;
+  const visualCenterY = style === 'custom' ? (layer.pinCustomAnchor === 'center' ? 0 : -size) : centerY;
   const isPersian = resolveTextLanguage(layer.text ?? '', layer.textLanguage) === 'persian';
   const glyph = (() => {
     switch (style) {
@@ -1412,33 +1416,20 @@ function PinGraphic({
         );
     }
   })();
-  const labelX =
-    labelPosition === 'right'
-      ? bounds.right + labelGap
-      : labelPosition === 'left'
-        ? bounds.left - labelGap
-        : centerX;
-  const labelY =
-    labelPosition === 'top'
-      ? bounds.top - labelGap
-      : labelPosition === 'bottom'
-        ? bounds.bottom + labelGap
-        : centerY;
+  const labelOffset = pinLabelOffsetOf(layer);
   const label = showLabel ? (
     <text
-      x={labelX}
-      y={labelY}
+      x={visualCenterX + labelOffset.x}
+      y={visualCenterY + labelOffset.y}
       fill={labelColor}
+      stroke={labelBorderColor}
+      strokeWidth={labelBorderWidth}
+      paintOrder="stroke fill"
+      opacity={labelOpacity}
       className={`pin-label ${isPersian ? 'persian-text' : ''}`}
       style={{ fontSize: labelSize }}
-      textAnchor={labelPosition === 'left' ? 'end' : labelPosition === 'right' ? 'start' : 'middle'}
-      dominantBaseline={
-        labelPosition === 'top'
-          ? 'text-before-edge'
-          : labelPosition === 'bottom'
-            ? 'text-after-edge'
-            : 'central'
-      }
+      textAnchor="middle"
+      dominantBaseline="central"
       direction={resolveTextDirection(layer.text ?? '', layer.textDirection)}
       unicodeBidi="plaintext"
     >
@@ -1446,11 +1437,16 @@ function PinGraphic({
     </text>
   ) : null;
   return (
-    <g {...commonProps(layer, selected, onPointerDown)}>
+    <g
+      {...(() => {
+        const { opacity: _opacity, ...props } = commonProps(layer, selected, onPointerDown);
+        return props;
+      })()}
+    >
       <g
         transform={`translate(${point.x} ${point.y + dropOffsetY}) rotate(${screenRotation}) scale(${scale})`}
       >
-        {glyph}
+        <g opacity={layer.opacity}>{glyph}</g>
         {label}
         {selected && (
           <g className="pin-selection" pointerEvents="none">

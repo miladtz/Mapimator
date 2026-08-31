@@ -47,6 +47,7 @@
     "test:openfreemap-poc": "node scripts/verify-openfreemap-poc.mjs",
     "test:online-renderer-parity": "node scripts/verify-online-renderer-parity.mjs",
     "test:online-label-language": "node scripts/verify-online-label-language.mjs",
+    "test:online-pins": "node scripts/verify-online-pins.mjs",
     "test:online-export-quality": "node scripts/verify-online-export-quality.mjs",
     "test:online-scene-parity": "node scripts/verify-online-scene-parity.mjs",
     "test:online-smooth-zoom-invariance": "node scripts/verify-online-smooth-zoom-invariance.mjs",

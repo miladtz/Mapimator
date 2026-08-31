@@ -9,8 +9,15 @@ import {
 import { projectRenderViewport } from './projectRenderViewport';
 import { registerOnlineMapInstance, type OnlineMapPurpose } from './onlineMapLifecycle';
 import { applyOnlineMapLabelLanguage, ensureMapLibreRtlSupport } from './onlineMapLabels';
+import {
+  ensureOnlineProjectOverlays,
+  loadOnlineProjectOverlayAssets,
+  updateOnlineProjectOverlays,
+} from './onlineProjectOverlays';
 import { requiresMapLibreRtl } from './mapLibreRtlAsset';
-import type { CameraState, MapLabelLanguageMode, OnlineBasemapStyleId, Project } from './project';
+import { evaluateProjectAtTime } from './viewCompiler';
+import { resolveProjectAssetUrls } from './projectAssets';
+import type { CameraState, Layer, MapLabelLanguageMode, OnlineBasemapStyleId, Project } from './project';
 
 const ONLINE_MAP_READY_TIMEOUT_MS = 30_000;
 export const ONLINE_EXPORT_PIXEL_RATIO = 1.5;
@@ -41,14 +48,23 @@ const abortError = () => new DOMException('Online map rendering was cancelled.',
 const waitForStyleAndApplyLabels = (
   map: MapLibreMap,
   labelLanguage: MapLabelLanguageMode,
+  layers: readonly Layer[],
+  assetUrls: Readonly<Record<string, string>>,
   signal?: AbortSignal,
 ) =>
   new Promise<void>((resolve, reject) => {
     if (signal?.aborted) return reject(abortError());
-    const onStyleLoad = () => {
+    const onStyleLoad = async () => {
       cleanup();
-      applyOnlineMapLabelLanguage(map, labelLanguage, true);
-      resolve();
+      try {
+        applyOnlineMapLabelLanguage(map, labelLanguage, true);
+        ensureOnlineProjectOverlays(map, layers, null, assetUrls);
+        await loadOnlineProjectOverlayAssets(map, layers, assetUrls);
+        updateOnlineProjectOverlays(map, layers, null, assetUrls);
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
     };
     const onError = (event: maplibregl.ErrorEvent) => {
       if (isRecoverableOpenFreeMapResourceError(event.error)) return;
@@ -141,6 +157,7 @@ export class OnlineMapFrameRenderer {
     private readonly width: number,
     private readonly height: number,
     private readonly pixelRatio: number,
+    private readonly assetUrls: Readonly<Record<string, string>>,
     private readonly releaseLifecycle: () => void,
   ) {}
 
@@ -174,6 +191,7 @@ export class OnlineMapFrameRenderer {
     let map: MapLibreMap | undefined;
     let releaseLifecycle: (() => void) | undefined;
     try {
+      const assetUrls = await resolveProjectAssetUrls(project);
       if (requiresMapLibreRtl(project.mapSettings.labelLanguage)) await ensureMapLibreRtlSupport();
       map = new maplibregl.Map({
         container: host,
@@ -197,7 +215,13 @@ export class OnlineMapFrameRenderer {
       });
       releaseLifecycle = registerOnlineMapInstance(purpose);
       map.resize();
-      await waitForStyleAndApplyLabels(map, project.mapSettings.labelLanguage, signal);
+      await waitForStyleAndApplyLabels(
+        map,
+        project.mapSettings.labelLanguage,
+        evaluateProjectAtTime(project, 0).layers,
+        assetUrls,
+        signal,
+      );
       await waitForIdle(map, signal);
       await waitForFinalRender(map, signal);
       const canvas = map.getCanvas();
@@ -215,6 +239,7 @@ export class OnlineMapFrameRenderer {
         width,
         height,
         pixelRatio,
+        assetUrls,
         releaseLifecycle,
       );
     } catch (error) {
@@ -228,11 +253,17 @@ export class OnlineMapFrameRenderer {
     }
   }
 
-  async render(camera: CameraState, destination: HTMLCanvasElement, signal?: AbortSignal) {
+  async render(
+    camera: CameraState,
+    layers: readonly Layer[],
+    destination: HTMLCanvasElement,
+    signal?: AbortSignal,
+  ) {
     signal?.throwIfAborted();
     this.map.resize();
     const resolvedCamera = mapMotionToMapLibreCamera(camera);
     this.map.jumpTo(resolvedCamera);
+    updateOnlineProjectOverlays(this.map, layers, null, this.assetUrls);
     if (import.meta.env.DEV) {
       const appliedCenter = this.map.getCenter();
       console.debug('[OpenFreeMap Export Camera Semantics]', {

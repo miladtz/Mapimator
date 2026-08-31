@@ -14,6 +14,13 @@ export type OnlineMapStyleLayer = {
   metadata?: unknown;
 };
 
+export const ONLINE_PROJECT_OVERLAY_PREFIX = 'mapmotion-project-';
+export const isOnlineProjectOverlayLayer = (layer: Pick<OnlineMapStyleLayer, 'id' | 'metadata'>) =>
+  layer.id.startsWith(ONLINE_PROJECT_OVERLAY_PREFIX) ||
+  (typeof layer.metadata === 'object' &&
+    layer.metadata !== null &&
+    (layer.metadata as Record<string, unknown>)['mapmotion:overlay'] === true);
+
 export const ONLINE_ENGLISH_NAME_PROPERTIES = ['name:en', 'name:latin'] as const;
 
 /**

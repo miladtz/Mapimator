@@ -2,6 +2,7 @@ import maplibregl, { type Map as MapLibreMap } from 'maplibre-gl';
 import { createMapLibreRtlInitializer, mapLibreRtlPluginUrl } from './mapLibreRtlAsset';
 import {
   blockedEnglishNameProperties,
+  isOnlineProjectOverlayLayer,
   mapLabelTextField,
   shouldHideOnlineMapLayer,
   type MapLibreTextField,
@@ -44,6 +45,7 @@ export const applyOnlineMapLabelLanguage = (
   let changed = 0;
   const unsafeEnglishLayers: Array<{ id: string; sourceLayer?: string; properties: string[] }> = [];
   for (const layer of map.getStyle().layers ?? []) {
+    if (isOnlineProjectOverlayLayer(layer as OnlineMapStyleLayer)) continue;
     const currentTextField =
       layer.type === 'symbol'
         ? (map.getLayoutProperty(layer.id, 'text-field') as MapLibreTextField | undefined)

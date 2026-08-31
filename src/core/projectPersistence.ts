@@ -10,7 +10,7 @@ import type {
   View,
   ViewLayerConfig,
 } from './project';
-import { hasConsistentViewMapMode, normalizeSegmentAnimation } from './project';
+import { hasConsistentViewMapMode, normalizePinLabelAngle, normalizeSegmentAnimation } from './project';
 import { globeFocusOf, normalizeGlobeFocus, normalizeQuaternion } from './globeMath';
 import { validateCustomFrameDimensions } from './projectFrameFormat';
 import { normalizeTransitionTiming } from './transitionTiming';
@@ -59,6 +59,7 @@ const optionalStrings = [
   'pinStyle',
   'pinBorderColor',
   'pinLabelColor',
+  'pinLabelBorderColor',
   'pinLabelPosition',
   'pinAppear',
   'pinAppearType',
@@ -77,6 +78,9 @@ const optionalNumbers = [
   'pinSize',
   'pinBorderWidth',
   'pinLabelSize',
+  'pinLabelOpacity',
+  'pinLabelBorderWidth',
+  'pinLabelAngle',
   'pinLabelGap',
   'pinAppearDelay',
   'pinAppearDuration',
@@ -157,6 +161,13 @@ const validateLayer = (value: unknown, path: string): Layer => {
     throw new Error(`${path}.pinAppearDuration must be > 0.`);
   if (value.pinSize !== undefined && (value.pinSize as number) <= 0)
     throw new Error(`${path}.pinSize must be > 0.`);
+  if (
+    value.pinLabelOpacity !== undefined &&
+    ((value.pinLabelOpacity as number) < 0 || (value.pinLabelOpacity as number) > 1)
+  )
+    throw new Error(`${path}.pinLabelOpacity must be between 0 and 1.`);
+  if (value.pinLabelBorderWidth !== undefined && (value.pinLabelBorderWidth as number) < 0)
+    throw new Error(`${path}.pinLabelBorderWidth must be >= 0.`);
   if (value.textLanguage !== undefined && !oneOf(value.textLanguage, ['auto', 'persian', 'english'] as const))
     throw new Error(`${path}.textLanguage is unsupported.`);
   if (value.textDirection !== undefined && !oneOf(value.textDirection, ['auto', 'rtl', 'ltr'] as const))
@@ -468,13 +479,34 @@ export function validateAndMigrateProject(value: unknown): Project {
   // legacy project contains a View-only Layer identity, retain the first
   // deterministic snapshot as a canonical Project Layer so migration never
   // loses an object.
-  const registry = structuredClone(value.layers as Layer[]).map((layer) => ({ ...layer, visible: true }));
+  const migratePinLabelAppearance = (layer: Layer): Layer => {
+    if (layer.type !== 'pin') return layer;
+    const legacyAngle =
+      layer.pinLabelPosition === 'top'
+        ? 90
+        : layer.pinLabelPosition === 'left'
+          ? 180
+          : layer.pinLabelPosition === 'bottom'
+            ? 270
+            : 0;
+    return {
+      ...layer,
+      pinLabelOpacity: layer.pinLabelOpacity ?? layer.opacity,
+      pinLabelBorderColor: layer.pinLabelBorderColor ?? layer.pinBorderColor ?? '#ffffff',
+      pinLabelBorderWidth: layer.pinLabelBorderWidth ?? layer.pinBorderWidth ?? 1,
+      pinLabelAngle: normalizePinLabelAngle(layer.pinLabelAngle ?? legacyAngle),
+    };
+  };
+  const registry = structuredClone(value.layers as Layer[]).map((layer) => ({
+    ...migratePinLabelAppearance(layer),
+    visible: true,
+  }));
   const registryIds = new Set(registry.map((layer) => layer.id));
   for (const view of legacyViews) {
     for (const layer of [...(view.layers ?? []), ...(view.transitionLayers ?? [])]) {
       if (registryIds.has(layer.id)) continue;
       registryIds.add(layer.id);
-      registry.push({ ...structuredClone(layer), visible: true });
+      registry.push({ ...migratePinLabelAppearance(structuredClone(layer)), visible: true });
     }
   }
   const viewsWithUsage = legacyViews.map((view) => {

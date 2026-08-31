@@ -7,13 +7,20 @@ import {
   mapLibreMinimumZoom,
   mapLibreMaximumZoom,
   mapMotionToMapLibreCamera,
+  lngLatToMapMotionWorld,
   isRecoverableOpenFreeMapResourceError,
   OPENFREEMAP_STYLES,
 } from '../core/openFreeMapAdapter';
 import { registerOnlineMapInstance } from '../core/onlineMapLifecycle';
 import { applyOnlineMapLabelLanguage, ensureMapLibreRtlSupport } from '../core/onlineMapLabels';
+import {
+  ensureOnlineProjectOverlays,
+  loadOnlineProjectOverlayAssets,
+  ONLINE_PROJECT_PIN_LAYER_ID,
+  updateOnlineProjectOverlays,
+} from '../core/onlineProjectOverlays';
 import { fitProjectViewport, type LogicalViewport } from '../core/projectRenderViewport';
-import type { CameraState, MapLabelLanguageMode, OnlineBasemapStyleId } from '../core/project';
+import type { CameraState, Layer, MapLabelLanguageMode, OnlineBasemapStyleId } from '../core/project';
 
 export const ONLINE_INTERACTIVE_MIN_PIXEL_RATIO = 0.75;
 export const ONLINE_INTERACTIVE_MAX_PIXEL_RATIO = 1.25;
@@ -34,6 +41,12 @@ interface Props {
   labelLanguage: MapLabelLanguageMode;
   interactionEnabled: boolean;
   viewport: LogicalViewport;
+  layers: Layer[];
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
+  onMovePin: (id: string, x: number, y: number) => void;
+  onBackgroundClick?: (point: { x: number; y: number }) => void;
+  assetUrls?: Readonly<Record<string, string>>;
 }
 
 export function OnlineOpenFreeMap({
@@ -43,6 +56,12 @@ export function OnlineOpenFreeMap({
   labelLanguage,
   interactionEnabled,
   viewport,
+  layers,
+  selectedId,
+  onSelect,
+  onMovePin,
+  onBackgroundClick,
+  assetUrls = {},
 }: Props) {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const displayRef = useRef<HTMLDivElement | null>(null);
@@ -52,6 +71,13 @@ export function OnlineOpenFreeMap({
   const cameraRef = useRef(camera);
   const onCameraChangeRef = useRef(onCameraChange);
   const labelLanguageRef = useRef(labelLanguage);
+  const interactionEnabledRef = useRef(interactionEnabled);
+  const layersRef = useRef(layers);
+  const selectedIdRef = useRef(selectedId);
+  const onSelectRef = useRef(onSelect);
+  const onMovePinRef = useRef(onMovePin);
+  const onBackgroundClickRef = useRef(onBackgroundClick);
+  const assetUrlsRef = useRef(assetUrls);
   const applyingCanonicalCamera = useRef(false);
   const nativeCameraSignaturesRef = useRef(new Set<string>());
   const diagnosticsRef = useRef({ nativeSyncs: 0, externalApplications: 0 });
@@ -62,6 +88,13 @@ export function OnlineOpenFreeMap({
   cameraRef.current = camera;
   onCameraChangeRef.current = onCameraChange;
   labelLanguageRef.current = labelLanguage;
+  interactionEnabledRef.current = interactionEnabled;
+  layersRef.current = layers;
+  selectedIdRef.current = selectedId;
+  onSelectRef.current = onSelect;
+  onMovePinRef.current = onMovePin;
+  onBackgroundClickRef.current = onBackgroundClick;
+  assetUrlsRef.current = assetUrls;
 
   useEffect(() => {
     let active = true;
@@ -203,9 +236,55 @@ export function OnlineOpenFreeMap({
     });
     map.on('style.load', () => {
       applyOnlineMapLabelLanguage(map!, labelLanguageRef.current, true);
+      ensureOnlineProjectOverlays(map!, layersRef.current, selectedIdRef.current, assetUrlsRef.current);
+      void loadOnlineProjectOverlayAssets(map!, layersRef.current, assetUrlsRef.current).then(() =>
+        updateOnlineProjectOverlays(map!, layersRef.current, selectedIdRef.current, assetUrlsRef.current),
+      );
       map!.once('idle', () => {
         container.style.visibility = 'visible';
       });
+    });
+    let movingPinId: string | null = null;
+    let pinMoved = false;
+    map.on('mousedown', ONLINE_PROJECT_PIN_LAYER_ID, (event) => {
+      if (!interactionEnabledRef.current || !event.features?.[0]) return;
+      const id = String(event.features[0].properties?.layerId ?? '');
+      if (!id) return;
+      event.preventDefault();
+      movingPinId = id;
+      pinMoved = false;
+      onSelectRef.current(id);
+      map!.dragPan.disable();
+      map!.getCanvas().style.cursor = 'grabbing';
+    });
+    map.on('mousemove', (event) => {
+      if (!movingPinId) return;
+      pinMoved = true;
+      const point = lngLatToMapMotionWorld(event.lngLat.lng, event.lngLat.lat);
+      onMovePinRef.current(movingPinId, point.x, point.y);
+    });
+    const finishPinMove = () => {
+      if (!movingPinId) return;
+      movingPinId = null;
+      map!.dragPan.enable();
+      map!.getCanvas().style.cursor = '';
+    };
+    map.on('mouseup', finishPinMove);
+    map.on('click', (event) => {
+      if (!interactionEnabledRef.current) return;
+      const hit = map!.queryRenderedFeatures(event.point, { layers: [ONLINE_PROJECT_PIN_LAYER_ID] })[0];
+      if (hit) {
+        onSelectRef.current(String(hit.properties?.layerId ?? hit.id ?? ''));
+        pinMoved = false;
+        return;
+      }
+      if (pinMoved) {
+        pinMoved = false;
+        return;
+      }
+      const point = lngLatToMapMotionWorld(event.lngLat.lng, event.lngLat.lat);
+      if (onBackgroundClickRef.current) onBackgroundClickRef.current(point);
+      else onSelectRef.current(null);
     });
     map.once('idle', () => {
       const milliseconds = Math.round(performance.now() - startedAt);
@@ -249,6 +328,15 @@ export function OnlineOpenFreeMap({
     if (!map || !map.isStyleLoaded()) return;
     applyOnlineMapLabelLanguage(map, labelLanguage);
   }, [labelLanguage]);
+
+  useLayoutEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    updateOnlineProjectOverlays(map, layers, selectedId, assetUrls);
+    void loadOnlineProjectOverlayAssets(map, layers, assetUrls).then(() =>
+      updateOnlineProjectOverlays(map, layersRef.current, selectedIdRef.current, assetUrlsRef.current),
+    );
+  }, [assetUrls, layers, selectedId]);
 
   useLayoutEffect(() => {
     const map = mapRef.current;

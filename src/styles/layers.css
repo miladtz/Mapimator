@@ -130,6 +130,31 @@
   background: #26394b;
   border-radius: 3px;
 }
+.layer-delete {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #db5a5a;
+}
+.layer-delete:hover {
+  color: #ff7b72;
+  background: rgba(219, 90, 90, 0.14);
+}
+.layer-delete svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.35;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .layer-member {
   flex: 0 0 auto;
   width: 13px;
@@ -538,7 +563,16 @@
   align-items: center;
   gap: 6px;
 }
+.pin-precision-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .pin-size-control input {
+  flex: 1;
+  min-width: 0;
+}
+.pin-precision-control > input[type='range'] {
   flex: 1;
   min-width: 0;
 }
@@ -546,6 +580,36 @@
   font-size: 9px;
   color: #9dafbf;
   white-space: nowrap;
+}
+.pin-number-with-unit {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: #7a8fa0;
+  font-size: 10px;
+}
+.pin-number-with-unit input[type='number'] {
+  width: 58px;
+  min-width: 58px;
+}
+.hex-color-control {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 5px;
+  align-items: center;
+  margin-top: 5px;
+}
+.two-col .hex-color-control input[type='color'] {
+  width: 34px;
+  height: 29px;
+  margin: 0;
+}
+.layer-inspector .hex-color-control input[type='text'] {
+  margin: 0;
+  min-width: 0;
+  padding: 7px 5px;
+  font-family: Consolas, monospace;
+  text-transform: uppercase;
 }
 .custom-icon-preview {
   display: flex;

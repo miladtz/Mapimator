@@ -103,8 +103,11 @@ styled.pinBorderColor = '#112233';
 styled.pinBorderWidth = 2;
 styled.pinLabelVisible = false;
 styled.pinLabelSize = 14;
+styled.pinLabelOpacity = 0.62;
 styled.pinLabelColor = '#aabbcc';
-styled.pinLabelPosition = 'top';
+styled.pinLabelBorderColor = '#334455';
+styled.pinLabelBorderWidth = 1.7;
+styled.pinLabelAngle = 45;
 styled.pinLabelGap = 8;
 // New appear model (project-level default metadata; evaluation uses segment configs)
 styled.pinAppearEnabled = true;
@@ -122,8 +125,11 @@ assert.equal(migrated.layers[0].pinBorderColor, '#112233');
 assert.equal(migrated.layers[0].pinBorderWidth, 2);
 assert.equal(migrated.layers[0].pinLabelVisible, false);
 assert.equal(migrated.layers[0].pinLabelSize, 14);
+assert.equal(migrated.layers[0].pinLabelOpacity, 0.62);
 assert.equal(migrated.layers[0].pinLabelColor, '#aabbcc');
-assert.equal(migrated.layers[0].pinLabelPosition, 'top');
+assert.equal(migrated.layers[0].pinLabelBorderColor, '#334455');
+assert.equal(migrated.layers[0].pinLabelBorderWidth, 1.7);
+assert.equal(migrated.layers[0].pinLabelAngle, 45);
 assert.equal(migrated.layers[0].pinLabelGap, 8);
 assert.equal(migrated.layers[0].pinAppearEnabled, true);
 assert.equal(migrated.layers[0].pinAppearType, 'drop');
@@ -139,6 +145,23 @@ legacyPersisted.layers = [legacyStyled];
 const legacyMigrated = validateAndMigrateProject(legacyPersisted);
 assert.equal(legacyMigrated.layers[0].pinAppear, 'pop', 'legacy pinAppear round-trips');
 
+const inheritedLabelPin = createLayer('pin');
+inheritedLabelPin.opacity = 0.42;
+inheritedLabelPin.pinBorderColor = '#AA1122';
+inheritedLabelPin.pinBorderWidth = 4;
+inheritedLabelPin.pinLabelPosition = 'top';
+delete inheritedLabelPin.pinLabelOpacity;
+delete inheritedLabelPin.pinLabelBorderColor;
+delete inheritedLabelPin.pinLabelBorderWidth;
+delete inheritedLabelPin.pinLabelAngle;
+const inheritedProject = createProject('Inherited label appearance');
+inheritedProject.layers = [inheritedLabelPin];
+const inheritedMigrated = validateAndMigrateProject(inheritedProject).layers[0];
+assert.equal(inheritedMigrated.pinLabelOpacity, 0.42, 'old label opacity inherits marker opacity');
+assert.equal(inheritedMigrated.pinLabelBorderColor, '#AA1122', 'old label border inherits marker border');
+assert.equal(inheritedMigrated.pinLabelBorderWidth, 4, 'old label width inherits marker width');
+assert.equal(inheritedMigrated.pinLabelAngle, 90, 'old Top position migrates to the required angle');
+
 for (const bad of [
   { pinStyle: 'banana' },
   { pinAppear: 'bounce' },
@@ -150,6 +173,9 @@ for (const bad of [
   { pinAppearEnabled: 'yes' },
   { pinAppearDelay: -1 },
   { pinAppearDuration: 0 },
+  { pinLabelOpacity: -0.1 },
+  { pinLabelOpacity: 1.1 },
+  { pinLabelBorderWidth: -1 },
 ]) {
   const candidate = createProject('Bad pin');
   const layer = createLayer('pin');
