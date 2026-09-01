@@ -278,12 +278,12 @@ assert.match(app, /normalizeHexColor/);
 assert.match(app, /className="layer-delete"/);
 assert.match(app, /void removeLayerById\(layer\.id\)/);
 assert.match(app, /event\.stopPropagation\(\)/);
-assert.match(app, /await confirmDialog\(/);
+assert.match(app, /window\.confirm\(/);
 const projectLayerDeleteSource = app.slice(
   app.indexOf('const removeLayerById'),
   app.indexOf('const move =', app.indexOf('const removeLayerById')),
 );
-assert.doesNotMatch(projectLayerDeleteSource, /window\.confirm\(/);
+assert.doesNotMatch(projectLayerDeleteSource, /await confirmDialog\(/);
 
 console.log(
   'Online Pins: geographic placement, shared model, persistence, View/Transition evaluation, Labels=None isolation, 100-Pin batching, style restoration, selection/drag ownership, Playback, thumbnail, and Export layer flow passed.',

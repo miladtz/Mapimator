@@ -66,6 +66,21 @@ const optionalStrings = [
   'pinCustomAssetId',
   'pinCustomAnchor',
   'pinTintColor',
+  'regionSource',
+  'regionKind',
+  'regionFeatureId',
+  'regionCountryCode',
+  'regionCountryCode2',
+  'regionAdminCode',
+  'regionWikidataId',
+  'regionGroupId',
+  'regionFillMode',
+  'regionFillColor',
+  'regionImageMode',
+  'regionImageAssetId',
+  'regionStrokeColor',
+  'regionEffect',
+  'regionHighlightColor',
 ] as const;
 const optionalNumbers = [
   'x2',
@@ -84,8 +99,38 @@ const optionalNumbers = [
   'pinLabelGap',
   'pinAppearDelay',
   'pinAppearDuration',
+  'regionFillOpacity',
+  'regionStrokeOpacity',
+  'regionStrokeWidth',
+  'regionEffectDuration',
+  'regionEffectDelay',
+  'regionDrawSpeed',
+  'regionTileCount',
+  'regionDrawingDelay',
+  'regionDrawingDuration',
+  'regionFillingDelay',
+  'regionFillingDuration',
+  'regionPulseSpeed',
+  'regionPulseIntensity',
 ] as const;
-const optionalBooleans = ['effectRepeat', 'pinLabelVisible', 'pinAppearEnabled', 'pinTintEnabled'] as const;
+const optionalBooleans = [
+  'effectRepeat',
+  'pinLabelVisible',
+  'pinAppearEnabled',
+  'pinTintEnabled',
+  'regionGeometryEditable',
+  'regionAnimationEnabled',
+  'regionStrokeExists',
+] as const;
+
+const validateRegionCoordinates = (value: unknown, path: string): void => {
+  if (!Array.isArray(value) || value.length === 0)
+    throw new Error(`${path} must be a non-empty coordinate array.`);
+  for (const entry of value) {
+    if (Array.isArray(entry) && entry.length >= 2 && entry.every(isFiniteNumber)) continue;
+    validateRegionCoordinates(entry, path);
+  }
+};
 
 const validateCamera = (value: unknown, path: string): CameraState => {
   if (!isRecord(value) || !isFiniteNumber(value.x) || !isFiniteNumber(value.y) || !isFiniteNumber(value.zoom))
@@ -176,12 +221,54 @@ const validateLayer = (value: unknown, path: string): Layer => {
     throw new Error(`${path}.numberStyle is unsupported.`);
   if (value.geoEffectType !== undefined && !oneOf(value.geoEffectType, effectTypes))
     throw new Error(`${path}.geoEffectType is unsupported.`);
+  if (value.regionGeometry !== undefined) {
+    if (
+      !isRecord(value.regionGeometry) ||
+      !oneOf(value.regionGeometry.type, ['Polygon', 'MultiPolygon'] as const)
+    )
+      throw new Error(`${path}.regionGeometry must be Polygon or MultiPolygon.`);
+    validateRegionCoordinates(value.regionGeometry.coordinates, `${path}.regionGeometry.coordinates`);
+  }
+  if (
+    value.regionGroupMembers !== undefined &&
+    (!Array.isArray(value.regionGroupMembers) || !value.regionGroupMembers.every(isString))
+  )
+    throw new Error(`${path}.regionGroupMembers must contain strings.`);
+  if (value.regionSource !== undefined && !oneOf(value.regionSource, ['administrative', 'custom'] as const))
+    throw new Error(`${path}.regionSource is unsupported.`);
+  if (
+    value.regionKind !== undefined &&
+    !oneOf(value.regionKind, ['country', 'admin1', 'continent', 'macro-region'] as const)
+  )
+    throw new Error(`${path}.regionKind is unsupported.`);
+  if (
+    value.regionFillMode !== undefined &&
+    !oneOf(value.regionFillMode, ['none', 'solid', 'flag', 'image'] as const)
+  )
+    throw new Error(`${path}.regionFillMode is unsupported.`);
+  if (value.regionImageMode !== undefined && !oneOf(value.regionImageMode, ['cover', 'fit', 'tile'] as const))
+    throw new Error(`${path}.regionImageMode is unsupported.`);
+  if (
+    value.regionEffect !== undefined &&
+    !oneOf(value.regionEffect, ['fade', 'draw-border', 'pulse'] as const)
+  )
+    throw new Error(`${path}.regionEffect is unsupported.`);
   return value as unknown as Layer;
 };
 
 const validateSegmentLayerAnimation = (value: unknown, path: string): SegmentLayerAnimation => {
   if (!isRecord(value)) throw new Error(`${path} must be an object.`);
-  for (const key of ['appearDelay', 'appearDuration', 'layerHoldDuration', 'wipeDuration'] as const)
+  for (const key of [
+    'appearDelay',
+    'appearDuration',
+    'layerHoldDuration',
+    'wipeDelay',
+    'wipeDuration',
+    'regionDrawingDelay',
+    'regionDrawingDuration',
+    'regionFillingDelay',
+    'regionFillingDuration',
+  ] as const)
     if (value[key] !== undefined && !isFiniteNumber(value[key]))
       throw new Error(`${path}.${key} must be a finite number.`);
   for (const key of ['appearEnabled', 'wipeEnabled'] as const)
@@ -197,8 +284,33 @@ const validateSegmentLayerAnimation = (value: unknown, path: string): SegmentLay
     throw new Error(`${path}.appearDuration must be > 0.`);
   if (value.layerHoldDuration !== undefined && (value.layerHoldDuration as number) < 0)
     throw new Error(`${path}.layerHoldDuration must be >= 0.`);
-  if (value.wipeDuration !== undefined && (value.wipeDuration as number) <= 0)
-    throw new Error(`${path}.wipeDuration must be > 0.`);
+  if (value.wipeDelay !== undefined && (value.wipeDelay as number) < 0)
+    throw new Error(`${path}.wipeDelay must be >= 0.`);
+  if (value.wipeDuration !== undefined && (value.wipeDuration as number) < 0)
+    throw new Error(`${path}.wipeDuration must be >= 0.`);
+  if (
+    value.regionEffect !== undefined &&
+    !oneOf(value.regionEffect, ['fade', 'draw-border', 'pulse'] as const)
+  )
+    throw new Error(`${path}.regionEffect is unsupported.`);
+  if (
+    value.regionDrawOrder !== undefined &&
+    !oneOf(value.regionDrawOrder, ['before-fill', 'after-fill'] as const)
+  )
+    throw new Error(`${path}.regionDrawOrder is unsupported.`);
+  if (
+    value.regionDrawSpeed !== undefined &&
+    (!isFiniteNumber(value.regionDrawSpeed) || value.regionDrawSpeed < 0.1 || value.regionDrawSpeed > 5)
+  )
+    throw new Error(`${path}.regionDrawSpeed must be between 0.1 and 5.`);
+  for (const key of [
+    'regionDrawingDelay',
+    'regionDrawingDuration',
+    'regionFillingDelay',
+    'regionFillingDuration',
+  ] as const)
+    if (value[key] !== undefined && (value[key] as number) < 0)
+      throw new Error(`${path}.${key} must be >= 0.`);
   return value as unknown as SegmentLayerAnimation;
 };
 

@@ -435,6 +435,24 @@ const fitBounds = (bounds: Bounds): CameraState => {
 };
 
 const layerBounds = (layer: Layer): Bounds | null => {
+  if (layer.type === 'region' && layer.regionGeometry) {
+    const coordinates = (
+      layer.regionGeometry.type === 'Polygon'
+        ? layer.regionGeometry.coordinates.flat(1)
+        : layer.regionGeometry.coordinates.flat(2)
+    ) as number[][];
+    const points = coordinates.map(([longitude, latitude]) => ({
+      x: ((longitude + 180) / 360) * CAMERA_VIEWPORT.width,
+      y: ((90 - clamp(latitude, -85.051129, 85.051129)) / 180) * CAMERA_VIEWPORT.height,
+    }));
+    if (points.length)
+      return {
+        minX: Math.min(...points.map((point) => point.x)),
+        minY: Math.min(...points.map((point) => point.y)),
+        maxX: Math.max(...points.map((point) => point.x)),
+        maxY: Math.max(...points.map((point) => point.y)),
+      };
+  }
   if (layer.type === 'region' && layer.countryId) return pathBounds(findCountry(layer.countryId)?.path ?? '');
   if (layer.type === 'shape' || layer.type === 'image')
     return {

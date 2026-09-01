@@ -599,10 +599,14 @@
   align-items: center;
   margin-top: 5px;
 }
-.two-col .hex-color-control input[type='color'] {
+.layer-inspector .hex-color-control input[type='color'] {
   width: 34px;
   height: 29px;
   margin: 0;
+}
+.layer-inspector .hex-color-control {
+  width: 100%;
+  min-width: 0;
 }
 .layer-inspector .hex-color-control input[type='text'] {
   margin: 0;
@@ -615,4 +619,34 @@
   display: flex;
   justify-content: center;
   padding: 6px 0;
+}
+.region-tool-popover {
+  position: absolute;
+  left: 50%;
+  bottom: 74px;
+  z-index: 20;
+  width: min(360px, calc(100% - 32px));
+  max-height: 420px;
+  transform: translateX(-50%);
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #40556a;
+  border-radius: 8px;
+  background: #172431f5;
+  box-shadow: 0 14px 38px #0008;
+}
+.region-picker-results {
+  display: grid;
+  gap: 3px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.region-picker-results button {
+  display: flex;
+  justify-content: space-between;
+  text-align: left;
+}
+.region-picker-results small {
+  color: #8ea6ba;
 }

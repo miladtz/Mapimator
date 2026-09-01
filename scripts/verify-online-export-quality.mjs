@@ -26,8 +26,16 @@ assert.deepEqual(
   ],
 );
 assert.match(online, /ONLINE_EXPORT_PIXEL_RATIO = 1\.5/, 'High-quality default is 1.5x.');
-assert.doesNotMatch(adapter, /viewportZoomOffset/, 'Logical camera zoom is viewport-independent.');
-assert.match(online, /mapMotionToMapLibreCamera\(camera\)/, 'Export uses the canonical camera mapping.');
+assert.match(
+  adapter,
+  /mapLibreWorldFitZoom/,
+  'Logical minimum Zoom contains one world in the canonical frame.',
+);
+assert.match(
+  online,
+  /mapMotionToMapLibreCamera\(camera, \{[\s\S]{0,120}logicalWidth/,
+  'Export uses the canonical frame-aware camera mapping.',
+);
 assert.match(
   online,
   /expectedWidth = Math\.round\(viewport\.width \* pixelRatio\)/,

@@ -180,18 +180,17 @@ const renderer = source('src/core/onlineMapFrameRenderer.ts');
 const frames = source('src/core/frameRenderer.tsx');
 const viewportMod = source('src/core/projectRenderViewport.ts');
 
-// Adapter must not have viewport-dependent zoom
-assert.doesNotMatch(adapter, /viewportZoomOffset|Math\.log2\(Math\.max\(1, viewportWidth\)/);
+// Camera semantics remain canonical, while the minimum authored Zoom uses the
+// current canonical frame's contain scale so every aspect can show one world.
 assert.doesNotMatch(
   adapter,
   /MAPLIBRE_ZOOM_SCALE/,
   'Obsolete four-level zoom amplification must remain removed.',
 );
-assert.equal(
-  (adapter.match(/mapMotionToMapLibreCamera = \(camera: CameraState\)/g) ?? []).length,
-  1,
-  'Camera adapter accepts no viewport-dependent input.',
-);
+assert.match(adapter, /mapLibreWorldFitZoom/);
+assert.match(adapter, /Math\.min\(viewport\.width, viewport\.height\) \/ 512/);
+assert.match(interactive, /mapMotionToMapLibreCamera\(cameraRef\.current, viewport\)/);
+assert.match(renderer, /mapMotionToMapLibreCamera\(initialCamera, viewport\)/);
 
 // App passes viewport to online component
 assert.match(app, /viewport=\{projectRenderViewport\(project\)\}/);
@@ -226,7 +225,7 @@ assert.match(interactive, /pixelRatio: interactivePixelRatioForDisplay/);
 assert.match(interactive, /fitProjectViewport\(viewport, stage\.clientWidth, stage\.clientHeight\)/);
 assert.match(
   interactive,
-  /useLayoutEffect\(\(\) => \{[\s\S]*?mapMotionToMapLibreCamera\(camera\)[\s\S]*?map\.jumpTo\(next\)/,
+  /useLayoutEffect\(\(\) => \{[\s\S]*?mapMotionToMapLibreCamera\(camera, viewport\)[\s\S]*?map\.jumpTo\(next\)/,
   'Canonical camera changes are applied before paint, including the exact first Preview View.',
 );
 
@@ -257,12 +256,8 @@ assert.match(
 assert.match(viewportMod, /960|540/, 'Canonical viewport dimensions appear in viewport module.');
 
 // ── 5. Editor/Preview use viewport-independent camera mapping ──
-assert.equal(
-  (interactive.match(/mapMotionToMapLibreCamera\([^,)]*\)/g) ?? []).length >= 2,
-  true,
-  'Editor and Preview use the viewport-independent camera mapping.',
-);
-assert.doesNotMatch(renderer, /mapMotionToMapLibreCamera\([^)]*,/);
+assert.ok((interactive.match(/mapMotionToMapLibreCamera\([^)]*viewport\)/g) ?? []).length >= 2);
+assert.match(renderer, /mapMotionToMapLibreCamera\(initialCamera, viewport\)/);
 
 // ── 6. FPS cannot alter logical state ──
 const state30 = { viewport, camera: core.mapMotionToMapLibreCamera(cameras[0]), style: 'liberty' };

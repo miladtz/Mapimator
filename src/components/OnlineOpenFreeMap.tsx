@@ -27,6 +27,34 @@ export const ONLINE_INTERACTIVE_MAX_PIXEL_RATIO = 1.25;
 const CAMERA_SYNC_INTERVAL_MS = 32;
 const cameraSignature = (camera: CameraState) =>
   [camera.x, camera.y, camera.zoom, camera.bearing ?? 0, camera.pitch ?? 0].join(':');
+export const REGION_CLOSURE_RADIUS = 14;
+export const withinRegionClosureRadius = (
+  first: { x: number; y: number },
+  pointer: { x: number; y: number },
+  radius = REGION_CLOSURE_RADIUS,
+) => Math.hypot(first.x - pointer.x, first.y - pointer.y) <= radius;
+
+export const regionDraftFeatureCollection = (
+  draft: readonly [number, number][],
+  pointer?: [number, number],
+  snapped = false,
+) => ({
+  type: 'FeatureCollection' as const,
+  features: draft.length
+    ? [
+        {
+          type: 'Feature' as const,
+          properties: { kind: 'line' },
+          geometry: { type: 'LineString' as const, coordinates: pointer ? [...draft, pointer] : draft },
+        },
+        ...draft.map((coordinate, index) => ({
+          type: 'Feature' as const,
+          properties: { kind: 'vertex', first: index === 0, snapped: index === 0 && snapped },
+          geometry: { type: 'Point' as const, coordinates: coordinate },
+        })),
+      ]
+    : [],
+});
 
 export const interactivePixelRatioForDisplay = (displayScale: number, devicePixelRatio: number) =>
   Math.min(
@@ -46,6 +74,9 @@ interface Props {
   onSelect: (id: string | null) => void;
   onMovePin: (id: string, x: number, y: number) => void;
   onBackgroundClick?: (point: { x: number; y: number }) => void;
+  onRegionPoint?: (point: [number, number]) => void;
+  onRegionFinish?: () => void;
+  regionDraft?: [number, number][];
   assetUrls?: Readonly<Record<string, string>>;
 }
 
@@ -61,6 +92,9 @@ export function OnlineOpenFreeMap({
   onSelect,
   onMovePin,
   onBackgroundClick,
+  onRegionPoint,
+  onRegionFinish,
+  regionDraft = [],
   assetUrls = {},
 }: Props) {
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -77,6 +111,9 @@ export function OnlineOpenFreeMap({
   const onSelectRef = useRef(onSelect);
   const onMovePinRef = useRef(onMovePin);
   const onBackgroundClickRef = useRef(onBackgroundClick);
+  const onRegionPointRef = useRef(onRegionPoint);
+  const onRegionFinishRef = useRef(onRegionFinish);
+  const regionDraftRef = useRef(regionDraft);
   const assetUrlsRef = useRef(assetUrls);
   const applyingCanonicalCamera = useRef(false);
   const nativeCameraSignaturesRef = useRef(new Set<string>());
@@ -94,6 +131,9 @@ export function OnlineOpenFreeMap({
   onSelectRef.current = onSelect;
   onMovePinRef.current = onMovePin;
   onBackgroundClickRef.current = onBackgroundClick;
+  onRegionPointRef.current = onRegionPoint;
+  onRegionFinishRef.current = onRegionFinish;
+  regionDraftRef.current = regionDraft;
   assetUrlsRef.current = assetUrls;
 
   useEffect(() => {
@@ -153,7 +193,7 @@ export function OnlineOpenFreeMap({
         });
     };
     applyDisplayFit();
-    const initial = mapMotionToMapLibreCamera(cameraRef.current);
+    const initial = mapMotionToMapLibreCamera(cameraRef.current, viewport);
     const style = OPENFREEMAP_STYLES.find((candidate) => candidate.id === styleId)!;
     loadedStyleRef.current = styleId;
     container.style.visibility = 'hidden';
@@ -166,7 +206,7 @@ export function OnlineOpenFreeMap({
       pitch: initial.pitch,
       attributionControl: { compact: false },
       maxPitch: 85,
-      minZoom: mapLibreMinimumZoom(),
+      minZoom: mapLibreMinimumZoom(viewport),
       maxZoom: mapLibreMaximumZoom(),
       transformRequest: (url) => ({ url }),
       pixelRatio: interactivePixelRatioForDisplay(displayScale, window.devicePixelRatio),
@@ -185,6 +225,7 @@ export function OnlineOpenFreeMap({
         map.getBearing(),
         map.getPitch(),
         cameraRef.current.bearing,
+        viewport,
       );
       cameraRef.current = next;
       const nativeSignatures = nativeCameraSignaturesRef.current;
@@ -236,9 +277,8 @@ export function OnlineOpenFreeMap({
     });
     map.on('style.load', () => {
       applyOnlineMapLabelLanguage(map!, labelLanguageRef.current, true);
-      ensureOnlineProjectOverlays(map!, layersRef.current, selectedIdRef.current, assetUrlsRef.current);
       void loadOnlineProjectOverlayAssets(map!, layersRef.current, assetUrlsRef.current).then(() =>
-        updateOnlineProjectOverlays(map!, layersRef.current, selectedIdRef.current, assetUrlsRef.current),
+        ensureOnlineProjectOverlays(map!, layersRef.current, selectedIdRef.current, assetUrlsRef.current),
       );
       map!.once('idle', () => {
         container.style.visibility = 'visible';
@@ -258,7 +298,18 @@ export function OnlineOpenFreeMap({
       map!.getCanvas().style.cursor = 'grabbing';
     });
     map.on('mousemove', (event) => {
-      if (!movingPinId) return;
+      if (!movingPinId) {
+        const draft = regionDraftRef.current;
+        const source = map!.getSource('mapmotion-region-draft') as
+          import('maplibre-gl').GeoJSONSource | undefined;
+        if (onRegionPointRef.current && source && draft.length) {
+          const firstPoint = map!.project({ lng: draft[0][0], lat: draft[0][1] });
+          const snapped = draft.length >= 3 && withinRegionClosureRadius(firstPoint, event.point);
+          const pointer: [number, number] = snapped ? draft[0] : [event.lngLat.lng, event.lngLat.lat];
+          source.setData(regionDraftFeatureCollection(draft, pointer, snapped));
+        }
+        return;
+      }
       pinMoved = true;
       const point = lngLatToMapMotionWorld(event.lngLat.lng, event.lngLat.lat);
       onMovePinRef.current(movingPinId, point.x, point.y);
@@ -280,6 +331,18 @@ export function OnlineOpenFreeMap({
       }
       if (pinMoved) {
         pinMoved = false;
+        return;
+      }
+      if (onRegionPointRef.current) {
+        const draft = regionDraftRef.current;
+        if (draft.length >= 3) {
+          const firstPoint = map!.project({ lng: draft[0][0], lat: draft[0][1] });
+          if (withinRegionClosureRadius(firstPoint, event.point)) {
+            onRegionFinishRef.current?.();
+            return;
+          }
+        }
+        onRegionPointRef.current([event.lngLat.lng, event.lngLat.lat]);
         return;
       }
       const point = lngLatToMapMotionWorld(event.lngLat.lng, event.lngLat.lat);
@@ -332,11 +395,43 @@ export function OnlineOpenFreeMap({
   useLayoutEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    updateOnlineProjectOverlays(map, layers, selectedId, assetUrls);
     void loadOnlineProjectOverlayAssets(map, layers, assetUrls).then(() =>
       updateOnlineProjectOverlays(map, layersRef.current, selectedIdRef.current, assetUrlsRef.current),
     );
   }, [assetUrls, layers, selectedId]);
+
+  useLayoutEffect(() => {
+    const map = mapRef.current;
+    if (!map?.isStyleLoaded()) return;
+    const id = 'mapmotion-region-draft';
+    const data = regionDraftFeatureCollection(regionDraft);
+    const source = map.getSource(id) as import('maplibre-gl').GeoJSONSource | undefined;
+    if (source) source.setData(data);
+    else map.addSource(id, { type: 'geojson', data });
+    if (!map.getLayer(`${id}-line`))
+      map.addLayer({
+        id: `${id}-line`,
+        type: 'line',
+        source: id,
+        metadata: { 'mapmotion:editor-only': true },
+        filter: ['==', ['get', 'kind'], 'line'],
+        paint: { 'line-color': '#7fd4ff', 'line-width': 2, 'line-dasharray': [2, 1] },
+      });
+    if (!map.getLayer(`${id}-points`))
+      map.addLayer({
+        id: `${id}-points`,
+        type: 'circle',
+        source: id,
+        metadata: { 'mapmotion:editor-only': true },
+        filter: ['==', ['get', 'kind'], 'vertex'],
+        paint: {
+          'circle-radius': ['case', ['get', 'first'], 7, 5],
+          'circle-color': ['case', ['get', 'snapped'], '#65e6a7', '#ffffff'],
+          'circle-stroke-color': '#168bd2',
+          'circle-stroke-width': 2,
+        },
+      });
+  }, [regionDraft]);
 
   useLayoutEffect(() => {
     const map = mapRef.current;
@@ -347,7 +442,7 @@ export function OnlineOpenFreeMap({
     if (nativeCameraSignaturesRef.current.delete(signature)) {
       return;
     }
-    const next = mapMotionToMapLibreCamera(camera);
+    const next = mapMotionToMapLibreCamera(camera, viewport);
     const current = map.getCenter();
     const unchanged =
       Math.abs(current.lng - next.center[0]) < 1e-6 &&
@@ -377,7 +472,7 @@ export function OnlineOpenFreeMap({
       });
     }
     applyingCanonicalCamera.current = false;
-  }, [camera]);
+  }, [camera, viewport.height, viewport.width]);
 
   useEffect(() => {
     const map = mapRef.current;

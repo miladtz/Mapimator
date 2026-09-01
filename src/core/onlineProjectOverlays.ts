@@ -1,6 +1,19 @@
 import type { ExpressionSpecification, GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl';
 import { mapMotionWorldToLngLat } from './openFreeMapAdapter';
 import { PIN_DEFAULTS, pinLabelOffsetOf, pinSizeOf, pinStyleOf, type Layer } from './project';
+import { regionPresentation, resolveFlagCode, revealRegionGeometry } from './regions';
+import {
+  GeographicRegionFillLayer,
+  loadGeographicRegionImage,
+  ONLINE_GEOGRAPHIC_REGION_FILL_LAYER_ID,
+} from './geographicRegionFillLayer';
+
+export const ONLINE_PROJECT_REGION_SOURCE_ID = 'mapmotion-project-regions';
+export const ONLINE_PROJECT_REGION_FILL_LAYER_ID = 'mapmotion-project-region-fills';
+export const ONLINE_PROJECT_REGION_PATTERN_LAYER_ID = 'mapmotion-project-region-pattern-fills';
+export const ONLINE_PROJECT_REGION_GLOW_LAYER_ID = 'mapmotion-project-region-glow';
+export const ONLINE_PROJECT_REGION_STROKE_LAYER_ID = 'mapmotion-project-region-strokes';
+export const ONLINE_PROJECT_REGION_SELECTION_LAYER_ID = 'mapmotion-project-region-selection';
 
 export const ONLINE_PROJECT_PIN_SOURCE_ID = 'mapmotion-project-pins';
 export const ONLINE_PROJECT_PIN_SELECTION_LAYER_ID = 'mapmotion-project-pin-selection';
@@ -8,6 +21,213 @@ export const ONLINE_PROJECT_PIN_LAYER_ID = 'mapmotion-project-pin-icons';
 export const ONLINE_PROJECT_PIN_LABEL_LAYER_ID = 'mapmotion-project-pin-labels';
 const OVERLAY_METADATA = { 'mapmotion:overlay': true } as const;
 const BASE_ICON_SIZE = 48;
+const geographicRegionLayers = new WeakMap<MapLibreMap, GeographicRegionFillLayer>();
+const FLAG_URLS = import.meta.glob('../../node_modules/flag-icons/flags/4x3/*.svg', {
+  eager: true,
+  query: '?url',
+  import: 'default',
+}) as Record<string, string>;
+export const flagUrl = (code: string | undefined) =>
+  code
+    ? FLAG_URLS[Object.keys(FLAG_URLS).find((path) => path.endsWith(`/${code.toLowerCase()}.svg`)) ?? '']
+    : undefined;
+const regionPatternId = (layer: Layer, assetUrls: Readonly<Record<string, string>>) => {
+  const mode = layer.regionImageMode ?? 'cover';
+  const tileCount = Math.max(1, Math.min(20, Math.round(layer.regionTileCount ?? 4)));
+  const flagCode = resolveFlagCode(layer.regionCountryCode, layer.regionCountryCode2);
+  if (layer.regionFillMode === 'flag' && flagCode)
+    return `mapmotion-region-${layer.id}-flag-${flagCode}-${mode}-${tileCount}`;
+  if (layer.regionFillMode === 'image' && layer.regionImageAssetId && assetUrls[layer.regionImageAssetId])
+    return `mapmotion-region-${layer.id}-image-${layer.regionImageAssetId}-${mode}-${tileCount}`;
+  return '';
+};
+export const regionGeometryBounds = (geometry: NonNullable<Layer['regionGeometry']>) => {
+  const points = (
+    geometry.type === 'Polygon' ? geometry.coordinates.flat(1) : geometry.coordinates.flat(2)
+  ) as number[][];
+  return points.reduce(
+    (bounds, point) => ({
+      minX: Math.min(bounds.minX, point[0]),
+      minY: Math.min(bounds.minY, point[1]),
+      maxX: Math.max(bounds.maxX, point[0]),
+      maxY: Math.max(bounds.maxY, point[1]),
+    }),
+    { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity },
+  );
+};
+export const rasterizeOverlayImage = async (
+  url: string,
+  mode: Layer['regionImageMode'] = 'tile',
+  geometry?: Layer['regionGeometry'],
+  tileCount = 4,
+) => {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Overlay image failed: HTTP ${response.status}`);
+  const objectUrl = URL.createObjectURL(await response.blob());
+  try {
+    const image = new Image();
+    image.src = objectUrl;
+    await image.decode();
+    const bounds = geometry ? regionGeometryBounds(geometry) : undefined;
+    const boundsAspect = bounds
+      ? Math.max(0.2, Math.min(5, (bounds.maxX - bounds.minX) / Math.max(0.001, bounds.maxY - bounds.minY)))
+      : 4 / 3;
+    const safeTileCount = Math.max(1, Math.min(20, Math.round(tileCount)));
+    const width = mode === 'tile' ? Math.max(32, Math.round(768 / safeTileCount)) : 768;
+    const height =
+      mode === 'tile'
+        ? Math.max(24, Math.round((width * image.naturalHeight) / image.naturalWidth))
+        : Math.max(154, Math.min(768, Math.round(width / boundsAspect)));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Unable to rasterize Region overlay image.');
+    if (mode === 'tile') context.drawImage(image, 0, 0, width, height);
+    else {
+      const scale =
+        mode === 'cover'
+          ? Math.max(width / image.naturalWidth, height / image.naturalHeight)
+          : Math.min(width / image.naturalWidth, height / image.naturalHeight);
+      const drawWidth = image.naturalWidth * scale;
+      const drawHeight = image.naturalHeight * scale;
+      context.drawImage(image, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
+    }
+    return context.getImageData(0, 0, width, height);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+};
+
+export const onlineRegionFeatureCollection = (
+  layers: readonly Layer[],
+  selectedId: string | null,
+  assetUrls: Readonly<Record<string, string>> = {},
+) => ({
+  type: 'FeatureCollection' as const,
+  features: layers
+    .filter((layer) => layer.type === 'region' && layer.visible && layer.regionGeometry)
+    .flatMap((layer) => {
+      const presentation = regionPresentation(layer);
+      const base = {
+        type: 'Feature' as const,
+        id: layer.id,
+        geometry: layer.regionGeometry!,
+        properties: {
+          layerId: layer.id,
+          role: 'base',
+          patternId: regionPatternId(layer, assetUrls),
+          selected: layer.id === selectedId,
+          fillColor: layer.regionFillColor ?? layer.color,
+          fillOpacity:
+            layer.regionFillMode === 'none'
+              ? 0
+              : layer.opacity * (layer.regionFillOpacity ?? 0.35) * presentation.fillFactor,
+          strokeColor: layer.regionStrokeColor ?? '#66b5ff',
+          strokeOpacity:
+            layer.regionStrokeExists === false
+              ? 0
+              : layer.regionEffect === 'draw-border' && presentation.drawProgress < 1
+                ? 0
+                : layer.opacity * (layer.regionStrokeOpacity ?? 0.9) * presentation.strokeFactor,
+          strokeWidth: layer.regionStrokeWidth ?? 2,
+          glowColor: layer.regionHighlightColor ?? '#ffffff',
+          glowOpacity:
+            layer.regionAnimationEnabled && layer.regionEffect !== 'fade'
+              ? 0.2 * presentation.strokeFactor
+              : 0,
+        },
+      };
+      if (layer.regionEffect !== 'draw-border' || presentation.drawProgress >= 1) return [base];
+      const trace = {
+        ...base,
+        id: `${layer.id}:trace`,
+        geometry: revealRegionGeometry(layer.regionGeometry!, presentation.drawProgress),
+        properties: {
+          ...base.properties,
+          role: 'trace',
+          selected: false,
+          fillOpacity: 0,
+          strokeColor: layer.regionStrokeColor ?? '#66b5ff',
+          strokeOpacity:
+            layer.regionStrokeExists === false ? 0 : layer.opacity * (layer.regionStrokeOpacity ?? 0.9),
+          strokeWidth: layer.regionStrokeWidth ?? 2,
+          glowOpacity: 0.25,
+        },
+      };
+      return [base, trace];
+    }),
+});
+
+const ensureRegionOverlays = (
+  map: MapLibreMap,
+  layers: readonly Layer[],
+  selectedId: string | null,
+  assetUrls: Readonly<Record<string, string>>,
+) => {
+  const data = onlineRegionFeatureCollection(layers, selectedId, assetUrls);
+  const source = map.getSource(ONLINE_PROJECT_REGION_SOURCE_ID) as GeoJSONSource | undefined;
+  if (source) source.setData(data);
+  else map.addSource(ONLINE_PROJECT_REGION_SOURCE_ID, { type: 'geojson', data });
+  if (!map.getLayer(ONLINE_PROJECT_REGION_FILL_LAYER_ID))
+    map.addLayer({
+      id: ONLINE_PROJECT_REGION_FILL_LAYER_ID,
+      type: 'fill',
+      source: ONLINE_PROJECT_REGION_SOURCE_ID,
+      metadata: OVERLAY_METADATA,
+      filter: ['all', ['==', ['get', 'role'], 'base'], ['==', ['get', 'patternId'], '']],
+      paint: { 'fill-color': ['get', 'fillColor'], 'fill-opacity': ['get', 'fillOpacity'] },
+    });
+  let geographicLayer = geographicRegionLayers.get(map);
+  if (!geographicLayer) {
+    geographicLayer = new GeographicRegionFillLayer();
+    geographicRegionLayers.set(map, geographicLayer);
+    // Vite HMR can recreate this module while MapLibre retains the prior
+    // custom-layer implementation. Replace that detached instance atomically
+    // so subsequent updates always target the renderer MapLibre invokes.
+    if (map.getLayer(ONLINE_GEOGRAPHIC_REGION_FILL_LAYER_ID))
+      map.removeLayer(ONLINE_GEOGRAPHIC_REGION_FILL_LAYER_ID);
+  }
+  geographicLayer.update(layers, assetUrls, flagUrl);
+  if (!map.getLayer(ONLINE_GEOGRAPHIC_REGION_FILL_LAYER_ID)) map.addLayer(geographicLayer);
+  if (!map.getLayer(ONLINE_PROJECT_REGION_GLOW_LAYER_ID))
+    map.addLayer({
+      id: ONLINE_PROJECT_REGION_GLOW_LAYER_ID,
+      type: 'line',
+      source: ONLINE_PROJECT_REGION_SOURCE_ID,
+      metadata: OVERLAY_METADATA,
+      filter: ['==', ['get', 'role'], 'trace'],
+      paint: {
+        'line-color': ['get', 'glowColor'],
+        'line-opacity': ['get', 'glowOpacity'],
+        'line-width': ['+', ['get', 'strokeWidth'], 5],
+        'line-blur': 3,
+      },
+    });
+  if (!map.getLayer(ONLINE_PROJECT_REGION_STROKE_LAYER_ID))
+    map.addLayer({
+      id: ONLINE_PROJECT_REGION_STROKE_LAYER_ID,
+      type: 'line',
+      source: ONLINE_PROJECT_REGION_SOURCE_ID,
+      metadata: OVERLAY_METADATA,
+      filter: ['in', ['get', 'role'], ['literal', ['base', 'trace']]],
+      paint: {
+        'line-color': ['get', 'strokeColor'],
+        'line-opacity': ['get', 'strokeOpacity'],
+        'line-width': ['get', 'strokeWidth'],
+      },
+    });
+  if (!map.getLayer(ONLINE_PROJECT_REGION_SELECTION_LAYER_ID))
+    map.addLayer({
+      id: ONLINE_PROJECT_REGION_SELECTION_LAYER_ID,
+      type: 'line',
+      source: ONLINE_PROJECT_REGION_SOURCE_ID,
+      metadata: OVERLAY_METADATA,
+      filter: ['all', ['==', ['get', 'role'], 'base'], ['==', ['get', 'selected'], true]],
+      paint: { 'line-color': '#7fd4ff', 'line-opacity': 0.45, 'line-width': 2 },
+    });
+  return data.features.length;
+};
 export const ONLINE_PIN_VISUAL_SCALE_STOPS = [
   [0, 0.45],
   [4, 0.58],
@@ -299,6 +519,20 @@ export const loadOnlineProjectOverlayAssets = async (
 ) => {
   let loaded = 0;
   for (const layer of layers) {
+    if (layer.type !== 'region') continue;
+    const id = regionPatternId(layer, assetUrls);
+    if (!id) continue;
+    const url =
+      layer.regionFillMode === 'flag'
+        ? flagUrl(resolveFlagCode(layer.regionCountryCode, layer.regionCountryCode2))
+        : layer.regionImageAssetId
+          ? assetUrls[layer.regionImageAssetId]
+          : undefined;
+    if (!url) continue;
+    await loadGeographicRegionImage(url);
+    loaded += 1;
+  }
+  for (const layer of layers) {
     if (layer.type !== 'pin' || pinStyleOf(layer) !== 'custom' || !layer.pinCustomAssetId) continue;
     const url = assetUrls[layer.pinCustomAssetId];
     if (!url) continue;
@@ -343,6 +577,7 @@ export const ensureOnlineProjectOverlays = (
   selectedId: string | null = null,
   assetUrls: Readonly<Record<string, string>> = {},
 ) => {
+  const regionCount = ensureRegionOverlays(map, layers, selectedId, assetUrls);
   ensurePinImages(map, layers, selectedId, assetUrls);
   const data = onlinePinFeatureCollection(layers, selectedId, assetUrls);
   const existing = map.getSource(ONLINE_PROJECT_PIN_SOURCE_ID) as GeoJSONSource | undefined;
@@ -415,7 +650,7 @@ export const ensureOnlineProjectOverlays = (
     'text-offset',
     labelOffsetExpression(layers, assetUrls),
   );
-  return data.features.length;
+  return regionCount + data.features.length;
 };
 
 export const updateOnlineProjectOverlays = (

@@ -58,9 +58,8 @@ const waitForStyleAndApplyLabels = (
       cleanup();
       try {
         applyOnlineMapLabelLanguage(map, labelLanguage, true);
-        ensureOnlineProjectOverlays(map, layers, null, assetUrls);
         await loadOnlineProjectOverlayAssets(map, layers, assetUrls);
-        updateOnlineProjectOverlays(map, layers, null, assetUrls);
+        ensureOnlineProjectOverlays(map, layers, null, assetUrls);
         resolve();
       } catch (error) {
         reject(error);
@@ -187,7 +186,7 @@ export class OnlineMapFrameRenderer {
       pointerEvents: 'none',
     });
     document.body.append(host);
-    const camera = mapMotionToMapLibreCamera(initialCamera);
+    const camera = mapMotionToMapLibreCamera(initialCamera, viewport);
     let map: MapLibreMap | undefined;
     let releaseLifecycle: (() => void) | undefined;
     try {
@@ -209,7 +208,7 @@ export class OnlineMapFrameRenderer {
         pixelRatio,
         fadeDuration: 0,
         maxPitch: 85,
-        minZoom: mapLibreMinimumZoom(),
+        minZoom: mapLibreMinimumZoom(viewport),
         maxZoom: mapLibreMaximumZoom(),
         refreshExpiredTiles: false,
       });
@@ -261,8 +260,12 @@ export class OnlineMapFrameRenderer {
   ) {
     signal?.throwIfAborted();
     this.map.resize();
-    const resolvedCamera = mapMotionToMapLibreCamera(camera);
+    const resolvedCamera = mapMotionToMapLibreCamera(camera, {
+      width: this.logicalWidth,
+      height: this.logicalHeight,
+    });
     this.map.jumpTo(resolvedCamera);
+    await loadOnlineProjectOverlayAssets(this.map, layers, this.assetUrls);
     updateOnlineProjectOverlays(this.map, layers, null, this.assetUrls);
     if (import.meta.env.DEV) {
       const appliedCenter = this.map.getCenter();

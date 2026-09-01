@@ -184,7 +184,8 @@ const temporalStates = (project) => {
   };
   project.views[1].layerConfigs.a.included = false;
   const atBoundary = m.evaluateProjectAtTime(project, 2);
-  assert.equal(atBoundary.layers.find((candidate) => candidate.id === 'a').opacity, 1);
+  assert.equal(atBoundary.layers.find((candidate) => candidate.id === 'a').opacity, 0);
+  assert.equal(m.evaluateProjectAtTime(project, 2.5).layers.find((candidate) => candidate.id === 'a').opacity, 0.5);
 
   project.transitions[0].layerConfigs.b.included = false;
   project.transitions[1].layerConfigs.b.included = false;

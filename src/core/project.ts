@@ -22,6 +22,15 @@ export type PinStyle = 'dot' | 'map-pin' | 'location' | 'target' | 'star' | 'cir
 export type PinLabelPosition = 'top' | 'bottom' | 'left' | 'right';
 export type PinAppear = 'none' | 'fade' | 'pop';
 export type PinAppearType = 'fade' | 'pop' | 'drop';
+export type RegionSource = 'administrative' | 'custom';
+export type RegionKind = 'country' | 'admin1' | 'continent' | 'macro-region';
+export type RegionFillMode = 'none' | 'solid' | 'flag' | 'image';
+export type RegionImageMode = 'cover' | 'fit' | 'tile';
+export type RegionEffect = 'fade' | 'draw-border' | 'pulse';
+export interface RegionGeometry {
+  type: 'Polygon' | 'MultiPolygon';
+  coordinates: number[][][] | number[][][][];
+}
 export type PinCustomAnchor = 'bottom-center' | 'center';
 export type TransitionType = 'smooth' | 'pan' | 'zoom' | 'fly-to';
 export type WipeType = 'fade-out';
@@ -55,8 +64,17 @@ export interface SegmentLayerAnimation {
   wipeEnabled?: boolean;
   /** Wipe animation type. */
   wipeType?: WipeType;
+  /** Delay after the full appearance lifecycle before wipe begins. */
+  wipeDelay?: number;
   /** Duration in seconds of the wipe. */
   wipeDuration?: number;
+  regionEffect?: 'fade' | 'draw-border' | 'pulse';
+  regionDrawSpeed?: number;
+  regionDrawOrder?: 'before-fill' | 'after-fill';
+  regionDrawingDelay?: number;
+  regionDrawingDuration?: number;
+  regionFillingDelay?: number;
+  regionFillingDuration?: number;
 }
 export type TransitionPreset =
   'smooth' | 'cinematic' | 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'bezier';
@@ -220,6 +238,44 @@ export interface Layer {
   pinDropOffsetY?: number;
   /** Render-only View/Transition appearance multiplier; never authored or persisted. */
   pinSceneOpacity?: number;
+  // Region-specific geographic presentation. Legacy countryId-only Regions remain supported.
+  regionSource?: RegionSource;
+  regionKind?: RegionKind;
+  regionFeatureId?: string;
+  regionCountryCode?: string;
+  regionCountryCode2?: string;
+  regionAdminCode?: string;
+  regionWikidataId?: string;
+  regionGroupId?: string;
+  regionGroupMembers?: string[];
+  regionGeometry?: RegionGeometry;
+  regionGeometryEditable?: boolean;
+  regionFillMode?: RegionFillMode;
+  regionFillColor?: string;
+  regionFillOpacity?: number;
+  regionImageMode?: RegionImageMode;
+  regionTileCount?: number;
+  regionImageAssetId?: string;
+  regionStrokeExists?: boolean;
+  regionStrokeColor?: string;
+  regionStrokeOpacity?: number;
+  regionStrokeWidth?: number;
+  regionAnimationEnabled?: boolean;
+  regionEffect?: RegionEffect;
+  regionEffectDuration?: number;
+  regionEffectDelay?: number;
+  regionDrawSpeed?: number;
+  regionDrawOrder?: 'before-fill' | 'after-fill';
+  regionDrawingDelay?: number;
+  regionDrawingDuration?: number;
+  regionFillingDelay?: number;
+  regionFillingDuration?: number;
+  regionHighlightColor?: string;
+  regionPulseSpeed?: number;
+  regionPulseIntensity?: number;
+  /** Evaluator-owned progress, never authored or persisted. */
+  regionEffectProgress?: number;
+  regionEffectTime?: number;
 }
 export interface CameraState {
   x: number;
@@ -466,7 +522,35 @@ export const createLayer = (type: LayerType, offset = 0): Layer => {
   const x = 540 + offset * 18;
   const y = 260 + offset * 15;
   const defaults: Record<LayerType, Partial<Layer>> = {
-    region: { name: 'Iran highlight', color: '#e8533e', countryId: 'iran', x: 650, y: 292 },
+    region: {
+      name: 'Custom Region',
+      color: '#3689e6',
+      x: 650,
+      y: 292,
+      regionSource: 'custom',
+      regionGeometryEditable: true,
+      regionFillMode: 'solid',
+      regionFillColor: '#3689e6',
+      regionFillOpacity: 0.35,
+      regionImageMode: 'cover',
+      regionTileCount: 4,
+      regionStrokeExists: true,
+      regionStrokeColor: '#66b5ff',
+      regionStrokeOpacity: 0.9,
+      regionStrokeWidth: 2,
+      regionAnimationEnabled: false,
+      regionEffect: 'fade',
+      regionEffectDuration: 1,
+      regionEffectDelay: 0,
+      regionDrawSpeed: 1,
+      regionDrawingDelay: 0,
+      regionDrawingDuration: 1.5,
+      regionFillingDelay: 0,
+      regionFillingDuration: 1.5,
+      regionHighlightColor: '#ffffff',
+      regionPulseSpeed: 1,
+      regionPulseIntensity: 0.5,
+    },
     pin: {
       name: 'Pin',
       color: '#f3b43f',
@@ -838,7 +922,8 @@ export const deleteProjectLayer = (project: Project, layerId: string): Project =
       (layer) =>
         layer.id !== layerId &&
         ((layer.type === 'image' && layer.assetId === asset.id) ||
-          (layer.type === 'pin' && layer.pinCustomAssetId === asset.id)),
+          (layer.type === 'pin' && layer.pinCustomAssetId === asset.id) ||
+          (layer.type === 'region' && layer.regionImageAssetId === asset.id)),
     ),
   ),
   views: project.views.map((view) => {

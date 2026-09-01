@@ -275,7 +275,62 @@ const pinId = (pin) => pin.id;
   assert.ok(mid.pinPopScale === undefined, 'no transient pop scale when appear is suppressed');
 }
 
-// 9. Semantic warnings (test 70).
+// 9. Appear/Wipe are segment-local and may repeat for the same Project Layer.
+{
+  const pin = pinLayer();
+  const views = ['A', 'B', 'C', 'D'].map((name) => createView(name, [], { x: 0, y: 0, zoom: 1 }));
+  for (const view of views) {
+    view.holdDuration = 1;
+    view.transitionDuration = 1;
+  }
+  views[1].layers = [{ ...pin }];
+  views[3].layers = [{ ...pin }];
+  for (const index of [0, 1, 2]) views[index].transitionLayers = [{ ...pin }];
+  views[0].layerAnimations = {
+    [pin.id]: { appearEnabled: true, appearType: 'fade', appearDuration: 1 },
+  };
+  views[1].layerAnimations = {
+    [pin.id]: { wipeEnabled: true, wipeDelay: 0, wipeDuration: 1 },
+  };
+  views[2].layerAnimations = {
+    [pin.id]: { appearEnabled: true, appearType: 'fade', appearDuration: 1 },
+  };
+  const project = createProject('Repeated lifecycle');
+  project.layers = [pin];
+  project.views = views;
+  const migrated = validateAndMigrateProject(project);
+  assert.ok(evaluateProjectAtTime(migrated, 1.5).layers[0].opacity > 0, 'first appear runs');
+  assert.ok(evaluateProjectAtTime(migrated, 3.5).layers[0].opacity < 1, 'later wipe runs');
+  assert.equal(evaluateProjectAtTime(migrated, 5).layers[0].opacity, 0, 'second appear starts hidden');
+  assert.equal(evaluateProjectAtTime(migrated, 5.25).layers[0].opacity, 0.25);
+  assert.equal(evaluateProjectAtTime(migrated, 5.5).layers[0].opacity, 0.5, 'direct seek reaches half fade');
+  assert.equal(evaluateProjectAtTime(migrated, 5.75).layers[0].opacity, 0.75);
+  const forward = evaluateProjectAtTime(migrated, 5.5).layers[0];
+  evaluateProjectAtTime(migrated, 3.5);
+  const forwardAgain = evaluateProjectAtTime(migrated, 5.5).layers[0];
+  assert.deepEqual(forwardAgain, forward, 'reverse/forward scrubbing is stateless');
+  assert.equal(migrated.transitions[0].layerConfigs[pin.id].animation.appearEnabled, true);
+  assert.equal(migrated.transitions[1].layerConfigs[pin.id].animation.wipeEnabled, true);
+  assert.equal(migrated.transitions[2].layerConfigs[pin.id].animation.appearEnabled, true);
+}
+
+// Explicit Appear wins even when the source View already includes the layer.
+{
+  const pin = pinLayer();
+  const a = createView('Visible source', [{ ...pin }], { x: 0, y: 0, zoom: 1 });
+  const b = createView('Visible destination', [{ ...pin }], { x: 0, y: 0, zoom: 1 });
+  a.holdDuration = 1;
+  a.transitionDuration = 2;
+  a.transitionLayers = [{ ...pin }];
+  a.layerAnimations = {
+    [pin.id]: { appearEnabled: true, appearType: 'fade', appearDuration: 2 },
+  };
+  const project = twoViewProject(a, b, [pin]);
+  assert.equal(evaluateProjectAtTime(project, 1).layers[0].opacity, 0);
+  assert.equal(evaluateProjectAtTime(project, 2).layers[0].opacity, 0.5);
+}
+
+// 10. Semantic warnings (test 70).
 {
   const id = 'layer-x';
   const anim = (o) => o;
@@ -393,7 +448,7 @@ const pinId = (pin) => pin.id;
     { layerAnimations: { x: { appearType: 'bounce' } } },
     { layerAnimations: { x: { appearDelay: -1 } } },
     { layerAnimations: { x: { appearDuration: 0 } } },
-    { layerAnimations: { x: { wipeDuration: 0 } } },
+    { layerAnimations: { x: { wipeDuration: -0.1 } } },
     { layerAnimations: { x: { layerHoldDuration: -0.5 } } },
     { layerAnimations: { x: { appearEnabled: 'yes' } } },
     { layerAnimations: { x: { wipeType: 'explode' } } },

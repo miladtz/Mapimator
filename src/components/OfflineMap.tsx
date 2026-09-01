@@ -1513,22 +1513,51 @@ function LayerGraphic({
   if (!point) return null;
   if (layer.type === 'region') {
     const country = findCountry(layer.countryId);
-    const path = country
-      ? globe
-        ? projectPathToGlobe(country.path, globe)
-        : flatCamera
-          ? projectPathToFlatCamera(country.path, flatCamera)
-          : country.path
+    const geometryPath = layer.regionGeometry
+      ? (() => {
+          const polygons =
+            layer.regionGeometry.type === 'Polygon'
+              ? [layer.regionGeometry.coordinates as number[][][]]
+              : (layer.regionGeometry.coordinates as number[][][][]);
+          return polygons
+            .flatMap((polygon) => polygon)
+            .map(
+              (ring) =>
+                ring
+                  .map(
+                    ([longitude, latitude], index) =>
+                      `${index === 0 ? 'M' : 'L'}${((longitude + 180) / 360) * 1000} ${((90 - latitude) / 180) * 500}`,
+                  )
+                  .join('') + 'Z',
+            )
+            .join('');
+        })()
       : undefined;
-    if (!country || !path) return null;
-    return country ? (
+    const sourcePath = geometryPath ?? country?.path;
+    const path = sourcePath
+      ? globe
+        ? projectPathToGlobe(sourcePath, globe)
+        : flatCamera
+          ? projectPathToFlatCamera(sourcePath, flatCamera)
+          : sourcePath
+      : undefined;
+    if (!path) return null;
+    return (
       <g {...common}>
-        <path d={path} fill={layer.color} fillOpacity=".45" stroke={layer.color} strokeWidth="3" />
+        <path
+          d={path}
+          fill={layer.regionFillColor ?? layer.color}
+          fillOpacity={layer.regionFillOpacity ?? 0.45}
+          stroke={layer.regionStrokeColor ?? layer.color}
+          strokeOpacity={layer.regionStrokeOpacity ?? 1}
+          strokeWidth={layer.regionStrokeWidth ?? 3}
+          fillRule="evenodd"
+        />
         <text x={point.x} y={point.y + 28} fill={layer.color} textAnchor="middle" className="layer-caption">
           {layer.name}
         </text>
       </g>
-    ) : null;
+    );
   }
   if (layer.type === 'pin')
     return (

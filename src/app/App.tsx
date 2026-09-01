@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { confirm as confirmDialog, open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
+import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { normalizeHexColor } from '../core/color';
 import { OfflineMap } from '../components/OfflineMap';
@@ -66,6 +66,14 @@ import {
 } from '../core/project';
 import { t } from '../core/i18n';
 import { compileTimeline, evaluateProjectAtTime } from '../core/viewCompiler';
+import {
+  createGeographicRegionLayer,
+  createRegionLayer,
+  customRegionGeometry,
+  findAdministrativeRegion,
+  searchAdministrativeRegions,
+  type LngLat,
+} from '../core/regions';
 import {
   buildTimelineLayout,
   resolveTimelineAtTime,
@@ -240,6 +248,9 @@ export function App() {
   const [playbackState, setPlaybackState] = useState<PlaybackState>('stopped');
   const [layersPanelOpen, setLayersPanelOpen] = useState(true);
   const [placing, setPlacing] = useState<LayerType | null>(null);
+  const [regionDraft, setRegionDraft] = useState<LngLat[]>([]);
+  const [regionToolOpen, setRegionToolOpen] = useState(false);
+  const [regionSearch, setRegionSearch] = useState('');
   const [draggedViewId, setDraggedViewId] = useState<string | null>(null);
   /** Editor-only temporary layer hiding (eye). Never persisted, never affects Preview/Export. */
   const [eyeHidden, setEyeHidden] = useState<Record<string, boolean>>({});
@@ -339,13 +350,37 @@ export function App() {
     const onKey = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape') {
         setPlacing(null);
+        setRegionDraft([]);
+        setRegionToolOpen(false);
         setLayersPanelOpen(false);
         setOpenViewMenuId(null);
+      }
+      const editable =
+        event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement;
+      if (placing === 'region' && event.key === 'Backspace' && !editable) {
+        event.preventDefault();
+        setRegionDraft((points) => points.slice(0, -1));
+      }
+      if (placing === 'region' && event.key === 'Enter' && !editable) {
+        const geometry = customRegionGeometry(regionDraft);
+        if (!geometry) {
+          setNotice('A Region needs at least 3 unique, non-collinear vertices.');
+          return;
+        }
+        const count = projectRef.current.layers.filter(
+          (layer) => layer.type === 'region' && layer.regionSource === 'custom',
+        ).length;
+        const layer = createRegionLayer(`Custom Region ${count + 1}`, geometry);
+        updateProject((current) => addProjectLayer(current, layer));
+        selectLayer(layer.id);
+        setRegionDraft([]);
+        setPlacing(null);
+        setNotice(`${layer.name} added`);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [placing, regionDraft]);
   useEffect(() => {
     const removed = Object.keys(renderedThumbnailSignaturesRef.current).filter(
       (id) => !(id in thumbnailSignatures),
@@ -599,6 +634,11 @@ export function App() {
       setNotice('Click the map to place the Pin — Esc to cancel');
       return;
     }
+    if (type === 'region') {
+      setRegionToolOpen((open) => !open);
+      setNotice('Choose an existing geographic Region or draw a custom polygon');
+      return;
+    }
     const layer = createLayer(type, project.layers.length);
     let asset = null;
     if (type === 'image') {
@@ -771,22 +811,21 @@ export function App() {
     selectLayer(layer.id);
   };
   const removeLayerById = async (layerId: string) => {
-    const target = project.layers.find((layer) => layer.id === layerId);
+    const target = projectRef.current.layers.find((layer) => layer.id === layerId);
     if (!target) return;
     const name = target.name;
-    const ok = await confirmDialog(
+    const ok = window.confirm(
       `Delete ${name} from the project?\nIt will be removed from all Views and Transitions.`,
-      { title: 'Delete Project Layer', kind: 'warning' },
     );
     if (!ok) return;
     // Centralized project-level cascade: removes the Layer from the registry
     // and from every View/Transition usage.
-    const deleted = deleteProjectLayer(project, layerId);
+    const deleted = deleteProjectLayer(projectRef.current, layerId);
     setProject(deleted);
     if (selectedId === layerId) selectLayer(null);
     try {
       const cleaned = await cleanupProjectAssets(deleted);
-      setProject(cleaned.project);
+      setProject((current) => ({ ...current, assets: cleaned.project.assets }));
       setNotice(`${name} deleted from project and all segments`);
     } catch (error) {
       setNotice(`${name} deleted; asset cleanup will retry later: ${String(error)}`);
@@ -1136,6 +1175,12 @@ export function App() {
     applyCameraEdit({ ...fitLayerCamera(selected, camera), bearing: camera.bearing, pitch: camera.pitch });
     setNotice(`Fit Layer applied: ${selected.name}`);
   };
+  const focusLayerFromRow = (layer: Layer) => {
+    selectLayer(layer.id);
+    const fitted = fitLayerCamera(layer, camera);
+    const pinZoom = layer.type === 'pin' ? Math.max(fitted.zoom, 3.25) : fitted.zoom;
+    applyCameraEdit({ ...fitted, zoom: pinZoom, bearing: camera.bearing, pitch: 0 });
+  };
   const exportProof = async () => {
     if (exportAbort.current) return;
     const controller = new AbortController();
@@ -1380,7 +1425,7 @@ export function App() {
                   <div
                     key={layer.id}
                     className={`layer-row ${selectedId === layer.id ? 'selected' : ''}`}
-                    onClick={() => selectLayer(layer.id)}
+                    onClick={() => focusLayerFromRow(layer)}
                   >
                     <button
                       type="button"
@@ -1425,6 +1470,7 @@ export function App() {
                       aria-label={`Delete ${layer.name}`}
                       title={`Delete ${layer.name}`}
                       onClick={(event) => {
+                        event.preventDefault();
                         event.stopPropagation();
                         void removeLayerById(layer.id);
                       }}
@@ -1628,6 +1674,15 @@ export function App() {
                     if (placing === 'pin') placeLayerAt('pin', point);
                     else clearSelection();
                   }}
+                  onRegionPoint={
+                    placing === 'region' ? (point) => setRegionDraft((draft) => [...draft, point]) : undefined
+                  }
+                  onRegionFinish={
+                    placing === 'region'
+                      ? () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }))
+                      : undefined
+                  }
+                  regionDraft={regionDraft}
                   assetUrls={assetUrls}
                 />
               ) : (
@@ -1684,9 +1739,61 @@ export function App() {
                 </button>
               ))}
             </div>
+            {regionToolOpen && (
+              <div className="region-tool-popover">
+                <strong>Create Region</strong>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRegionToolOpen(false);
+                    setRegionDraft([]);
+                    setPlacing('region');
+                    setNotice(
+                      'Draw Custom Region: click vertices, Enter to finish, Backspace to undo, Esc to cancel',
+                    );
+                  }}
+                >
+                  Draw Custom Region
+                </button>
+                <input
+                  aria-label="Search countries, provinces, and states"
+                  placeholder="Search countries, provinces, states…"
+                  value={regionSearch}
+                  onChange={(event) => setRegionSearch(event.target.value)}
+                />
+                <div className="region-picker-results">
+                  {searchAdministrativeRegions(regionSearch).map((region) => (
+                    <button
+                      key={`${region.kind}:${region.id}`}
+                      type="button"
+                      onClick={() => {
+                        const key = `${region.kind}:${region.id}`;
+                        const existing = findAdministrativeRegion(project.layers, key);
+                        if (existing) {
+                          selectLayer(existing.id);
+                          setNotice(`${existing.name} is already a Region layer`);
+                        } else {
+                          const layer = createGeographicRegionLayer(region);
+                          updateProject((current) => addProjectLayer(current, layer));
+                          selectLayer(layer.id);
+                          setNotice(`${layer.name} added as a geographic Region`);
+                        }
+                        setRegionToolOpen(false);
+                        setRegionSearch('');
+                      }}
+                    >
+                      <span>{region.name}</span>
+                      <small>{region.kind === 'country' ? 'Country' : region.countryCode}</small>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             {placing && (
               <div className="placement-hint">
-                Click the map to place the {layerLabel[placing]} — Esc to cancel
+                {placing === 'region'
+                  ? `Draw Region: ${regionDraft.length} vertices — Enter finishes, Backspace undoes, Esc cancels`
+                  : `Click the map to place the ${layerLabel[placing]} — Esc to cancel`}
               </div>
             )}
             <div className="map-hint">{words.panZoom}</div>
@@ -1920,7 +2027,7 @@ export function App() {
                     : `View ${evaluateProjectAtTime(project, previewClock.getSnapshot()).activeViewIndex + 1}`
                 } · ${playbackState}`
               : projectMode
-                ? 'Map Mode Â· Project Layers'
+                ? 'Map Mode · Project Layers'
                 : selectedTransition
                   ? `Editing Transition ${project.views.findIndex((view) => view.id === selectedTransition.fromViewId) + 1} → ${project.views.findIndex((view) => view.id === selectedTransition.toViewId) + 1}`
                   : activeView
@@ -2338,6 +2445,9 @@ function OnlinePreviewMap({
   onSelect,
   onMovePin,
   onBackgroundClick,
+  onRegionPoint,
+  onRegionFinish,
+  regionDraft,
   assetUrls,
 }: {
   clock: PreviewClock;
@@ -2352,6 +2462,9 @@ function OnlinePreviewMap({
   onSelect: (id: string | null) => void;
   onMovePin: (id: string, x: number, y: number) => void;
   onBackgroundClick: (point: { x: number; y: number }) => void;
+  onRegionPoint?: (point: [number, number]) => void;
+  onRegionFinish?: () => void;
+  regionDraft?: [number, number][];
   assetUrls: Readonly<Record<string, string>>;
 }) {
   const time = usePreviewClockTime(clock);
@@ -2369,6 +2482,9 @@ function OnlinePreviewMap({
       onSelect={onSelect}
       onMovePin={onMovePin}
       onBackgroundClick={onBackgroundClick}
+      onRegionPoint={onRegionPoint}
+      onRegionFinish={onRegionFinish}
+      regionDraft={regionDraft}
       assetUrls={assetUrls}
     />
   );
@@ -2956,6 +3072,203 @@ function HexColorField({ value, onChange }: { value: string; onChange: (value: s
   );
 }
 
+function RegionTimelineControls({
+  layer,
+  transitionContext,
+  viewContext,
+}: {
+  layer: Layer;
+  transitionContext?: TransitionLayerContext;
+  viewContext?: ViewLayerContext;
+}) {
+  const context = transitionContext ?? viewContext;
+  if (!context) return null;
+  const included = transitionContext ? transitionContext.inTransition : viewContext!.inView;
+  const canAnimate = transitionContext != null || (viewContext?.holdDuration ?? 0) > 0;
+  const anim = context.anim;
+  const patch = context.onPatchAnim;
+  return (
+    <div className="pin-section transition-layer-section" data-region-timeline-settings>
+      <span className="pin-section-title">
+        {transitionContext ? 'Transition Layer Settings' : 'Timeline Settings'}
+      </span>
+      <label className="toggle">
+        <span>Included</span>
+        <input
+          type="checkbox"
+          checked={included}
+          onChange={(event) => context.onSetMembership(event.target.checked)}
+        />
+      </label>
+      {included && canAnimate && (
+        <>
+          <label className="toggle">
+            <span>Enable Appear</span>
+            <input
+              type="checkbox"
+              checked={Boolean(anim?.appearEnabled)}
+              onChange={(event) => patch({ appearEnabled: event.target.checked })}
+            />
+          </label>
+          {anim?.appearEnabled && (
+            <>
+              <label>
+                Region Effect
+                <select
+                  value={anim.regionEffect ?? 'fade'}
+                  onChange={(event) =>
+                    patch({ regionEffect: event.target.value as NonNullable<typeof anim>['regionEffect'] })
+                  }
+                >
+                  <option value="fade">Fade</option>
+                  <option value="draw-border">Draw Border</option>
+                  <option value="pulse">Pulse</option>
+                </select>
+              </label>
+              {anim.regionEffect === 'draw-border' && (
+                <>
+                  {layer.regionStrokeExists !== false && (
+                    <>
+                      <label>
+                        Order
+                        <select
+                          value={anim.regionDrawOrder ?? 'before-fill'}
+                          onChange={(event) =>
+                            patch({ regionDrawOrder: event.target.value as 'before-fill' | 'after-fill' })
+                          }
+                        >
+                          <option value="before-fill">Before Fill</option>
+                          <option value="after-fill">After Fill</option>
+                        </select>
+                      </label>
+                      <div className="two-col">
+                        <RegionTimingField
+                          label="Drawing Delay"
+                          value={anim.regionDrawingDelay ?? 0}
+                          onChange={(value) => patch({ regionDrawingDelay: value })}
+                        />
+                        <RegionTimingField
+                          label="Drawing Duration"
+                          value={anim.regionDrawingDuration ?? 1.5}
+                          onChange={(value) => patch({ regionDrawingDuration: value })}
+                        />
+                      </div>
+                    </>
+                  )}
+                  {layer.regionFillMode !== 'none' && (
+                    <div className="two-col">
+                      <RegionTimingField
+                        label="Filling Delay"
+                        value={anim.regionFillingDelay ?? 0}
+                        onChange={(value) => patch({ regionFillingDelay: value })}
+                      />
+                      <RegionTimingField
+                        label="Filling Duration"
+                        value={anim.regionFillingDuration ?? 1.5}
+                        onChange={(value) => patch({ regionFillingDuration: value })}
+                      />
+                    </div>
+                  )}
+                </>
+              )}
+              {anim.regionEffect !== 'draw-border' && (
+                <div className="two-col">
+                  <label>
+                    Delay (s)
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={anim.appearDelay ?? 0}
+                      onChange={(event) => patch({ appearDelay: Math.max(0, Number(event.target.value)) })}
+                    />
+                  </label>
+                  <label>
+                    Duration (s)
+                    <input
+                      type="number"
+                      min="0.05"
+                      step="0.1"
+                      value={anim.appearDuration ?? 0.6}
+                      onChange={(event) =>
+                        patch({ appearDuration: Math.max(0.05, Number(event.target.value)) })
+                      }
+                    />
+                  </label>
+                </div>
+              )}
+            </>
+          )}
+          <label className="toggle">
+            <span>Enable Wipe Out</span>
+            <input
+              type="checkbox"
+              checked={Boolean(anim?.wipeEnabled)}
+              onChange={(event) => patch({ wipeEnabled: event.target.checked })}
+            />
+          </label>
+          {anim?.wipeEnabled && (
+            <div className="two-col">
+              <RegionTimingField
+                label="Wipe Out Delay"
+                value={anim.wipeDelay ?? 0}
+                onChange={(value) => patch({ wipeDelay: value })}
+              />
+              <RegionTimingField
+                label="Wipe Out Duration"
+                value={anim.wipeDuration ?? 1.5}
+                onChange={(value) => patch({ wipeDuration: value })}
+              />
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function RegionTimingField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => {
+    if (document.activeElement !== inputRef.current) setDraft(String(value));
+  }, [value]);
+  const commit = (raw: string) => {
+    const parsed = Number(raw);
+    const next = Number.isFinite(parsed) ? Math.max(0, Math.min(30, parsed)) : value;
+    setDraft(String(next));
+    onChange(next);
+  };
+  return (
+    <label>
+      {label} (s)
+      <input
+        ref={inputRef}
+        type="number"
+        min="0"
+        max="30"
+        step="0.1"
+        value={draft}
+        onWheel={(event) => event.stopPropagation()}
+        onChange={(event) => {
+          const raw = event.target.value;
+          setDraft(raw);
+          if (raw !== '' && Number.isFinite(Number(raw))) onChange(Math.max(0, Math.min(30, Number(raw))));
+        }}
+        onBlur={(event) => commit(event.target.value)}
+      />
+    </label>
+  );
+}
+
 function Inspector({
   layer,
   onChange,
@@ -3006,6 +3319,22 @@ function Inspector({
       });
     } catch (err) {
       console.error(`${title} failed:`, err);
+    }
+  };
+  const chooseRegionImage = async () => {
+    try {
+      const sourcePath = await openFile({
+        title: 'Choose Region Image / Pattern',
+        multiple: false,
+        directory: false,
+        filters: [{ name: 'PNG or JPEG image', extensions: ['png', 'jpg', 'jpeg'] }],
+      });
+      if (typeof sourcePath !== 'string') return;
+      const asset = await ingestProjectImage(sourcePath);
+      onAddAsset?.(asset);
+      onChange({ regionFillMode: 'image', regionImageAssetId: asset.id });
+    } catch (error) {
+      console.error('Choose Region image failed:', error);
     }
   };
   /** Copy a reusable style's image into the project-owned asset store, then apply it. */
@@ -3453,7 +3782,7 @@ function Inspector({
           </p>
         </>
       )}
-      {transitionContext && (
+      {transitionContext && layer.type !== 'region' && (
         <div className="pin-section transition-layer-section">
           <span className="pin-section-title">
             Transition Layer{' '}
@@ -3474,18 +3803,10 @@ function Inspector({
           ) : (
             <>
               <span className="pin-section-sub">Appear</span>
-              <label
-                className="toggle"
-                title={
-                  transitionContext.continuouslyVisible
-                    ? 'Layer is already visible when the transition starts; Appear has no effect (no replay).'
-                    : undefined
-                }
-              >
+              <label className="toggle">
                 <span>Enable Appear</span>
                 <input
                   type="checkbox"
-                  disabled={transitionContext.continuouslyVisible}
                   checked={Boolean(transitionContext.anim?.appearEnabled)}
                   onChange={(e) => transitionContext.onPatchAnim({ appearEnabled: e.target.checked })}
                 />
@@ -3567,21 +3888,18 @@ function Inspector({
                 />
               </label>
               {transitionContext.anim?.wipeEnabled && (
-                <label>
-                  Duration (s)
-                  <input
-                    type="number"
-                    min="0.05"
-                    max="10"
-                    step="0.1"
-                    value={transitionContext.anim.wipeDuration ?? 0.5}
-                    onChange={(e) =>
-                      transitionContext.onPatchAnim({
-                        wipeDuration: Math.max(0.05, Number(e.target.value)),
-                      })
-                    }
+                <div className="two-col">
+                  <RegionTimingField
+                    label="Wipe Out Delay"
+                    value={transitionContext.anim.wipeDelay ?? 0}
+                    onChange={(value) => transitionContext.onPatchAnim({ wipeDelay: value })}
                   />
-                </label>
+                  <RegionTimingField
+                    label="Wipe Out Duration"
+                    value={transitionContext.anim.wipeDuration ?? 0.5}
+                    onChange={(value) => transitionContext.onPatchAnim({ wipeDuration: value })}
+                  />
+                </div>
               )}
             </>
           )}
@@ -3592,7 +3910,7 @@ function Inspector({
           ))}
         </div>
       )}
-      {viewContext && (
+      {viewContext && layer.type !== 'region' && (
         <div className="pin-section transition-layer-section">
           <span className="pin-section-title">
             View Animation <em className="transition-section-context">{viewContext.viewName}</em>
@@ -3697,21 +4015,18 @@ function Inspector({
                 />
               </label>
               {viewContext.anim?.wipeEnabled && (
-                <label>
-                  Duration (s)
-                  <input
-                    type="number"
-                    min="0.05"
-                    max="10"
-                    step="0.1"
-                    value={viewContext.anim.wipeDuration ?? 0.5}
-                    onChange={(e) =>
-                      viewContext.onPatchAnim({
-                        wipeDuration: Math.max(0.05, Number(e.target.value)),
-                      })
-                    }
+                <div className="two-col">
+                  <RegionTimingField
+                    label="Wipe Out Delay"
+                    value={viewContext.anim.wipeDelay ?? 0}
+                    onChange={(value) => viewContext.onPatchAnim({ wipeDelay: value })}
                   />
-                </label>
+                  <RegionTimingField
+                    label="Wipe Out Duration"
+                    value={viewContext.anim.wipeDuration ?? 0.5}
+                    onChange={(value) => viewContext.onPatchAnim({ wipeDuration: value })}
+                  />
+                </div>
               )}
             </>
           )}
@@ -3794,7 +4109,163 @@ function Inspector({
           </div>
         </>
       )}
-      {layer.type !== 'pin' && (
+      {layer.type === 'region' && (
+        <>
+          <div className="pin-section">
+            <span className="pin-section-title">Source</span>
+            <p>
+              {layer.regionSource === 'administrative'
+                ? `Administrative · ${layer.regionKind ?? 'country'}`
+                : 'Custom geographic polygon'}
+            </p>
+          </div>
+          <div className="pin-section">
+            <span className="pin-section-title">Fill</span>
+            <label>
+              Mode
+              <select
+                value={layer.regionFillMode ?? 'solid'}
+                onChange={(e) => onChange({ regionFillMode: e.target.value as Layer['regionFillMode'] })}
+              >
+                <option value="none">None</option>
+                <option value="solid">Solid</option>
+                {layer.regionKind === 'country' && <option value="flag">Country Flag</option>}
+                <option value="image">Image / Pattern</option>
+              </select>
+            </label>
+            {(layer.regionFillMode ?? 'solid') === 'solid' && (
+              <label>
+                Fill Color
+                <HexColorField
+                  value={layer.regionFillColor ?? layer.color}
+                  onChange={(value) => onChange({ regionFillColor: value, color: value })}
+                />
+              </label>
+            )}
+            {layer.regionFillMode === 'image' && (
+              <button className="quiet" onClick={() => void chooseRegionImage()}>
+                Choose Image / Pattern
+              </button>
+            )}
+            {layer.regionFillMode !== 'solid' && layer.regionFillMode !== 'none' && (
+              <label>
+                Mapping
+                <select
+                  value={layer.regionImageMode ?? 'cover'}
+                  onChange={(e) => onChange({ regionImageMode: e.target.value as Layer['regionImageMode'] })}
+                >
+                  <option value="cover">Cover</option>
+                  <option value="fit">Fit</option>
+                  <option value="tile">Tile</option>
+                </select>
+              </label>
+            )}
+            {(layer.regionImageMode ?? 'cover') === 'tile' &&
+              (layer.regionFillMode === 'flag' || layer.regionFillMode === 'image') && (
+                <label>
+                  Tile Count
+                  <input
+                    type="number"
+                    min="1"
+                    max="20"
+                    step="1"
+                    value={layer.regionTileCount ?? 4}
+                    onWheel={(event) => event.stopPropagation()}
+                    onChange={(event) =>
+                      onChange({
+                        regionTileCount: Math.max(
+                          1,
+                          Math.min(20, Math.round(Number(event.target.value) || 1)),
+                        ),
+                      })
+                    }
+                  />
+                </label>
+              )}
+            {layer.regionFillMode !== 'none' && (
+              <label>
+                Fill Opacity{' '}
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value={Math.round((layer.regionFillOpacity ?? 0.35) * 100)}
+                  onWheel={(e) => e.stopPropagation()}
+                  onChange={(e) =>
+                    onChange({ regionFillOpacity: Math.max(0, Math.min(1, Number(e.target.value) / 100)) })
+                  }
+                />
+              </label>
+            )}
+          </div>
+          <div className="pin-section">
+            <span className="pin-section-title">Stroke</span>
+            <label className="toggle">
+              <span>Exists</span>
+              <input
+                type="checkbox"
+                checked={layer.regionStrokeExists !== false}
+                onChange={(event) => onChange({ regionStrokeExists: event.target.checked })}
+              />
+            </label>
+            {layer.regionStrokeExists !== false && (
+              <>
+                <label>
+                  Color
+                  <HexColorField
+                    value={layer.regionStrokeColor ?? '#66b5ff'}
+                    onChange={(value) => onChange({ regionStrokeColor: value })}
+                  />
+                </label>
+                <div className="two-col">
+                  <label>
+                    Opacity
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={Math.round((layer.regionStrokeOpacity ?? 0.9) * 100)}
+                      onChange={(e) =>
+                        onChange({
+                          regionStrokeOpacity: Math.max(0, Math.min(1, Number(e.target.value) / 100)),
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Width
+                    <input
+                      type="number"
+                      min="0"
+                      max="20"
+                      step="0.1"
+                      value={layer.regionStrokeWidth ?? 2}
+                      onChange={(e) =>
+                        onChange({ regionStrokeWidth: Math.max(0, Math.min(20, Number(e.target.value))) })
+                      }
+                    />
+                  </label>
+                </div>
+              </>
+            )}
+          </div>
+          <RegionTimelineControls
+            layer={layer}
+            transitionContext={transitionContext}
+            viewContext={viewContext}
+          />
+          {layer.regionSource === 'custom' && (
+            <div className="pin-section">
+              <span className="pin-section-title">Geometry</span>
+              <button className="quiet" disabled>
+                Edit Boundary (next refinement)
+              </button>
+            </div>
+          )}
+        </>
+      )}
+      {layer.type !== 'pin' && layer.type !== 'region' && (
         <div className="two-col">
           <label>
             Color

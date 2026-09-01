@@ -1,0 +1,21 @@
+import assert from 'node:assert/strict'; import { mkdtempSync,readFileSync,writeFileSync,rmSync } from 'node:fs';
+import { tmpdir } from 'node:os'; import { join } from 'node:path'; import { fileURLToPath,pathToFileURL } from 'node:url'; import { build } from 'vite';
+const root=fileURLToPath(new URL('..',import.meta.url)); const source=p=>readFileSync(join(root,p),'utf8');
+const out=mkdtempSync(join(tmpdir(),'region-authoring-')); const entry=join(out,'entry.ts');
+writeFileSync(entry,[`export * from '${join(root,'src/core/project').replaceAll('\\','/')}';`,`export * from '${join(root,'src/core/regions').replaceAll('\\','/')}';`,`export * from '${join(root,'src/core/onlineProjectOverlays').replaceAll('\\','/')}';`,`export * from '${join(root,'src/components/OnlineOpenFreeMap').replaceAll('\\','/')}';`].join('\n'));
+let m; try{await build({configFile:false,logLevel:'silent',build:{outDir:out,emptyOutDir:false,minify:false,lib:{entry,formats:['es'],fileName:()=> 'm.mjs'}}});m=await import(pathToFileURL(join(out,'m.mjs')).href);}finally{rmSync(out,{recursive:true,force:true});}
+const app=source('src/app/App.tsx');
+assert.match(app,/Map Mode · Project Layers/); assert.doesNotMatch(app,/Map Mode Â· Project Layers/);
+assert.match(app,/event\.preventDefault\(\);[\s\S]{0,100}event\.stopPropagation\(\);[\s\S]{0,100}removeLayerById/);
+assert.match(app,/RegionTimelineControls[\s\S]{0,120}layer=\{layer\}[\s\S]{0,120}transitionContext=\{transitionContext\}[\s\S]{0,120}viewContext=\{viewContext\}/);
+assert.match(app,/const canAnimate = transitionContext != null \|\| \(viewContext\?\.holdDuration \?\? 0\) > 0/);
+assert.doesNotMatch(app,/regionSource === 'custom'[\s\S]{0,1800}<span className="pin-section-title">Animation<\/span>/);
+assert.ok(m.flagUrl('ir')); assert.equal(m.flagUrl(undefined),undefined);
+const iran=m.ADMINISTRATIVE_REGIONS.find(r=>r.countryCode==='IRN'); const layer=m.createAdministrativeRegionLayer(iran); layer.regionFillMode='flag'; layer.regionImageMode='cover';
+const cover=m.onlineRegionFeatureCollection([layer],null).features[0].properties.patternId; layer.regionImageMode='fit'; const fit=m.onlineRegionFeatureCollection([layer],null).features[0].properties.patternId; layer.regionImageMode='tile'; const tile=m.onlineRegionFeatureCollection([layer],null).features[0].properties.patternId;
+assert.notEqual(cover,fit); assert.notEqual(fit,tile); assert.notEqual(cover,tile);
+assert.equal(m.withinRegionClosureRadius({x:0,y:0},{x:10,y:5}),true); assert.equal(m.withinRegionClosureRadius({x:0,y:0},{x:20,y:0}),false);
+const guide=m.regionDraftFeatureCollection([[1,1],[2,2],[3,1]],[1,1],true); assert.equal(guide.features.length,4); assert.equal(guide.features[0].geometry.coordinates.length,4); assert.equal(guide.features[1].properties.snapped,true);
+const geometry=m.customRegionGeometry([[0,0],[4,0],[4,2],[0,2]]); const region=m.createRegionLayer('R',geometry,{regionAnimationEnabled:true,regionEffect:'draw-border',regionEffectProgress:.25,regionDrawSpeed:1,regionDrawOrder:'before-fill'}); const before=m.regionPresentation(region); const after=m.regionPresentation({...region,regionDrawOrder:'after-fill'}); assert.ok(before.drawProgress>after.drawProgress); assert.ok(before.fillFactor<after.fillFactor);
+assert.equal(m.revealRegionGeometry(geometry,0).coordinates.length,0); assert.ok(m.revealRegionGeometry(geometry,.5).coordinates[0].length>1); assert.deepEqual(m.revealRegionGeometry(geometry,1).coordinates[0],geometry.coordinates[0]);
+console.log('Region authoring UX: mode layout, delete wiring, flags, mapping identities, magnetic closure, live guide, and ordered border timing passed.');

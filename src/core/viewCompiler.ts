@@ -125,11 +125,43 @@ interface LayerLifecyclePhase {
   /** Opacity multiplier applied on top of the layer's own opacity. */
   opacityMul: number;
   visible: boolean;
+  segmentLocalTime: number;
+  wipeOpacityMul?: number;
   /** Transient pop/drop scale (pins only, render-time). */
   popScale?: number;
   /** Transient screen-space drop Y offset (pins only, render-time). */
   dropY?: number;
 }
+
+export const regionAppearanceCompleteTime = (anim: SegmentLayerAnimation) =>
+  Math.max(0, anim.regionDrawingDelay ?? 0) +
+  Math.max(0, anim.regionDrawingDuration ?? 1.5) +
+  Math.max(0, anim.regionFillingDelay ?? 0) +
+  Math.max(0, anim.regionFillingDuration ?? 1.5);
+
+export const wholeAppearanceCompleteTime = (anim: SegmentLayerAnimation) => {
+  if (!anim.appearEnabled) return 0;
+  const genericComplete = Math.max(0, anim.appearDelay ?? 0) + Math.max(0.05, anim.appearDuration ?? 0.6);
+  const regionComplete = anim.regionEffect === 'draw-border' ? regionAppearanceCompleteTime(anim) : 0;
+  return Math.max(genericComplete, regionComplete);
+};
+
+export const regionWipeTiming = (anim: SegmentLayerAnimation) => {
+  const appearanceCompleteTime = wholeAppearanceCompleteTime(anim);
+  const wipeStart = appearanceCompleteTime + Math.max(0, anim.wipeDelay ?? 0);
+  return {
+    appearanceCompleteTime,
+    wipeStart,
+    wipeEnd: wipeStart + Math.max(0, anim.wipeDuration ?? 1.5),
+  };
+};
+
+export const regionWipeProgress = (anim: SegmentLayerAnimation, segmentLocalTime: number) => {
+  const { wipeStart, wipeEnd } = regionWipeTiming(anim);
+  if (segmentLocalTime < wipeStart) return 0;
+  if (wipeEnd === wipeStart) return 1;
+  return Math.max(0, Math.min(1, (segmentLocalTime - wipeStart) / (wipeEnd - wipeStart)));
+};
 
 /**
  * Evaluate a segment-owned layer's animation lifecycle at absolute sequence
@@ -150,42 +182,50 @@ interface LayerLifecyclePhase {
 const layerLifecycle = (
   layer: Layer,
   anim: SegmentLayerAnimation,
-  entering: boolean,
+  _entering: boolean,
   time: number,
   segmentStart: number,
 ): LayerLifecyclePhase => {
-  const appearEnabled = Boolean(anim.appearEnabled) && entering;
-  const appearDelay = appearEnabled ? Math.max(0, anim.appearDelay ?? 0) : 0;
-  const appearDuration = appearEnabled ? Math.max(0.05, anim.appearDuration ?? 0.6) : 0;
+  const segmentLocalTime = Math.max(0, time - segmentStart);
+  const appearEnabled = Boolean(anim.appearEnabled);
+  const regionDraw = layer.type === 'region' && anim.regionEffect === 'draw-border';
+  const appearanceCompleteTime = wholeAppearanceCompleteTime(anim);
+  const appearDelay = appearEnabled ? (regionDraw ? 0 : Math.max(0, anim.appearDelay ?? 0)) : 0;
+  const appearDuration = appearEnabled
+    ? regionDraw
+      ? Math.max(0.0001, appearanceCompleteTime)
+      : Math.max(0.05, anim.appearDuration ?? 0.6)
+    : 0;
   const appearStart = segmentStart + appearDelay;
   const appearEnd = appearStart + appearDuration;
-  const layerHoldEnd = appearEnd + Math.max(0, anim.layerHoldDuration ?? 0);
+  const layerHoldEnd =
+    segmentStart + appearanceCompleteTime + (regionDraw ? 0 : Math.max(0, anim.layerHoldDuration ?? 0));
   const wipeEnabled = Boolean(anim.wipeEnabled);
-  const wipeStart = layerHoldEnd;
-  const wipeDuration = wipeEnabled ? Math.max(0.05, anim.wipeDuration ?? 0.5) : 0;
+  const wipeStart = layerHoldEnd + Math.max(0, anim.wipeDelay ?? 0);
+  const wipeDuration = wipeEnabled ? Math.max(0, anim.wipeDuration ?? (regionDraw ? 1.5 : 0.5)) : 0;
   const wipeEnd = wipeStart + wipeDuration;
   const type = anim.appearType ?? 'fade';
   const isPin = layer.type === 'pin';
 
   const evalWipe = (): LayerLifecyclePhase => {
-    if (!wipeEnabled) return { opacityMul: 1, visible: true };
-    if (time < wipeStart) return { opacityMul: 1, visible: true };
-    if (time >= wipeEnd) return { opacityMul: 0, visible: false };
+    if (!wipeEnabled) return { opacityMul: 1, visible: true, segmentLocalTime, wipeOpacityMul: 1 };
+    if (time < wipeStart) return { opacityMul: 1, visible: true, segmentLocalTime, wipeOpacityMul: 1 };
+    if (time >= wipeEnd) return { opacityMul: 0, visible: false, segmentLocalTime, wipeOpacityMul: 0 };
     const w = (time - wipeStart) / wipeDuration;
-    return { opacityMul: 1 - easeCameraProgress(w, 'ease-in'), visible: true };
+    const wipeOpacityMul = 1 - w;
+    return { opacityMul: wipeOpacityMul, visible: true, segmentLocalTime, wipeOpacityMul };
   };
 
   if (appearEnabled) {
-    if (time < appearStart) return { opacityMul: 0, visible: false };
+    if (time < appearStart) return { opacityMul: 0, visible: false, segmentLocalTime, wipeOpacityMul: 1 };
     if (time >= appearEnd) return evalWipe();
     const progress = (time - appearStart) / appearDuration;
-    const eased =
-      type === 'fade'
-        ? easeCameraProgress(progress, 'ease-in-out')
-        : easeCameraProgress(progress, 'ease-out');
+    const eased = type === 'fade' ? progress : easeCameraProgress(progress, 'ease-out');
     return {
       opacityMul: eased,
       visible: progress > 0,
+      segmentLocalTime,
+      wipeOpacityMul: 1,
       popScale:
         isPin && type === 'pop'
           ? 0.85 + 0.15 * eased
@@ -199,10 +239,31 @@ const layerLifecycle = (
 };
 
 /** Merge a lifecycle phase into a layer clone (transients are render-only). */
-const applyPhaseToLayer = (layer: Layer, phase: LayerLifecyclePhase) => {
+const applyPhaseToLayer = (
+  layer: Layer,
+  phase: LayerLifecyclePhase,
+  projectTime = 0,
+  animation?: SegmentLayerAnimation,
+) => {
+  const authoredOpacity = layer.opacity;
   layer.pinSceneOpacity = phase.opacityMul;
   layer.opacity = layer.opacity * phase.opacityMul;
   layer.visible = phase.visible;
+  if (layer.type === 'region' && animation?.appearEnabled) {
+    layer.regionAnimationEnabled = true;
+    layer.regionEffect = animation.regionEffect ?? 'fade';
+    layer.regionDrawSpeed = animation.regionDrawSpeed ?? 1;
+    layer.regionDrawOrder = animation.regionDrawOrder ?? 'before-fill';
+    layer.regionDrawingDelay = animation.regionDrawingDelay ?? 0;
+    layer.regionDrawingDuration = animation.regionDrawingDuration ?? 1.5;
+    layer.regionFillingDelay = animation.regionFillingDelay ?? 0;
+    layer.regionFillingDuration = animation.regionFillingDuration ?? 1.5;
+    layer.opacity =
+      (phase.visible || animation.regionEffect === 'draw-border' ? authoredOpacity : 0) *
+      (phase.wipeOpacityMul ?? 1);
+    layer.regionEffectProgress = phase.opacityMul;
+    layer.regionEffectTime = animation.regionEffect === 'draw-border' ? phase.segmentLocalTime : projectTime;
+  }
   if (phase.popScale !== undefined) layer.pinPopScale = phase.popScale;
   else delete layer.pinPopScale;
   if (phase.dropY !== undefined) layer.pinDropOffsetY = phase.dropY;
@@ -245,17 +306,14 @@ const applyContinuingTransitionAnimations = (
     const anim = transitionAnimOf(prevSeg.transition, layer.id);
     if (!anim || (!anim.appearEnabled && !anim.wipeEnabled)) continue;
     const entering = !sourceMembers.has(layer.id);
-    const appearDuration =
-      anim.appearEnabled && entering
-        ? Math.max(0, anim.appearDelay ?? 0) + Math.max(0.05, anim.appearDuration ?? 0.6)
-        : 0;
+    const appearDuration = anim.appearEnabled ? wholeAppearanceCompleteTime(anim) : 0;
     const lifecycleEnd =
       transitionStart +
       appearDuration +
       Math.max(0, anim.layerHoldDuration ?? 0) +
       (anim.wipeEnabled ? Math.max(0.05, anim.wipeDuration ?? 0.5) : 0);
     if (time >= lifecycleEnd) continue;
-    applyPhaseToLayer(layer, layerLifecycle(layer, anim, entering, time, transitionStart));
+    applyPhaseToLayer(layer, layerLifecycle(layer, anim, entering, time, transitionStart), time, anim);
     continued.add(layer.id);
   }
   return continued;
@@ -304,7 +362,12 @@ export const evaluateProjectAtTime = (project: Project, time: number): RenderedP
       // View lifecycles are segment-scoped: they run from the hold start
       // whenever appear is enabled (no replay gating — the View is a new
       // segment context).
-      applyPhaseToLayer(layer, layerLifecycle(layer, anim, true, timelineTime, segment.start));
+      applyPhaseToLayer(
+        layer,
+        layerLifecycle(layer, anim, true, timelineTime, segment.start),
+        timelineTime,
+        anim,
+      );
     }
     return {
       camera: segment.view.camera,
@@ -349,7 +412,12 @@ export const evaluateProjectAtTime = (project: Project, time: number): RenderedP
     const anim = configs[layer.id]?.animation ?? transitionAnimOf(segment.transition, layer.id);
     if (!anim) continue; // no animation config → render the project state as-is
     const entering = !sourceMembers.has(layer.id);
-    applyPhaseToLayer(layer, layerLifecycle(layer, anim, entering, timelineTime, transitionStartTime));
+    applyPhaseToLayer(
+      layer,
+      layerLifecycle(layer, anim, entering, timelineTime, transitionStartTime),
+      timelineTime,
+      anim,
+    );
   }
   return {
     camera,
