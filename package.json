@@ -55,6 +55,7 @@
     "test:region-fill-mapping": "node scripts/verify-region-fill-mapping.mjs",
     "test:region-performance": "node scripts/verify-region-performance.mjs",
     "test:online-world-fit": "node scripts/verify-online-world-fit.mjs",
+    "test:online-search": "node scripts/verify-online-search.mjs",
     "test:online-export-quality": "node scripts/verify-online-export-quality.mjs",
     "test:online-scene-parity": "node scripts/verify-online-scene-parity.mjs",
     "test:online-smooth-zoom-invariance": "node scripts/verify-online-smooth-zoom-invariance.mjs",

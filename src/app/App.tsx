@@ -16,6 +16,7 @@ import { normalizeHexColor } from '../core/color';
 import { OfflineMap } from '../components/OfflineMap';
 import type { MapMode } from '../components/OfflineMap';
 import { OnlineOpenFreeMap } from '../components/OnlineOpenFreeMap';
+import { SearchPanel } from '../components/SearchPanel';
 import {
   fitProjectViewport,
   projectRenderViewport,
@@ -72,8 +73,11 @@ import {
   customRegionGeometry,
   findAdministrativeRegion,
   searchAdministrativeRegions,
+  GEOGRAPHIC_REGIONS,
   type LngLat,
 } from '../core/regions';
+import { cameraForSearchResult, trimRecentSearches, type SearchResult } from '../core/locationSearch';
+import { lngLatToMapMotionWorld } from '../core/openFreeMapAdapter';
 import {
   buildTimelineLayout,
   resolveTimelineAtTime,
@@ -251,6 +255,10 @@ export function App() {
   const [regionDraft, setRegionDraft] = useState<LngLat[]>([]);
   const [regionToolOpen, setRegionToolOpen] = useState(false);
   const [regionSearch, setRegionSearch] = useState('');
+  const [locationSearchOpen, setLocationSearchOpen] = useState(false);
+  const [locationSearchFocusRequest, setLocationSearchFocusRequest] = useState(0);
+  const [recentLocations, setRecentLocations] = useState<SearchResult[]>([]);
+  const [searchNavigation, setSearchNavigation] = useState<{ id: number; camera: CameraState } | null>(null);
   const [draggedViewId, setDraggedViewId] = useState<string | null>(null);
   /** Editor-only temporary layer hiding (eye). Never persisted, never affects Preview/Export. */
   const [eyeHidden, setEyeHidden] = useState<Record<string, boolean>>({});
@@ -349,11 +357,21 @@ export function App() {
   useEffect(() => {
     const onKey = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape') {
+        if (locationSearchOpen) {
+          setLocationSearchOpen(false);
+          return;
+        }
         setPlacing(null);
         setRegionDraft([]);
         setRegionToolOpen(false);
         setLayersPanelOpen(false);
         setOpenViewMenuId(null);
+        setLocationSearchOpen(false);
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === 'k') {
+        event.preventDefault();
+        setLocationSearchOpen(true);
+        setLocationSearchFocusRequest((request) => request + 1);
       }
       const editable =
         event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement;
@@ -380,7 +398,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [placing, regionDraft]);
+  }, [locationSearchOpen, placing, regionDraft]);
   useEffect(() => {
     const removed = Object.keys(renderedThumbnailSignaturesRef.current).filter(
       (id) => !(id in thumbnailSignatures),
@@ -1181,6 +1199,54 @@ export function App() {
     const pinZoom = layer.type === 'pin' ? Math.max(fitted.zoom, 3.25) : fitted.zoom;
     applyCameraEdit({ ...fitted, zoom: pinZoom, bearing: camera.bearing, pitch: 0 });
   };
+  const rememberLocation = (result: SearchResult) =>
+    setRecentLocations((current) => trimRecentSearches([result, ...current]));
+  const goToSearchResult = (result: SearchResult) => {
+    const target = cameraForSearchResult(
+      result,
+      camera,
+      project.mapSettings.basemapRenderer,
+      projectRenderViewport(project),
+    );
+    previewClock.stop();
+    setPlaybackState('stopped');
+    if (project.mapSettings.basemapRenderer === 'online' && mapMode === 'flat') {
+      setSearchNavigation((current) => ({ id: (current?.id ?? 0) + 1, camera: target }));
+    } else applyCameraEdit(target);
+    rememberLocation(result);
+    setNotice(`Navigated to ${result.name}`);
+  };
+  const addPinFromSearch = (result: SearchResult) => {
+    const point = lngLatToMapMotionWorld(result.coordinates.longitude, result.coordinates.latitude);
+    const layer = {
+      ...createLayer('pin'),
+      name: result.name,
+      x: point.x,
+      y: point.y,
+    };
+    updateProject((current) => addProjectLayer(current, layer));
+    selectLayer(layer.id);
+    rememberLocation(result);
+    setNotice(`${result.name} Pin added`);
+  };
+  const addRegionFromSearch = (result: SearchResult) => {
+    if (!result.geographicFeatureId) return;
+    const region = GEOGRAPHIC_REGIONS.find((candidate) => candidate.id === result.geographicFeatureId);
+    if (!region) return;
+    const key = `${region.kind}:${region.id}`;
+    const existing = findAdministrativeRegion(projectRef.current.layers, key);
+    if (existing) {
+      selectLayer(existing.id);
+      focusLayerFromRow(existing);
+      setNotice(`${existing.name} Region already exists`);
+    } else {
+      const layer = createGeographicRegionLayer(region);
+      updateProject((current) => addProjectLayer(current, layer));
+      selectLayer(layer.id);
+      setNotice(`${layer.name} Region added`);
+    }
+    rememberLocation(result);
+  };
   const exportProof = async () => {
     if (exportAbort.current) return;
     const controller = new AbortController();
@@ -1300,6 +1366,13 @@ export function App() {
         </div>
         <div className="top-actions">
           <button
+            className={locationSearchOpen ? 'quiet active' : 'quiet'}
+            onClick={() => setLocationSearchOpen((open) => !open)}
+            title="Search locations (Ctrl+K)"
+          >
+            ⌕ Search
+          </button>
+          <button
             className="quiet"
             onClick={() => {
               setProject(createProject('Untitled documentary'));
@@ -1357,7 +1430,9 @@ export function App() {
           </button>
         </div>
       </header>
-      <section className={`workspace ${layersPanelOpen ? 'layers-open' : 'layers-closed'}`}>
+      <section
+        className={`workspace ${layersPanelOpen ? 'layers-open' : 'layers-closed'} ${locationSearchOpen ? 'search-open' : ''}`}
+      >
         {layersPanelOpen && (
           <aside className="panel left-panel" onWheel={(event) => event.stopPropagation()}>
             <div className="panel-heading">
@@ -1663,7 +1738,13 @@ export function App() {
                           .filter((layer) => !eyeHidden[layer.id])
                           .map((layer) => ({ ...layer, visible: true }))
                   }
-                  editingCamera={selectedTimelineEntity?.kind === 'view' ? camera : editingScene.camera}
+                  editingCamera={
+                    searchNavigation
+                      ? camera
+                      : selectedTimelineEntity?.kind === 'view'
+                        ? camera
+                        : editingScene.camera
+                  }
                   onCameraChange={handleCameraChange}
                   styleId={project.mapSettings.onlineStyleId}
                   labelLanguage={project.mapSettings.labelLanguage}
@@ -1684,6 +1765,7 @@ export function App() {
                   }
                   regionDraft={regionDraft}
                   assetUrls={assetUrls}
+                  navigationRequest={searchNavigation}
                 />
               ) : (
                 <div className="online-map-unavailable" role="status">
@@ -1821,6 +1903,16 @@ export function App() {
             </div>
           )}
         </section>
+        {locationSearchOpen && (
+          <SearchPanel
+            focusRequest={locationSearchFocusRequest}
+            recents={recentLocations}
+            onClose={() => setLocationSearchOpen(false)}
+            onGo={goToSearchResult}
+            onAddPin={addPinFromSearch}
+            onAddRegion={addRegionFromSearch}
+          />
+        )}
         <aside
           className={`panel right-panel ${playbackState !== 'stopped' ? 'preview-locked' : ''}`}
           onWheel={(event) => event.stopPropagation()}
@@ -2449,6 +2541,7 @@ function OnlinePreviewMap({
   onRegionFinish,
   regionDraft,
   assetUrls,
+  navigationRequest,
 }: {
   clock: PreviewClock;
   playbackState: PlaybackState;
@@ -2466,6 +2559,7 @@ function OnlinePreviewMap({
   onRegionFinish?: () => void;
   regionDraft?: [number, number][];
   assetUrls: Readonly<Record<string, string>>;
+  navigationRequest?: { id: number; camera: CameraState } | null;
 }) {
   const time = usePreviewClockTime(clock);
   const previewState = playbackState === 'stopped' ? null : evaluateProjectAtTime(project, Math.max(0, time));
@@ -2486,6 +2580,7 @@ function OnlinePreviewMap({
       onRegionFinish={onRegionFinish}
       regionDraft={regionDraft}
       assetUrls={assetUrls}
+      navigationRequest={navigationRequest}
     />
   );
 }

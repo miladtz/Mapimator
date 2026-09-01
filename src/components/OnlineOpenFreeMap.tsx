@@ -78,6 +78,7 @@ interface Props {
   onRegionFinish?: () => void;
   regionDraft?: [number, number][];
   assetUrls?: Readonly<Record<string, string>>;
+  navigationRequest?: { id: number; camera: CameraState } | null;
 }
 
 export function OnlineOpenFreeMap({
@@ -96,6 +97,7 @@ export function OnlineOpenFreeMap({
   onRegionFinish,
   regionDraft = [],
   assetUrls = {},
+  navigationRequest,
 }: Props) {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const displayRef = useRef<HTMLDivElement | null>(null);
@@ -118,6 +120,7 @@ export function OnlineOpenFreeMap({
   const applyingCanonicalCamera = useRef(false);
   const nativeCameraSignaturesRef = useRef(new Set<string>());
   const diagnosticsRef = useRef({ nativeSyncs: 0, externalApplications: 0 });
+  const appliedNavigationIdRef = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState('Loading online map...');
   const [rtlSettled, setRtlSettled] = useState(false);
@@ -473,6 +476,15 @@ export function OnlineOpenFreeMap({
     }
     applyingCanonicalCamera.current = false;
   }, [camera, viewport.height, viewport.width]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !navigationRequest || navigationRequest.id === appliedNavigationIdRef.current) return;
+    appliedNavigationIdRef.current = navigationRequest.id;
+    const target = mapMotionToMapLibreCamera(navigationRequest.camera, viewport);
+    map.stop();
+    map.easeTo({ ...target, duration: 700, essential: true });
+  }, [navigationRequest, viewport.height, viewport.width]);
 
   useEffect(() => {
     const map = mapRef.current;
