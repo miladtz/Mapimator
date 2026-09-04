@@ -8,3 +8,6 @@ src-tauri/gen/
 src-tauri/resources/ffmpeg/
 .pnpm-store/
 .tools/
+
+# Maritime ocean grid (copied from node_modules by postinstall)
+public/assets/ocean-grid.bin

@@ -121,6 +121,22 @@ struct ProjectFileWriteResult {
     bytes_written: usize,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RoutingServiceSettings {
+    #[serde(default)]
+    open_route_service_api_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OpenRouteServiceRequest {
+    coordinates: Vec<[f64; 2]>,
+    profile: String,
+    preference: String,
+    alternatives: bool,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EncoderProbeResult {
@@ -160,14 +176,179 @@ pub fn run() {
             scan_project_assets,
             cleanup_project_assets,
             write_project_file,
-            read_project_file
+            read_project_file,
+            read_routing_service_settings,
+            write_routing_service_settings,
+            plan_open_route_service_route
         ])
         .run(tauri::generate_context!())
         .expect("error while running MapMotion Studio");
 }
 
+fn routing_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join("routing-services.json"))
+        .map_err(|error| format!("Unable to resolve application settings storage: {error}"))
+}
+
 #[tauri::command]
-fn write_project_file(output_path: String, project_json: String) -> Result<ProjectFileWriteResult, String> {
+fn read_routing_service_settings(app: tauri::AppHandle) -> Result<RoutingServiceSettings, String> {
+    let path = routing_settings_path(&app)?;
+    if !path.exists() {
+        return Ok(RoutingServiceSettings::default());
+    }
+    let contents = fs::read_to_string(path)
+        .map_err(|_| "Unable to read routing service settings.".to_string())?;
+    serde_json::from_str(&contents)
+        .map_err(|_| "Routing service settings are malformed.".to_string())
+}
+
+#[tauri::command]
+fn write_routing_service_settings(
+    app: tauri::AppHandle,
+    settings: RoutingServiceSettings,
+) -> Result<(), String> {
+    let path = routing_settings_path(&app)?;
+    let parent = path
+        .parent()
+        .ok_or("Application settings path is invalid.")?;
+    fs::create_dir_all(parent)
+        .map_err(|_| "Unable to create application settings directory.".to_string())?;
+    let temporary = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec(&settings)
+        .map_err(|_| "Unable to encode routing service settings.".to_string())?;
+    fs::write(&temporary, bytes)
+        .map_err(|_| "Unable to write routing service settings.".to_string())?;
+    if path.exists() {
+        fs::remove_file(&path)
+            .map_err(|_| "Unable to replace routing service settings.".to_string())?;
+    }
+    fs::rename(temporary, path)
+        .map_err(|_| "Unable to finalize routing service settings.".to_string())
+}
+
+const OPEN_ROUTE_SERVICE_BASE_URL: &str = "https://api.heigit.org/openrouteservice";
+
+fn validate_ors_request(request: &OpenRouteServiceRequest) -> Result<(), String> {
+    let coordinates_valid = request.coordinates.iter().all(|[longitude, latitude]| {
+        longitude.is_finite()
+            && latitude.is_finite()
+            && (-180.0..=180.0).contains(longitude)
+            && (-90.0..=90.0).contains(latitude)
+    });
+    if !(2..=50).contains(&request.coordinates.len())
+        || !coordinates_valid
+        || !matches!(request.profile.as_str(), "driving-car" | "driving-hgv")
+        || !matches!(
+            request.preference.as_str(),
+            "recommended" | "fastest" | "shortest"
+        )
+    {
+        return Err("Invalid route request.".into());
+    }
+    Ok(())
+}
+
+fn normalize_ors_error(status: reqwest::StatusCode, body: &serde_json::Value) -> String {
+    match status.as_u16() {
+        401 | 403 => "Authentication failed.".into(),
+        404 => "No route found.".into(),
+        429 => "Routing quota exceeded.".into(),
+        500..=599 => "Routing service temporarily unavailable.".into(),
+        400 if matches!(
+            body.pointer("/error/code").and_then(|value| value.as_i64()),
+            Some(2009 | 2010)
+        ) =>
+        {
+            "No route found.".into()
+        }
+        400 => "Invalid route request.".into(),
+        _ => "Routing request failed.".into(),
+    }
+}
+
+async fn execute_ors_request(
+    client: &reqwest::Client,
+    api_key: &str,
+    request: &OpenRouteServiceRequest,
+    alternatives: bool,
+) -> Result<(reqwest::StatusCode, serde_json::Value), String> {
+    let mut payload = serde_json::json!({
+        "coordinates": request.coordinates,
+        "preference": request.preference,
+        "instructions": false
+    });
+    if alternatives && request.coordinates.len() == 2 {
+        payload["alternative_routes"] = serde_json::json!({
+            "target_count": 3,
+            "share_factor": 0.8,
+            "weight_factor": 2
+        });
+    }
+    let url = format!(
+        "{OPEN_ROUTE_SERVICE_BASE_URL}/v2/directions/{}/geojson",
+        request.profile
+    );
+    let response = client
+        .post(url)
+        .header("Authorization", api_key)
+        .header("Accept", "application/geo+json")
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| {
+            if error.is_timeout() {
+                "Request timed out.".to_string()
+            } else if error.is_connect() {
+                "Network unavailable.".to_string()
+            } else {
+                "Routing request failed.".to_string()
+            }
+        })?;
+    let status = response.status();
+    let body = response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|_| "Routing provider returned malformed response.".to_string())?;
+    Ok((status, body))
+}
+
+#[tauri::command]
+async fn plan_open_route_service_route(
+    app: tauri::AppHandle,
+    request: OpenRouteServiceRequest,
+) -> Result<serde_json::Value, String> {
+    validate_ors_request(&request)?;
+    let api_key = read_routing_service_settings(app)?.open_route_service_api_key;
+    if api_key.trim().is_empty() {
+        return Err("Road routing is not configured.".into());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(45))
+        .build()
+        .map_err(|_| "Routing request failed.".to_string())?;
+    let (mut status, mut body) =
+        execute_ors_request(&client, api_key.trim(), &request, request.alternatives).await?;
+    let alternatives_too_long = status.as_u16() == 400
+        && body.pointer("/error/code").and_then(|value| value.as_i64()) == Some(2004);
+    if alternatives_too_long {
+        (status, body) = execute_ors_request(&client, api_key.trim(), &request, false).await?;
+    }
+    if !status.is_success() {
+        return Err(normalize_ors_error(status, &body));
+    }
+    if !body.get("features").is_some_and(|value| value.is_array()) {
+        return Err("Routing provider returned malformed response.".into());
+    }
+    Ok(body)
+}
+
+#[tauri::command]
+fn write_project_file(
+    output_path: String,
+    project_json: String,
+) -> Result<ProjectFileWriteResult, String> {
     serde_json::from_str::<serde_json::Value>(&project_json)
         .map_err(|error| format!("Project serialization is invalid: {error}"))?;
     let path = PathBuf::from(&output_path);
@@ -175,7 +356,10 @@ fn write_project_file(output_path: String, project_json: String) -> Result<Proje
         .parent()
         .ok_or_else(|| "Project destination has no parent directory.".to_string())?;
     if !parent.is_dir() {
-        return Err(format!("Project destination directory does not exist: {}", parent.display()));
+        return Err(format!(
+            "Project destination directory does not exist: {}",
+            parent.display()
+        ));
     }
     fs::write(&path, project_json.as_bytes())
         .map_err(|error| format!("Unable to write project file '{}': {error}", path.display()))?;
@@ -969,6 +1153,8 @@ fn validate_asset_metadata(asset: &ProjectAsset) -> Result<(), String> {
         "png"
     } else if asset.media_type == "image/jpeg" {
         "jpg"
+    } else if asset.media_type == "image/webp" {
+        "webp"
     } else {
         return Err(format!(
             "Unsupported project image media type: {}.",
@@ -1005,8 +1191,10 @@ fn inspect_image(bytes: &[u8]) -> Result<(&'static str, &'static str, u32, u32),
         (image::ImageFormat::Png, "image/png", "png")
     } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
         (image::ImageFormat::Jpeg, "image/jpeg", "jpg")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        (image::ImageFormat::WebP, "image/webp", "webp")
     } else {
-        return Err("Imported project asset is not a supported PNG or JPEG image.".into());
+        return Err("Imported project asset is not a supported PNG, JPEG, or WebP image.".into());
     };
     let image = image::load_from_memory_with_format(bytes, format)
         .map_err(|error| format!("Imported project image is malformed: {error}"))?;
@@ -1083,9 +1271,16 @@ fn start_project_export(
         .parent()
         .ok_or_else(|| "Video destination has no parent directory.".to_string())?;
     if !parent.is_dir() {
-        return Err(format!("Video destination directory does not exist: {}", parent.display()));
+        return Err(format!(
+            "Video destination directory does not exist: {}",
+            parent.display()
+        ));
     }
-    if output.extension().and_then(|value| value.to_str()).map(str::to_ascii_lowercase).as_deref()
+    if output
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
         != Some("mp4")
     {
         return Err("Video destination must use the .mp4 extension.".into());
@@ -1376,6 +1571,57 @@ mod portable_project_tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn ors_request_validation_preserves_lng_lat_and_stops() {
+        let request = OpenRouteServiceRequest {
+            coordinates: vec![[51.389, 35.6892], [50.8764, 34.6401], [44.3661, 33.3152]],
+            profile: "driving-car".into(),
+            preference: "fastest".into(),
+            alternatives: true,
+        };
+        assert!(validate_ors_request(&request).is_ok());
+        assert_eq!(request.coordinates[0], [51.389, 35.6892]);
+        assert_eq!(request.coordinates[1], [50.8764, 34.6401]);
+    }
+
+    #[test]
+    fn ors_request_rejects_invalid_profile_and_coordinates() {
+        let invalid = OpenRouteServiceRequest {
+            coordinates: vec![[181.0, 35.0], [44.0, 33.0]],
+            profile: "car".into(),
+            preference: "fastest".into(),
+            alternatives: false,
+        };
+        assert_eq!(
+            validate_ors_request(&invalid).unwrap_err(),
+            "Invalid route request."
+        );
+    }
+
+    #[test]
+    fn ors_errors_are_sanitized_and_specific() {
+        let empty = serde_json::json!({});
+        assert_eq!(
+            normalize_ors_error(reqwest::StatusCode::UNAUTHORIZED, &empty),
+            "Authentication failed."
+        );
+        assert_eq!(
+            normalize_ors_error(reqwest::StatusCode::TOO_MANY_REQUESTS, &empty),
+            "Routing quota exceeded."
+        );
+        assert_eq!(
+            normalize_ors_error(reqwest::StatusCode::SERVICE_UNAVAILABLE, &empty),
+            "Routing service temporarily unavailable."
+        );
+        assert_eq!(
+            normalize_ors_error(
+                reqwest::StatusCode::BAD_REQUEST,
+                &serde_json::json!({"error":{"code":2009}})
+            ),
+            "No route found."
+        );
+    }
+
+    #[test]
     fn export_dimensions_accept_presets_and_safe_custom_sizes() {
         for dimensions in [
             (1920, 1080),
@@ -1441,13 +1687,18 @@ mod portable_project_tests {
         let result = write_project_file(path.to_string_lossy().into_owned(), json.clone())
             .expect("write project file");
         assert_eq!(result.bytes_written, json.len());
-        assert_eq!(read_project_file(result.path).expect("read project file"), json);
+        assert_eq!(
+            read_project_file(result.path).expect("read project file"),
+            json
+        );
         fs::remove_file(&path).expect("remove project file");
 
         let invalid = test_path("invalid-project").with_extension("mapmotion");
-        assert!(write_project_file(invalid.to_string_lossy().into_owned(), "{broken".into())
-            .expect_err("invalid JSON must fail")
-            .contains("Project serialization is invalid"));
+        assert!(
+            write_project_file(invalid.to_string_lossy().into_owned(), "{broken".into())
+                .expect_err("invalid JSON must fail")
+                .contains("Project serialization is invalid")
+        );
         assert!(!invalid.exists());
     }
 
@@ -1500,6 +1751,22 @@ mod portable_project_tests {
             },
             bytes,
         )
+    }
+
+    #[test]
+    fn project_image_inspection_accepts_png_jpeg_and_webp() {
+        for (format, media_type, extension) in [
+            (image::ImageFormat::Png, "image/png", "png"),
+            (image::ImageFormat::Jpeg, "image/jpeg", "jpg"),
+            (image::ImageFormat::WebP, "image/webp", "webp"),
+        ] {
+            let mut cursor = Cursor::new(Vec::new());
+            image::DynamicImage::new_rgba8(3, 2)
+                .write_to(&mut cursor, format)
+                .expect("encode supported image");
+            let inspected = inspect_image(&cursor.into_inner()).expect("inspect supported image");
+            assert_eq!((inspected.0, inspected.1, inspected.2, inspected.3), (media_type, extension, 3, 2));
+        }
     }
 
     fn test_store(label: &str) -> PathBuf {

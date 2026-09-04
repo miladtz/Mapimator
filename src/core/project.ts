@@ -18,6 +18,27 @@ export type GeoEffectType =
   | 'disputed-border'
   | 'influence-zone';
 export type TextLanguage = 'auto' | 'persian' | 'english';
+export type TextFontFamily = 'inter' | 'vazirmatn';
+export type TextFontWeight = 400 | 500 | 600 | 700;
+export type TextFontStyle = 'normal' | 'italic';
+export type TextAlignment = 'left' | 'center' | 'right';
+export type ShapeKind =
+  | 'rectangle'
+  | 'square'
+  | 'ellipse'
+  | 'circle'
+  | 'triangle'
+  | 'regular-polygon'
+  | 'polyline'
+  | 'polygon'
+  | 'free-draw'
+  | 'arrow';
+export type ShapeStrokeStyle = 'solid' | 'dashed' | 'dotted';
+export interface ShapePoint {
+  id: string;
+  x: number;
+  y: number;
+}
 export type PinStyle = 'dot' | 'map-pin' | 'location' | 'target' | 'star' | 'circle' | 'custom';
 export type PinLabelPosition = 'top' | 'bottom' | 'left' | 'right';
 export type PinAppear = 'none' | 'fade' | 'pop';
@@ -34,6 +55,178 @@ export interface RegionGeometry {
 export type PinCustomAnchor = 'bottom-center' | 'center';
 export type TransitionType = 'smooth' | 'pan' | 'zoom' | 'fly-to';
 export type WipeType = 'fade-out';
+/** The four canonical geometry-generation types for Route Planner sections. */
+export type PathType = 'road' | 'maritime' | 'air' | 'custom';
+export type CustomRoutePathShape = 'exact' | 'smooth';
+export interface CustomRouteControlPoint {
+  id: string;
+  longitude: number;
+  latitude: number;
+  linkedRoutePointId?: string;
+}
+export interface CustomRouteGeneratorSettings {
+  version: 1;
+  pathShape: CustomRoutePathShape;
+  controlPoints: CustomRouteControlPoint[];
+}
+/** @deprecated Use PathType for new code. Retained for backward compatibility. */
+export type RouteTransportMode = 'car' | 'truck' | 'plane' | 'vessel' | 'train' | 'flow' | 'custom';
+export type RouteGeometryMode = 'straight' | 'curved' | 'great-circle' | 'custom' | 'provider';
+export type RouteGeometrySource = 'generated' | 'custom' | 'provider';
+export type RouteLineStyle = 'solid' | 'dashed' | 'dotted' | 'railway';
+export type RouteArrowStyle = 'none' | 'end';
+export type RouteVehicleType =
+  | 'none'
+  | 'dot'
+  | 'pulse'
+  | 'arrow'
+  | 'money'
+  | 'package'
+  | 'person'
+  | 'sedan'
+  | 'suv'
+  | 'taxi'
+  | 'pickup'
+  | 'van'
+  | 'bus'
+  | 'coach'
+  | 'delivery-van'
+  | 'small-truck'
+  | 'box-truck'
+  | 'semi-truck'
+  | 'tanker-truck'
+  | 'motorcycle'
+  | 'passenger-train'
+  | 'high-speed-train'
+  | 'commuter-train'
+  | 'metro'
+  | 'freight-train'
+  | 'passenger-plane'
+  | 'cargo-plane'
+  | 'private-jet'
+  | 'small-plane'
+  | 'helicopter'
+  | 'ferry'
+  | 'small-boat'
+  | 'yacht'
+  | 'container-ship'
+  | 'cargo-ship'
+  | 'cargo-vessel'
+  | 'tanker'
+  | 'bulk-carrier'
+  | 'oil-tanker'
+  | 'lng-carrier'
+  | 'cruise-ship'
+  | 'speedboat'
+  | 'sailboat'
+  | 'directional-capsule'
+  | 'custom';
+export interface RoutePoint {
+  id: string;
+  longitude: number;
+  latitude: number;
+  name?: string;
+  searchResultId?: string;
+  pinLayerId?: string;
+  sourceControlPointId?: string;
+}
+
+/** Saved Route Planner recipe retained for future Edit Route. */
+export interface RouteSectionDefinition {
+  id: string;
+  startPointId: string;
+  endPointId: string;
+  pathType: PathType;
+  generatorSettings?: Record<string, unknown> | CustomRouteGeneratorSettings;
+}
+export interface RouteDefinition {
+  source: RoutePoint;
+  stops: RoutePoint[];
+  destination: RoutePoint;
+  sectionDefinitions: RouteSectionDefinition[];
+}
+export interface RouteSegmentAppearance {
+  lineColor?: string;
+  lineOpacity?: number;
+  lineWidth?: number;
+  lineStyle?: RouteLineStyle;
+  arrow?: RouteArrowStyle;
+}
+export interface RouteSegment {
+  id: string;
+  startPointId: string;
+  endPointId: string;
+  pathType: PathType;
+  /** @deprecated alias — use pathType */
+  mode?: RouteTransportMode;
+  geometryMode: RouteGeometryMode;
+  geometrySource: RouteGeometrySource;
+  geometry: [number, number][];
+  curvature?: number;
+  appearance?: RouteSegmentAppearance;
+  providerId?: string;
+  providerVersion?: string;
+  routeSummary?: string;
+  estimatedDistanceMeters?: number;
+  estimatedDurationSeconds?: number;
+  routingStatus?: 'ready' | 'routed' | 'stale' | 'custom' | 'unavailable' | 'planning' | 'failed';
+  routedStart?: [number, number];
+  routedEnd?: [number, number];
+}
+export type RouteDefaults = Required<RouteSegmentAppearance>;
+export interface RouteSegmentAnimation {
+  /** Section existence within this specific View or Transition. */
+  included?: boolean;
+  appearEnabled?: boolean;
+  appearType?: PinAppearType | 'draw-route';
+  appearDelay?: number;
+  appearDuration?: number;
+  wipeEnabled?: boolean;
+  wipeDelay?: number;
+  wipeDuration?: number;
+  drawEnabled?: boolean;
+  drawDelay?: number;
+  drawDuration?: number;
+  vehicleEnabled?: boolean;
+  vehicleDelay?: number;
+  vehicleDuration?: number;
+  vehicleFollowsDraw?: boolean;
+  vehicleType?: RouteVehicleType;
+  vehicleSize?: number;
+  vehicleOpacity?: number;
+  vehicleColor?: string;
+  vehicleAccentColor?: string;
+  vehicleOrientationOffset?: number;
+  vehicleFollowDirection?: boolean;
+  vehicleAssetId?: string;
+  vehicleRepetitive?: boolean;
+  vehicleInterval?: number;
+  routeWipeEnabled?: boolean;
+  routeWipeDelay?: number;
+  routeWipeDuration?: number;
+}
+export interface RouteRenderSegmentState {
+  segmentId: string;
+  exists: boolean;
+  opacityMultiplier: number;
+  drawProgress: number;
+  wipeProgress: number;
+  vehicleVisible: boolean;
+  vehicleProgress: number;
+  vehicleType: RouteVehicleType;
+  vehicleSize: number;
+  vehicleOpacity: number;
+  vehicleColor: string;
+  vehicleAccentColor: string;
+  vehicleOrientationOffset: number;
+  vehicleFollowDirection: boolean;
+  vehicleAssetId?: string;
+  vehicleInstances: RouteVehicleRenderInstance[];
+}
+export interface RouteVehicleRenderInstance {
+  id: string;
+  progress: number;
+}
 /**
  * Per-layer animation configuration owned by a View OR Transition segment.
  * Segment animations are independent from the camera motion and from each
@@ -53,7 +246,7 @@ export interface SegmentLayerAnimation {
    *  that is continuously present never replays appear. */
   appearEnabled?: boolean;
   /** Appear animation type (fade/pop/drop). */
-  appearType?: PinAppearType;
+  appearType?: PinAppearType | 'draw-shape';
   /** Delay in seconds before the appear animation starts. */
   appearDelay?: number;
   /** Duration in seconds of the appear animation. */
@@ -68,6 +261,13 @@ export interface SegmentLayerAnimation {
   wipeDelay?: number;
   /** Duration in seconds of the wipe. */
   wipeDuration?: number;
+  /** Text-only timeline choice: scale relative to the segment's captured reference Zoom. */
+  textScaleWithMapZoom?: boolean;
+  textReferenceZoom?: number;
+  /** Text-only timeline choice. Defaults to a viewer-facing billboard for compatibility. */
+  textOrientation?: TextOrientation;
+  /** Arrow-only timeline orientation. Other Shapes always remain map-flat. */
+  shapeOrientation?: TextOrientation;
   regionEffect?: 'fade' | 'draw-border' | 'pulse';
   regionDrawSpeed?: number;
   regionDrawOrder?: 'before-fill' | 'after-fill';
@@ -75,13 +275,17 @@ export interface SegmentLayerAnimation {
   regionDrawingDuration?: number;
   regionFillingDelay?: number;
   regionFillingDuration?: number;
+  routeDefaults?: RouteSegmentAnimation;
+  routeSegmentAnimations?: Record<string, RouteSegmentAnimation>;
+  applyFirstRouteSegmentAnimation?: boolean;
 }
 export type TransitionPreset =
   'smooth' | 'cinematic' | 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'bezier';
 export type TextDirection = 'auto' | 'rtl' | 'ltr';
+export type TextOrientation = 'face-camera' | 'flat-on-map';
 export type NumberStyle = 'persian' | 'english';
 export type ProjectAssetKind = 'image';
-export type ProjectImageMediaType = 'image/png' | 'image/jpeg';
+export type ProjectImageMediaType = 'image/png' | 'image/jpeg' | 'image/webp';
 export interface ProjectImageAsset {
   id: string;
   kind: ProjectAssetKind;
@@ -195,6 +399,45 @@ export interface Layer {
   textDirection?: TextDirection;
   numberStyle?: NumberStyle;
   fontSize?: number;
+  fontFamily?: TextFontFamily;
+  fontWeight?: TextFontWeight;
+  fontStyle?: TextFontStyle;
+  textAlign?: TextAlignment;
+  lineHeight?: number;
+  shapeKind?: ShapeKind;
+  shapePoints?: ShapePoint[];
+  shapeFillColor?: string;
+  shapeFillOpacity?: number;
+  shapeStrokeColor?: string;
+  shapeStrokeOpacity?: number;
+  shapeStrokeWidth?: number;
+  shapeStrokeStyle?: ShapeStrokeStyle;
+  shapeRoundness?: number;
+  shapeRotation?: number;
+  shapeArrowBodyWidth?: number;
+  shapeArrowHeadWidth?: number;
+  shapeArrowHeadLength?: number;
+  shapeArrowBend?: number;
+  shapeArrowHeadSize?: number;
+  shapeArrowHeadAngle?: number;
+  shapeArrowStartAngle?: number;
+  shapeArrowheadEnabled?: boolean;
+  shapeWidthKm?: number;
+  shapeHeightKm?: number;
+  shapeRadiusKm?: number;
+  shapeRegularSides?: number;
+  /** Evaluator-owned Shape timeline state; never authored on the Project Layer. */
+  shapePathProgress?: number;
+  shapeAnimationScale?: number;
+  shapeDropOffsetY?: number;
+  shapeOrientation?: TextOrientation;
+  /** Evaluator-owned deterministic state. Never authored or persisted on the Project Layer. */
+  textRenderScale?: number;
+  textAnimationScale?: number;
+  textDropOffsetY?: number;
+  /** Evaluator-owned Text timeline state. Never authored or persisted on the Project Layer. */
+  textOrientation?: TextOrientation;
+  textScaleWithMapZoom?: boolean;
   geoEffectType?: GeoEffectType;
   effectSize?: number;
   effectDuration?: number;
@@ -276,6 +519,14 @@ export interface Layer {
   /** Evaluator-owned progress, never authored or persisted. */
   regionEffectProgress?: number;
   regionEffectTime?: number;
+  // Route canonical geographic model.
+  routePoints?: RoutePoint[];
+  routeSegments?: RouteSegment[];
+  routeDefaults?: RouteDefaults;
+  /** Saved Route Planner recipe retained for future Edit Route. */
+  routeDefinition?: RouteDefinition;
+  /** Evaluator-owned deterministic state. Never authored or persisted. */
+  routeRenderState?: RouteRenderSegmentState[];
 }
 export interface CameraState {
   x: number;
@@ -575,20 +826,55 @@ export const createLayer = (type: LayerType, offset = 0): Layer => {
       pinTintColor: '#e8533e',
     },
     text: {
-      name: 'Map headline',
+      name: 'Text',
       color: '#ffffff',
-      text: 'A NEW CHAPTER',
+      text: 'Text',
       x: 500,
       y: 110,
       textLanguage: 'auto',
       textDirection: 'auto',
       numberStyle: 'english',
-      fontSize: 19,
+      fontSize: 32,
+      fontFamily: 'inter',
+      fontWeight: 500,
+      fontStyle: 'normal',
+      textAlign: 'center',
+      lineHeight: 1.2,
     },
-    shape: { name: 'Callout shape', color: '#61c4e8', width: 100, height: 55 },
+    shape: {
+      name: 'Rectangle',
+      color: '#61c4e8',
+      width: 100,
+      height: 55,
+      shapeKind: 'rectangle',
+      shapeFillColor: '#61c4e8',
+      shapeFillOpacity: 0.25,
+      shapeStrokeColor: '#61c4e8',
+      shapeStrokeOpacity: 1,
+      shapeStrokeWidth: 3,
+      shapeStrokeStyle: 'solid',
+      shapeRoundness: 0,
+      shapeRotation: 0,
+    },
     arrow: { name: 'Advance arrow', color: '#ef694f', x: 560, y: 300, x2: 700, y2: 270 },
     image: { name: 'Image placeholder', color: '#7d9bbb', width: 118, height: 72 },
-    route: { name: 'Route', color: '#64d5ba', x: 485, y: 275, x2: 675, y2: 325 },
+    route: {
+      name: 'Flow',
+      color: '#64d5ba',
+      x: 485,
+      y: 275,
+      x2: 675,
+      y2: 325,
+      routePoints: [],
+      routeSegments: [],
+      routeDefaults: {
+        lineColor: '#64d5ba',
+        lineOpacity: 1,
+        lineWidth: 4,
+        lineStyle: 'solid',
+        arrow: 'end',
+      },
+    },
     'geo-effect': {
       name: 'Impact pulse',
       color: '#ff7159',
@@ -764,7 +1050,7 @@ export const transitionMemberIds = (transition: Transition): Set<string> =>
   );
 /**
  * Normalize a stored animation config: map legacy field names
- * (`holdDuration` → `layerHoldDuration`, drop `wipeDelay`) so consumers read
+ * (`holdDuration` → `layerHoldDuration`) so consumers read
  * one shape regardless of which milestone wrote the file.
  */
 export const normalizeSegmentAnimation = (
@@ -776,7 +1062,6 @@ export const normalizeSegmentAnimation = (
     out.layerHoldDuration = out.holdDuration;
     delete out.holdDuration;
   }
-  delete out.wipeDelay;
   return out as SegmentLayerAnimation;
 };
 /** Animation config for a transition-owned layer (new or legacy model). */
@@ -850,11 +1135,53 @@ export function setTransitionLayerIncluded(
   return { ...project, transitions };
 }
 
+/** Reconciles stable Section usage after Edit Route changes Route adjacency. */
+export function reconcileRouteSectionTimelineUsage(
+  project: Project,
+  layerId: string,
+  sectionIds: readonly string[],
+): Project {
+  const reconcileConfig = <T extends ViewLayerConfig | TransitionLayerConfig>(config: T | undefined): T => {
+    const current = config ?? ({ included: false } as T);
+    const animation = current.animation;
+    const previous = animation?.routeSegmentAnimations ?? {};
+    const routeSegmentAnimations = Object.fromEntries(
+      sectionIds.map((sectionId) => [
+        sectionId,
+        { included: previous[sectionId]?.included ?? current.included, ...(previous[sectionId] ?? {}) },
+      ]),
+    );
+    const included = sectionIds.some((sectionId) => routeSegmentAnimations[sectionId]?.included);
+    return {
+      ...current,
+      included,
+      animation: animation ? { ...animation, routeSegmentAnimations } : { routeSegmentAnimations },
+    } as T;
+  };
+  return {
+    ...project,
+    views: project.views.map((view) => ({
+      ...view,
+      layerConfigs: { ...view.layerConfigs, [layerId]: reconcileConfig(view.layerConfigs[layerId]) },
+    })),
+    transitions: project.transitions.map((transition) => ({
+      ...transition,
+      layerConfigs: {
+        ...transition.layerConfigs,
+        [layerId]: reconcileConfig(transition.layerConfigs[layerId]),
+      },
+    })),
+  };
+}
+
 /** Combine a canonical Project Layer with segment membership for rendering. */
 export function resolveSegmentLayer(project: Project, segment: SegmentRef, layerId: string): Layer | null {
   const usage = getSegmentLayerUsage(project, segment, layerId);
   const layer = usage?.included ? getProjectLayer(project, layerId) : undefined;
-  return layer ? { ...structuredClone(layer), visible: true } : null;
+  // Timeline evaluation only writes transient top-level render fields. Keep
+  // immutable project-owned geometry references so dense Route geometry is
+  // not cloned every playback frame and cached path metrics remain reusable.
+  return layer ? { ...layer, visible: true } : null;
 }
 /**
  * Initialize a Transition's layer configs from a source View's configs,
@@ -917,14 +1244,35 @@ export const addProjectLayer = (project: Project, layer: Layer): Project => ({
 export const deleteProjectLayer = (project: Project, layerId: string): Project => ({
   ...project,
   layers: project.layers.filter((l) => l.id !== layerId),
-  assets: project.assets.filter((asset) =>
-    project.layers.some(
-      (layer) =>
-        layer.id !== layerId &&
-        ((layer.type === 'image' && layer.assetId === asset.id) ||
-          (layer.type === 'pin' && layer.pinCustomAssetId === asset.id) ||
-          (layer.type === 'region' && layer.regionImageAssetId === asset.id)),
-    ),
+  assets: project.assets.filter(
+    (asset) =>
+      project.layers.some(
+        (layer) =>
+          layer.id !== layerId &&
+          ((layer.type === 'image' && layer.assetId === asset.id) ||
+            (layer.type === 'pin' && layer.pinCustomAssetId === asset.id) ||
+            (layer.type === 'region' && layer.regionImageAssetId === asset.id)),
+      ) ||
+      project.views.some((view) =>
+        Object.entries(view.layerConfigs).some(
+          ([configuredLayerId, config]) =>
+            configuredLayerId !== layerId &&
+            (config.animation?.routeDefaults?.vehicleAssetId === asset.id ||
+              Object.values(config.animation?.routeSegmentAnimations ?? {}).some(
+                (timing) => timing.vehicleAssetId === asset.id,
+              )),
+        ),
+      ) ||
+      project.transitions.some((transition) =>
+        Object.entries(transition.layerConfigs).some(
+          ([configuredLayerId, config]) =>
+            configuredLayerId !== layerId &&
+            (config.animation?.routeDefaults?.vehicleAssetId === asset.id ||
+              Object.values(config.animation?.routeSegmentAnimations ?? {}).some(
+                (timing) => timing.vehicleAssetId === asset.id,
+              )),
+        ),
+      ),
   ),
   views: project.views.map((view) => {
     const next: View = { ...view };

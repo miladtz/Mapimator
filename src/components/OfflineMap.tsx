@@ -24,6 +24,8 @@ import {
   unprojectScreenToWorld,
   zoomAtPoint,
 } from '../core/camera';
+import { resolveTextLayerStyle } from '../core/textLayers';
+import { arrowHeadCoordinates, evaluatedShapeCoordinates } from '../core/shapes';
 import {
   PIN_DEFAULTS,
   pinLabelOffsetOf,
@@ -1573,21 +1575,52 @@ function LayerGraphic({
       />
     );
   if (layer.type === 'text') {
-    const text = formatNumbers(layer.text ?? '', layer.numberStyle);
-    const isPersian = resolveTextLanguage(text, layer.textLanguage) === 'persian';
+    const style = resolveTextLayerStyle(layer);
+    const isPersian = resolveTextLanguage(style.content, layer.textLanguage) === 'persian';
+    const anchor = style.alignment === 'left' ? 'start' : style.alignment === 'right' ? 'end' : 'middle';
+    const renderScale = (layer.textRenderScale ?? 1) * (layer.textAnimationScale ?? 1);
+    const flatOnMap = layer.textOrientation === 'flat-on-map';
+    const flatSizeCompensation = flatOnMap ? (flatCamera ? 1 / flatCamera.zoom : screenScale) : 1;
+    const renderedFontSize = style.fontSize * renderScale * flatSizeCompensation;
+    const firstLineOffset = -((style.lines.length - 1) * renderedFontSize * style.lineHeight) / 2;
+    const counterTransform =
+      !flatOnMap && !flatCamera
+        ? `translate(${point.x} ${point.y}) rotate(${screenRotation}) scale(${screenScale})`
+        : undefined;
+    const orientationTransform = flatOnMap
+      ? flatCamera
+        ? mapPlaneLocalTransform(flatCamera, layer.x, layer.y)
+        : undefined
+      : counterTransform;
+    const textX = counterTransform ? 0 : flatOnMap && flatCamera ? layer.x : point.x;
+    const textY =
+      (counterTransform ? 0 : flatOnMap && flatCamera ? layer.y : point.y) + (layer.textDropOffsetY ?? 0);
     return (
-      <g {...common}>
+      <g {...common} transform={orientationTransform}>
         <text
-          x={point.x}
-          y={point.y}
-          fill={layer.color}
+          x={textX}
+          y={textY}
+          fill={style.color}
           className={`headline ${isPersian ? 'persian-text' : ''}`}
-          style={{ fontSize: layer.fontSize }}
-          textAnchor="middle"
-          direction={resolveTextDirection(text, layer.textDirection)}
+          style={{
+            fontFamily: style.cssFontFamily,
+            fontSize: renderedFontSize,
+            fontWeight: style.fontWeight,
+            fontStyle: style.fontStyle,
+          }}
+          textAnchor={anchor}
+          direction={style.direction}
           unicodeBidi="plaintext"
         >
-          {text}
+          {style.lines.map((line, index) => (
+            <tspan
+              key={index}
+              x={textX}
+              dy={index === 0 ? firstLineOffset : renderedFontSize * style.lineHeight}
+            >
+              {line || ' '}
+            </tspan>
+          ))}
         </text>
       </g>
     );
@@ -1608,7 +1641,49 @@ function LayerGraphic({
         />
       </g>
     );
-  if (layer.type === 'shape' || layer.type === 'image')
+  if (layer.type === 'shape') {
+    const rendered = evaluatedShapeCoordinates(layer);
+    const projected = rendered.coordinates
+      .map(([x, y]) => projectLayerPoint(x, y, globe, flatCamera))
+      .filter((item): item is { x: number; y: number } => item !== null);
+    if (projected.length < 2) return null;
+    const path = `${projected.map((item, index) => `${index ? 'L' : 'M'}${item.x} ${item.y}`).join(' ')}${rendered.closed ? ' Z' : ''}`;
+    const dash =
+      layer.shapeStrokeStyle === 'dashed' ? '9 6' : layer.shapeStrokeStyle === 'dotted' ? '1 6' : undefined;
+    const arrowHead =
+      layer.shapeKind === 'arrow'
+        ? arrowHeadCoordinates(layer)
+            .map(([x, y]) => projectLayerPoint(x, y, globe, flatCamera))
+            .filter((item): item is { x: number; y: number } => item !== null)
+        : [];
+    const arrowHeadPath =
+      arrowHead.length === 3
+        ? `${arrowHead.map((item, index) => `${index ? 'L' : 'M'}${item.x} ${item.y}`).join(' ')} Z`
+        : '';
+    return (
+      <g {...common}>
+        <path
+          d={path}
+          fill={rendered.closed ? (layer.shapeFillColor ?? layer.color) : 'none'}
+          fillOpacity={rendered.closed ? (layer.shapeFillOpacity ?? 0.25) : 0}
+          stroke={layer.shapeStrokeColor ?? layer.color}
+          strokeOpacity={layer.shapeStrokeOpacity ?? 1}
+          strokeWidth={layer.shapeStrokeWidth ?? 3}
+          strokeDasharray={dash}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        {arrowHeadPath && (
+          <path
+            d={arrowHeadPath}
+            fill={layer.shapeStrokeColor ?? layer.color}
+            fillOpacity={layer.shapeStrokeOpacity ?? 1}
+          />
+        )}
+      </g>
+    );
+  }
+  if (layer.type === 'image')
     return (
       <g
         {...common}

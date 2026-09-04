@@ -261,7 +261,10 @@ assert.match(overlays, /'text-opacity': \['get', 'labelOpacity'\]/);
 assert.match(hiddenRenderer, /updateOnlineProjectOverlays\(this\.map, layers/);
 assert.match(frameRenderer, /onlineRenderer\.render\(state\.camera, state\.layers/);
 assert.match(app, /previewState\?\.layers \?\? editingLayers/);
-assert.match(app, /if \(placing === 'pin'\) placeLayerAt\('pin', point\)/);
+assert.match(
+  app,
+  /if \(placing === 'pin' \|\| placing === 'text' \|\| placing === 'shape'\)\s*placeLayerAt\(placing, point\)/,
+);
 assert.match(app, /Project Layer — \{layer\.name\}/);
 assert.doesNotMatch(app, /Project Layer â€”/);
 assert.match(app, /aria-label="Pin size value"/);

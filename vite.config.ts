@@ -4,6 +4,14 @@ import { fileURLToPath, URL } from 'node:url';
 import { viteStaticCopy } from 'vite-plugin-static-copy';
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      fs: fileURLToPath(new URL('./src/workers/node-shims/fs.ts', import.meta.url)),
+      zlib: fileURLToPath(new URL('./src/workers/node-shims/zlib.ts', import.meta.url)),
+      path: fileURLToPath(new URL('./src/workers/node-shims/path.ts', import.meta.url)),
+      url: fileURLToPath(new URL('./src/workers/node-shims/url.ts', import.meta.url)),
+    },
+  },
   plugins: [
     react(),
     viteStaticCopy({

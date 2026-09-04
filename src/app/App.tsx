@@ -23,7 +23,11 @@ import {
   projectSceneViewBox,
   type LogicalViewport,
 } from '../core/projectRenderViewport';
-import { OPENFREEMAP_3D_CAMERA, OPENFREEMAP_STYLES } from '../core/openFreeMapAdapter';
+import {
+  OPENFREEMAP_3D_CAMERA,
+  OPENFREEMAP_STYLES,
+  mapMotionWorldToLngLat,
+} from '../core/openFreeMapAdapter';
 import {
   getPinStyles,
   savePinStyle,
@@ -43,6 +47,7 @@ import {
   deleteProjectLayer,
   layerLabel,
   setTransitionLayerIncluded,
+  reconcileRouteSectionTimelineUsage,
   setViewLayerIncluded,
   sequenceMapMode,
   transitionAnimOf,
@@ -64,6 +69,14 @@ import {
   type Transition,
   type View,
   type ViewLayerConfig,
+  type RoutePoint,
+  type PathType,
+  type RouteVehicleType,
+  type RouteSegmentAnimation,
+  type CustomRouteGeneratorSettings,
+  type CustomRoutePathShape,
+  type ShapeKind,
+  type ShapePoint,
 } from '../core/project';
 import { t } from '../core/i18n';
 import { compileTimeline, evaluateProjectAtTime } from '../core/viewCompiler';
@@ -78,6 +91,80 @@ import {
 } from '../core/regions';
 import { cameraForSearchResult, trimRecentSearches, type SearchResult } from '../core/locationSearch';
 import { lngLatToMapMotionWorld } from '../core/openFreeMapAdapter';
+import {
+  appendRoutePoint,
+  applyRouteSectionAppearanceToAll,
+  applyRouteSectionTimelineToAll,
+  autoSequenceRouteSegments,
+  createRouteLayer,
+  createRoutePoint,
+  defaultVehicleForPathType,
+  duplicateRouteIdentity,
+  routeGeographicBounds,
+  routeParentIncludedFromSections,
+  routeSectionTimelineUsage,
+  routeSegmentAppearancePatch,
+  patchRouteSectionTimelineUsage,
+  setAllRouteSectionsIncluded,
+  ROUTE_DEFAULTS,
+  PATH_TYPE_LABELS,
+  ROUTE_VEHICLE_LABELS,
+  ROUTE_VEHICLE_GROUPS,
+  updateRoutePoint,
+} from '../core/routes';
+import {
+  createRoutePlannerDraft,
+  invalidateRoutePlans,
+  moveStop,
+  removeStop,
+  replaceStopPoint,
+  setSectionAirModel,
+  planLocalSection,
+  routeLayerFromSections,
+  routePlannerDraftFromLayer,
+  replaceAcceptedRouteLayer,
+  routePlannerPoints,
+  setRoutePlannerSectionPathType,
+  setRoutePlannerPoint,
+  setCustomRoutePathShape,
+  setCustomRouteSection,
+  addRoutePlannerStop,
+  convertMaritimeSectionToCustom,
+  promoteCustomControlsToStops,
+  type AirModel,
+  type RoutePickTarget,
+  type RoutePlannerDraft,
+} from '../core/routePlanner';
+import {
+  createCustomRouteControlPoint,
+  customRouteAuthoredCoordinates,
+  customRouteSettings,
+  generateCustomRouteGeometry,
+  insertCustomRouteControlPoint,
+  moveCustomRouteControlPoint,
+  removeCustomRouteControlPoint,
+} from '../core/customRoutePath';
+import {
+  createShapeLayerAt,
+  createShapePoints,
+  deleteShapePoint,
+  duplicateShapeIdentity,
+  editableShapePoints,
+  getAppearOptionsForLayer,
+  insertShapePoint,
+  moveShape,
+  resizeExactShape,
+  simplifyShapePoints,
+  updateShapePoint,
+} from '../core/shapes';
+import {
+  EMPTY_ROUTING_SETTINGS,
+  OpenRouteServicePlanner,
+  loadRoutingServiceSettings,
+  plannerForPathType,
+  saveRoutingServiceSettings,
+  type RoutingServiceSettings,
+} from '../core/routingServices';
 import {
   buildTimelineLayout,
   resolveTimelineAtTime,
@@ -132,9 +219,17 @@ import {
   ingestProjectImage,
   ingestProjectImageBytes,
   cleanupProjectAssets,
+  resolveProjectAssetDataUrl,
   resolveProjectAssetUrls,
   validateProjectAssetStorage,
 } from '../core/projectAssets';
+import {
+  deleteVehicleStyle,
+  getVehicleStyles,
+  renameVehicleStyle,
+  saveVehicleStyle,
+  type VehicleStyleEntry,
+} from '../core/vehicleStyleLibrary';
 
 const BUILTIN_PIN_STYLES: { id: NonNullable<Layer['pinStyle']>; label: string }[] = [
   { id: 'location', label: 'Location' },
@@ -211,7 +306,7 @@ function PinStyleGlyph({ id, color }: { id: NonNullable<Layer['pinStyle']>; colo
   }
 }
 
-const layerTypes: LayerType[] = ['pin', 'route', 'text', 'image', 'shape', 'region', 'arrow', 'geo-effect'];
+const layerTypes: LayerType[] = ['pin', 'route', 'text', 'image', 'shape', 'region', 'geo-effect'];
 const icons: Record<LayerType, string> = {
   region: '▰',
   pin: '●',
@@ -252,7 +347,25 @@ export function App() {
   const [playbackState, setPlaybackState] = useState<PlaybackState>('stopped');
   const [layersPanelOpen, setLayersPanelOpen] = useState(true);
   const [placing, setPlacing] = useState<LayerType | null>(null);
+  const [shapeToolOpen, setShapeToolOpen] = useState(false);
+  const [shapeKindToPlace, setShapeKindToPlace] = useState<ShapeKind>('rectangle');
+  const [shapeDraft, setShapeDraft] = useState<ShapePoint[]>([]);
   const [regionDraft, setRegionDraft] = useState<LngLat[]>([]);
+  const [routeDraft, setRouteDraft] = useState<RoutePoint[]>([]);
+  const [routePlanner, setRoutePlanner] = useState<RoutePlannerDraft | null>(null);
+  const [editingRouteLayerId, setEditingRouteLayerId] = useState<string | null>(null);
+  const [routePickTarget, setRoutePickTarget] = useState<RoutePickTarget | null>(null);
+  const [customRouteSession, setCustomRouteSession] = useState<{
+    sectionId: string;
+    draft: CustomRouteGeneratorSettings;
+    selectedControlPointId: string | null;
+  } | null>(null);
+  const [pathStopDrawer, setPathStopDrawer] = useState<{ sectionId: string; selectedIds: string[] } | null>(
+    null,
+  );
+  const routeRequestRef = useRef<AbortController | null>(null);
+  const [routingSettings, setRoutingSettings] = useState<RoutingServiceSettings>(EMPTY_ROUTING_SETTINGS);
+  const [routingSettingsOpen, setRoutingSettingsOpen] = useState(false);
   const [regionToolOpen, setRegionToolOpen] = useState(false);
   const [regionSearch, setRegionSearch] = useState('');
   const [locationSearchOpen, setLocationSearchOpen] = useState(false);
@@ -287,6 +400,9 @@ export function App() {
   const frameFormat = resolveProjectFrameFormat(project);
   const frameFormatLocked = isProjectFrameFormatLocked(project);
   const words = t(language);
+  useEffect(() => {
+    void loadRoutingServiceSettings().then(setRoutingSettings);
+  }, []);
   const style = MAP_STYLES.find((item) => item.id === project.mapSettings.styleId)!;
   const selected = project.layers.find((l) => l.id === selectedId) ?? null;
   const projectMode = timelineSelection === null;
@@ -357,12 +473,25 @@ export function App() {
   useEffect(() => {
     const onKey = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape') {
+        if (customRouteSession) {
+          setCustomRouteSession(null);
+          setNotice('Custom path edit cancelled');
+          return;
+        }
+        if (routePickTarget) {
+          setRoutePickTarget(null);
+          setNotice('Route map picking cancelled');
+          return;
+        }
         if (locationSearchOpen) {
           setLocationSearchOpen(false);
           return;
         }
         setPlacing(null);
+        setShapeDraft([]);
+        setShapeToolOpen(false);
         setRegionDraft([]);
+        setRouteDraft([]);
         setRegionToolOpen(false);
         setLayersPanelOpen(false);
         setOpenViewMenuId(null);
@@ -375,9 +504,87 @@ export function App() {
       }
       const editable =
         event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement;
+      if (customRouteSession && event.key === 'Backspace' && !editable) {
+        event.preventDefault();
+        setCustomRouteSession((session) =>
+          session
+            ? {
+                ...session,
+                draft: customRouteSettings(session.draft.pathShape, session.draft.controlPoints.slice(0, -1)),
+                selectedControlPointId: null,
+              }
+            : session,
+        );
+        return;
+      }
+      if (customRouteSession && (event.key === 'Delete' || event.key === 'Del') && !editable) {
+        if (!customRouteSession.selectedControlPointId) return;
+        event.preventDefault();
+        setCustomRouteSession((session) =>
+          session
+            ? {
+                ...session,
+                draft: removeCustomRouteControlPoint(session.draft, session.selectedControlPointId!),
+                selectedControlPointId: null,
+              }
+            : session,
+        );
+        return;
+      }
+      if (customRouteSession && event.key === 'Enter' && !editable) {
+        event.preventDefault();
+        setRoutePlanner((current) =>
+          current
+            ? setCustomRouteSection(current, customRouteSession.sectionId, customRouteSession.draft)
+            : current,
+        );
+        setCustomRouteSession(null);
+        setNotice('Custom path ready');
+        return;
+      }
       if (placing === 'region' && event.key === 'Backspace' && !editable) {
         event.preventDefault();
         setRegionDraft((points) => points.slice(0, -1));
+      }
+      if (placing === 'route' && event.key === 'Backspace' && !editable) {
+        event.preventDefault();
+        setRouteDraft((points) => points.slice(0, -1));
+      }
+      if (placing === 'shape' && event.key === 'Backspace' && !editable) {
+        event.preventDefault();
+        setShapeDraft((points) => points.slice(0, -1));
+      }
+      if (placing === 'shape' && event.key === 'Enter' && !editable) {
+        const minimum = shapeKindToPlace === 'polygon' ? 3 : 2;
+        if (shapeDraft.length < minimum) {
+          setNotice(`Add at least ${minimum} Shape points.`);
+          return;
+        }
+        const center = shapeDraft.reduce(
+          (sum, item) => ({ x: sum.x + item.x / shapeDraft.length, y: sum.y + item.y / shapeDraft.length }),
+          { x: 0, y: 0 },
+        );
+        const layer = createShapeLayerAt(shapeKindToPlace, center.x, center.y);
+        layer.shapePoints =
+          shapeKindToPlace === 'free-draw' ? simplifyShapePoints(shapeDraft, 1.5) : shapeDraft;
+        updateProject((current) => addProjectLayer(current, layer));
+        selectLayer(layer.id);
+        setShapeDraft([]);
+        setPlacing(null);
+        setNotice(`${layer.name} added`);
+        return;
+      }
+      if (placing === 'route' && event.key === 'Enter' && !editable) {
+        if (routeDraft.length < 2) {
+          setNotice('A Route needs at least two waypoints.');
+          return;
+        }
+        const layer = createRouteLayer(routeDraft);
+        updateProject((current) => addProjectLayer(current, layer));
+        selectLayer(layer.id);
+        setRouteDraft([]);
+        setPlacing(null);
+        setNotice(`${layer.name} Flow added`);
       }
       if (placing === 'region' && event.key === 'Enter' && !editable) {
         const geometry = customRegionGeometry(regionDraft);
@@ -398,7 +605,15 @@ export function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [locationSearchOpen, placing, regionDraft]);
+  }, [
+    customRouteSession,
+    locationSearchOpen,
+    placing,
+    regionDraft,
+    routeDraft,
+    shapeDraft,
+    shapeKindToPlace,
+  ]);
   useEffect(() => {
     const removed = Object.keys(renderedThumbnailSignaturesRef.current).filter(
       (id) => !(id in thumbnailSignatures),
@@ -516,10 +731,58 @@ export function App() {
   const setSegmentMembership = (layerId: string, checked: boolean) => {
     if (projectMode) return;
     if (selectedTransitionId) {
-      updateProject((p) => setTransitionLayerIncluded(p, selectedTransitionId, layerId, checked));
+      updateProject((current) => {
+        const layer = current.layers.find((candidate) => candidate.id === layerId);
+        if (layer?.type !== 'route')
+          return setTransitionLayerIncluded(current, selectedTransitionId, layerId, checked);
+        const transitions = current.transitions.map((transition) => {
+          if (transition.id !== selectedTransitionId) return transition;
+          const config = transition.layerConfigs[layerId] ?? { included: false };
+          return {
+            ...transition,
+            layerConfigs: {
+              ...transition.layerConfigs,
+              [layerId]: {
+                ...config,
+                included: checked,
+                animation: setAllRouteSectionsIncluded(
+                  config.animation,
+                  (layer.routeSegments ?? []).map((section) => section.id),
+                  checked,
+                ),
+              },
+            },
+          };
+        });
+        return { ...current, transitions };
+      });
       return;
     }
-    if (activeViewId) updateProject((p) => setViewLayerIncluded(p, activeViewId, layerId, checked));
+    if (activeViewId)
+      updateProject((current) => {
+        const layer = current.layers.find((candidate) => candidate.id === layerId);
+        if (layer?.type !== 'route') return setViewLayerIncluded(current, activeViewId, layerId, checked);
+        const views = current.views.map((view) => {
+          if (view.id !== activeViewId) return view;
+          const config = view.layerConfigs[layerId] ?? { included: false };
+          return {
+            ...view,
+            layerConfigs: {
+              ...view.layerConfigs,
+              [layerId]: {
+                ...config,
+                included: checked,
+                animation: setAllRouteSectionsIncluded(
+                  config.animation,
+                  (layer.routeSegments ?? []).map((section) => section.id),
+                  checked,
+                ),
+              },
+            },
+          };
+        });
+        return { ...current, views };
+      });
   };
   /** Patch the selected Transition's per-layer animation config. */
   const patchTransitionAnim = (
@@ -633,6 +896,49 @@ export function App() {
     }
   };
   const placeLayerAt = (type: LayerType, point: { x: number; y: number }) => {
+    if (type === 'route') {
+      const [longitude, latitude] = mapMotionWorldToLngLat(point.x, point.y);
+      setRouteDraft((current) => [
+        ...current,
+        createRoutePoint(longitude, latitude, `Point ${current.length + 1}`),
+      ]);
+      setNotice('Route waypoint added — click again or press Enter to finish');
+      return;
+    }
+    if (type === 'shape') {
+      if (shapeKindToPlace === 'arrow') {
+        const authoredPoint = { id: `shape-point-${crypto.randomUUID()}`, x: point.x, y: point.y };
+        if (shapeDraft.length === 0) {
+          setShapeDraft([authoredPoint]);
+          setNotice('Arrow Start added — click the End point');
+          return;
+        }
+        const points = [shapeDraft[0], authoredPoint];
+        const center = { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 };
+        const layer = createShapeLayerAt('arrow', center.x, center.y);
+        layer.shapePoints = points;
+        updateProject((current) => addProjectLayer(current, layer));
+        selectLayer(layer.id);
+        setShapeDraft([]);
+        setPlacing(null);
+        setNotice('Arrow added — adjust Start Angle in Properties');
+        return;
+      }
+      if (['polyline', 'polygon', 'free-draw', 'arrow'].includes(shapeKindToPlace)) {
+        setShapeDraft((current) => [
+          ...current,
+          { id: `shape-point-${crypto.randomUUID()}`, x: point.x, y: point.y },
+        ]);
+        setNotice('Add Shape points — Enter to finish, Backspace to undo, Esc to cancel');
+        return;
+      }
+      const layer = createShapeLayerAt(shapeKindToPlace, point.x, point.y);
+      updateProject((current) => addProjectLayer(current, layer));
+      selectLayer(layer.id);
+      setPlacing(null);
+      setNotice(`${layer.name} added — drag its handles to edit`);
+      return;
+    }
     const layer = createLayer(type, project.layers.length);
     layer.x = point.x;
     layer.y = point.y;
@@ -647,14 +953,29 @@ export function App() {
   };
   const addLayer = async (type: LayerType) => {
     setPlacing(null);
-    if (type === 'pin') {
-      setPlacing('pin');
-      setNotice('Click the map to place the Pin — Esc to cancel');
+    if (type === 'pin' || type === 'text') {
+      setPlacing(type);
+      setNotice(`Click the map to place the ${layerLabel[type]} — Esc to cancel`);
       return;
     }
     if (type === 'region') {
       setRegionToolOpen((open) => !open);
       setNotice('Choose an existing geographic Region or draw a custom polygon');
+      return;
+    }
+    if (type === 'route') {
+      setRouteDraft([]);
+      setSelectedId(null);
+      setRoutePlanner(createRoutePlannerDraft());
+      setRoutePickTarget(null);
+      setLocationSearchOpen(true);
+      setLocationSearchFocusRequest((request) => request + 1);
+      setNotice('Route Planner opened — select Source and Destination');
+      return;
+    }
+    if (type === 'shape') {
+      setShapeToolOpen((open) => !open);
+      setNotice('Choose a Shape type');
       return;
     }
     const layer = createLayer(type, project.layers.length);
@@ -752,6 +1073,11 @@ export function App() {
       const saved = parseProjectFile(json);
       await validateProjectAssetStorage(saved);
       setProject(saved);
+      setRoutePlanner(null);
+      setEditingRouteLayerId(null);
+      setRoutePickTarget(null);
+      setCustomRouteSession(null);
+      setPathStopDrawer(null);
       setProjectFilePath(selectedPath);
       setSelectedId(null);
       setTimelineSelection(null);
@@ -797,6 +1123,11 @@ export function App() {
       if (typeof inputPath !== 'string') return;
       const { project: imported, compatibility } = await importPortableProjectDetailed(inputPath);
       setProject(imported);
+      setRoutePlanner(null);
+      setEditingRouteLayerId(null);
+      setRoutePickTarget(null);
+      setCustomRouteSession(null);
+      setPathStopDrawer(null);
       setProjectFilePath(null);
       setCamera(imported.views[0]?.camera ?? { x: 0, y: 0, zoom: 1, bearing: 0, pitch: 0 });
       setSelectedId(null);
@@ -818,8 +1149,14 @@ export function App() {
   };
   const duplicate = () => {
     if (!selected) return;
+    const cloned =
+      selected.type === 'route'
+        ? duplicateRouteIdentity(selected)
+        : selected.type === 'shape'
+          ? duplicateShapeIdentity(selected)
+          : selected;
     const layer = {
-      ...selected,
+      ...cloned,
       id: `${selected.type}-${crypto.randomUUID()}`,
       name: `${selected.name} copy`,
       x: selected.x + 22,
@@ -1194,7 +1531,41 @@ export function App() {
     setNotice(`Fit Layer applied: ${selected.name}`);
   };
   const focusLayerFromRow = (layer: Layer) => {
+    if (placing === 'route' && layer.type === 'pin') {
+      const [longitude, latitude] = mapMotionWorldToLngLat(layer.x, layer.y);
+      setRouteDraft((current) => [
+        ...current,
+        createRoutePoint(longitude, latitude, layer.name, { pinLayerId: layer.id }),
+      ]);
+      setNotice(`${layer.name} Pin added as a Route waypoint with fallback coordinates`);
+      return;
+    }
     selectLayer(layer.id);
+    if (layer.type === 'route') {
+      const bounds = routeGeographicBounds(layer);
+      if (bounds) {
+        const longitude = (bounds.west + bounds.east) / 2;
+        const latitude = (bounds.south + bounds.north) / 2;
+        const target = cameraForSearchResult(
+          {
+            id: layer.id,
+            source: 'local',
+            name: layer.name,
+            category: 'Other',
+            coordinates: { longitude, latitude },
+            bounds,
+            capabilities: { addPin: false, addRegion: false },
+          },
+          camera,
+          project.mapSettings.basemapRenderer,
+          projectRenderViewport(project),
+        );
+        if (project.mapSettings.basemapRenderer === 'online' && mapMode === 'flat')
+          setSearchNavigation((current) => ({ id: (current?.id ?? 0) + 1, camera: target }));
+        else applyCameraEdit(target);
+        return;
+      }
+    }
     const fitted = fitLayerCamera(layer, camera);
     const pinZoom = layer.type === 'pin' ? Math.max(fitted.zoom, 3.25) : fitted.zoom;
     applyCameraEdit({ ...fitted, zoom: pinZoom, bearing: camera.bearing, pitch: 0 });
@@ -1247,6 +1618,307 @@ export function App() {
     }
     rememberLocation(result);
   };
+  const addRoutePointFromSearch = (result: SearchResult) => {
+    const waypoint = createRoutePoint(
+      result.coordinates.longitude,
+      result.coordinates.latitude,
+      result.name,
+      { searchResultId: result.id },
+    );
+    if (routePlanner) {
+      const target =
+        routePickTarget ??
+        (!routePlanner.source
+          ? 'source'
+          : !routePlanner.destination
+            ? 'destination'
+            : { id: '', kind: 'stop' as const });
+      setRoutePlanner((current) => current && setRoutePlannerPoint(current, target, waypoint));
+      setRoutePickTarget(null);
+      rememberLocation(result);
+      setNotice(`${result.name} set as route ${target}`);
+      return;
+    }
+    const active = projectRef.current.layers.find((layer) => layer.id === selectedId);
+    if (active?.type === 'route' && placing !== 'route') {
+      const next = appendRoutePoint(active, waypoint);
+      updateProject((current) => ({
+        ...current,
+        layers: current.layers.map((layer) => (layer.id === active.id ? next : layer)),
+      }));
+      rememberLocation(result);
+      setNotice(`${result.name} added to ${next.name}`);
+      return;
+    }
+    if (placing !== 'route') {
+      setPlacing('route');
+      setRouteDraft([waypoint]);
+      rememberLocation(result);
+      setNotice(`${result.name} is the Route start — choose a destination`);
+      return;
+    }
+    const nextDraft = [...routeDraft, waypoint];
+    if (nextDraft.length === 2) {
+      const layer = createRouteLayer(nextDraft);
+      updateProject((current) => addProjectLayer(current, layer));
+      selectLayer(layer.id);
+      setRouteDraft([]);
+      setPlacing(null);
+      rememberLocation(result);
+      setNotice(`${layer.name} Flow added — Search remains open for more waypoints`);
+      return;
+    }
+    setRouteDraft(nextDraft);
+    rememberLocation(result);
+  };
+  const calculatePlannedRoute = async (onlySectionId?: string) => {
+    if (!routePlanner?.source || !routePlanner.destination) {
+      setRoutePlanner(
+        (current) => current && { ...current, status: 'error', error: 'Select both Source and Destination.' },
+      );
+      return;
+    }
+    routeRequestRef.current?.abort();
+    const controller = new AbortController();
+    routeRequestRef.current = controller;
+    const snapshot = routePlanner;
+    setRoutePlanner({
+      ...snapshot,
+      status: 'calculating',
+      error: undefined,
+    });
+    try {
+      const points = new Map(routePlannerPoints(snapshot).map((point) => [point.id, point]));
+      let sections = [...snapshot.sections];
+      let customPathRequired = false;
+      let failed = false;
+      for (const section of sections) {
+        if (onlySectionId && section.id !== onlySectionId) continue;
+        if (section.pathType === 'custom') {
+          if (section.status !== 'ready' || !section.plans.length) {
+            customPathRequired = true;
+            sections = sections.map((item) =>
+              item.id === section.id
+                ? { ...item, status: 'custom' as const, error: 'Custom path required' }
+                : item,
+            );
+          }
+          continue;
+        }
+        try {
+          const source = points.get(section.startPointId);
+          const destination = points.get(section.endPointId);
+          if (!source || !destination) throw new Error('Route Section endpoints are missing.');
+          setRoutePlanner(
+            (current) =>
+              current && {
+                ...current,
+                sections: current.sections.map((item) =>
+                  item.id === section.id ? { ...item, status: 'calculating' } : item,
+                ),
+              },
+          );
+          let plans = planLocalSection(source, destination, section.pathType, section.airModel);
+          if (!plans.length) {
+            const provider = plannerForPathType(section.pathType, routingSettings);
+            if (!provider) throw new Error('Road routing is not configured.');
+            plans = await provider.planRoute(
+              { source, destination, pathType: section.pathType, preference: snapshot.preference },
+              controller.signal,
+            );
+          }
+          sections = sections.map((item) =>
+            item.id === section.id
+              ? { ...item, plans, selectedPlanId: plans[0]?.id, status: 'ready' as const, error: undefined }
+              : item,
+          );
+        } catch (sectionError) {
+          if (controller.signal.aborted) return;
+          failed = true;
+          const message = sectionError instanceof Error ? sectionError.message : String(sectionError);
+          sections = sections.map((item) =>
+            item.id === section.id ? { ...item, status: 'error' as const, error: message } : item,
+          );
+        }
+      }
+      if (controller.signal.aborted) return;
+      setRoutePlanner(
+        (current) =>
+          current && {
+            ...current,
+            sections,
+            status: failed
+              ? 'error'
+              : sections.every((section) => section.status === 'ready')
+                ? 'ready'
+                : 'idle',
+            error: customPathRequired
+              ? 'Custom path required'
+              : failed
+                ? 'One or more Route Sections failed.'
+                : undefined,
+          },
+      );
+      setNotice(
+        customPathRequired
+          ? 'Custom path required — draw each Custom section on the map'
+          : onlySectionId
+            ? 'Route Section calculated'
+            : 'All Route Sections calculated',
+      );
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setRoutePlanner(
+        (current) =>
+          current && {
+            ...current,
+            status: 'error',
+            error: error instanceof Error ? error.message : String(error),
+          },
+      );
+    }
+  };
+  const beginCustomRoutePath = (sectionId: string) => {
+    const section = routePlanner?.sections.find((candidate) => candidate.id === sectionId);
+    if (!section || !routePlanner?.source || !routePlanner.destination) return;
+    setRoutePickTarget(null);
+    setCustomRouteSession({
+      sectionId,
+      draft: customRouteSettings(
+        section.customSettings?.pathShape ?? 'exact',
+        section.customSettings?.controlPoints ?? [],
+      ),
+      selectedControlPointId: null,
+    });
+    setNotice('Editing custom path — click the map to add points, Enter to finish, Esc to cancel');
+  };
+  const finishCustomRoutePath = () => {
+    if (!customRouteSession) return;
+    setRoutePlanner((current) =>
+      current
+        ? setCustomRouteSection(current, customRouteSession.sectionId, customRouteSession.draft)
+        : current,
+    );
+    setCustomRouteSession(null);
+    setPathStopDrawer(null);
+    setNotice('Custom path ready');
+  };
+  const clearCustomRoutePath = (sectionId: string) => {
+    setCustomRouteSession((session) => (session?.sectionId === sectionId ? null : session));
+    setRoutePlanner(
+      (current) =>
+        current && {
+          ...current,
+          status: 'idle',
+          sections: current.sections.map((section) =>
+            section.id === sectionId
+              ? {
+                  ...section,
+                  customSettings: customRouteSettings(section.customSettings?.pathShape ?? 'exact'),
+                  plans: [],
+                  selectedPlanId: undefined,
+                  status: 'custom',
+                  error: undefined,
+                }
+              : section,
+          ),
+        },
+    );
+  };
+  const cancelRoutePlanning = () => {
+    routeRequestRef.current?.abort();
+    setRoutePlanner(null);
+    setRoutePickTarget(null);
+    setCustomRouteSession(null);
+    setPathStopDrawer(null);
+    setNotice(
+      editingRouteLayerId
+        ? 'Route edits cancelled — accepted Route unchanged'
+        : 'Route planning cancelled — no Layer created',
+    );
+    setEditingRouteLayerId(null);
+  };
+  const editAcceptedRoute = (layer: Layer) => {
+    try {
+      setRoutePlanner(routePlannerDraftFromLayer(layer));
+      setEditingRouteLayerId(layer.id);
+      setRoutePickTarget(null);
+      setCustomRouteSession(null);
+      setPathStopDrawer(null);
+      selectLayer(layer.id);
+      setNotice(`Editing ${layer.name} — changes remain a draft until Use Route`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
+  const usePlannedRoute = () => {
+    if (!routePlanner) return;
+    try {
+      const accepted = editingRouteLayerId
+        ? projectRef.current.layers.find((layer) => layer.id === editingRouteLayerId)
+        : undefined;
+      if (editingRouteLayerId && accepted?.type !== 'route')
+        throw new Error('The accepted Route Layer is no longer available.');
+      const layer = routeLayerFromSections(routePlanner, accepted);
+      updateProject((current) => {
+        if (!accepted) return addProjectLayer(current, layer);
+        return reconcileRouteSectionTimelineUsage(
+          {
+            ...current,
+            layers: replaceAcceptedRouteLayer(current.layers, accepted.id, layer),
+          },
+          accepted.id,
+          (layer.routeSegments ?? []).map((section) => section.id),
+        );
+      });
+      setRoutePlanner(null);
+      setRoutePickTarget(null);
+      setCustomRouteSession(null);
+      setPathStopDrawer(null);
+      setEditingRouteLayerId(null);
+      selectLayer(layer.id);
+      setNotice(accepted ? `${layer.name} Route updated` : `${layer.name} Route added`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
+  const customRouteSection = customRouteSession
+    ? routePlanner?.sections.find((section) => section.id === customRouteSession.sectionId)
+    : undefined;
+  const customRoutePointMap = routePlanner
+    ? new Map(routePlannerPoints(routePlanner).map((point) => [point.id, point]))
+    : new Map<string, RoutePoint>();
+  const customRouteStart = customRouteSection
+    ? customRoutePointMap.get(customRouteSection.startPointId)
+    : undefined;
+  const customRouteEnd = customRouteSection
+    ? customRoutePointMap.get(customRouteSection.endPointId)
+    : undefined;
+  const customRouteDraftCoordinates =
+    customRouteSession && customRouteStart && customRouteEnd
+      ? customRouteAuthoredCoordinates(
+          customRouteStart,
+          customRouteEnd,
+          customRouteSession.draft.controlPoints,
+        )
+      : undefined;
+  const customRouteCandidate =
+    customRouteSession && customRouteStart && customRouteEnd
+      ? generateCustomRouteGeometry(customRouteStart, customRouteEnd, customRouteSession.draft)
+      : undefined;
+  const pathStopSection = pathStopDrawer
+    ? routePlanner?.sections.find((section) => section.id === pathStopDrawer.sectionId)
+    : undefined;
+  const pathStopStart = pathStopSection ? customRoutePointMap.get(pathStopSection.startPointId) : undefined;
+  const pathStopEnd = pathStopSection ? customRoutePointMap.get(pathStopSection.endPointId) : undefined;
+  const pathStopCoordinates =
+    pathStopSection?.customSettings && pathStopStart && pathStopEnd
+      ? customRouteAuthoredCoordinates(
+          pathStopStart,
+          pathStopEnd,
+          pathStopSection.customSettings.controlPoints,
+        )
+      : undefined;
   const exportProof = async () => {
     if (exportAbort.current) return;
     const controller = new AbortController();
@@ -1376,6 +2048,11 @@ export function App() {
             className="quiet"
             onClick={() => {
               setProject(createProject('Untitled documentary'));
+              setRoutePlanner(null);
+              setEditingRouteLayerId(null);
+              setRoutePickTarget(null);
+              setCustomRouteSession(null);
+              setPathStopDrawer(null);
               setProjectFilePath(null);
               setSelectedId(null);
               stopPlayback();
@@ -1520,7 +2197,20 @@ export function App() {
                     <input
                       type="checkbox"
                       className="layer-member"
-                      checked={projectMode || segmentVisibleIds.has(layer.id)}
+                      checked={
+                        projectMode ||
+                        (layer.type === 'route'
+                          ? routeParentIncludedFromSections(
+                              editingTransitionIndex !== null
+                                ? transitionAnimOf(project.transitions[editingTransitionIndex], layer.id)
+                                : editingViewIndex >= 0
+                                  ? viewAnimOf(project.views[editingViewIndex], layer.id)
+                                  : undefined,
+                              (layer.routeSegments ?? []).map((section) => section.id),
+                              segmentVisibleIds.has(layer.id),
+                            )
+                          : segmentVisibleIds.has(layer.id))
+                      }
                       disabled={allocationCheckboxDisabled}
                       title={
                         projectMode
@@ -1725,6 +2415,40 @@ export function App() {
             </div>
           </div>
           <div className={`map-frame ${placing ? 'placing' : ''}`}>
+            {placing === 'shape' &&
+              ['polyline', 'polygon', 'free-draw', 'arrow'].includes(shapeKindToPlace) && (
+                <div className="shape-authoring-actions" aria-label="Shape drawing controls">
+                  <strong>
+                    {shapeKindToPlace === 'polygon'
+                      ? 'Drawing Polygon'
+                      : shapeKindToPlace === 'free-draw'
+                        ? 'Drawing Free Draw'
+                        : shapeKindToPlace === 'arrow'
+                          ? 'Drawing Arrow'
+                          : 'Drawing Line'}
+                  </strong>
+                  <button
+                    type="button"
+                    disabled={shapeDraft.length === 0}
+                    onClick={() => setShapeDraft((points) => points.slice(0, -1))}
+                  >
+                    Undo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={shapeDraft.length < (shapeKindToPlace === 'polygon' ? 3 : 2)}
+                    onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }))}
+                  >
+                    Finish
+                  </button>
+                </div>
+              )}
             {project.mapSettings.basemapRenderer === 'online' ? (
               mapMode === 'flat' ? (
                 <OnlinePreviewMap
@@ -1736,7 +2460,12 @@ export function App() {
                       ? []
                       : editingScene.layers
                           .filter((layer) => !eyeHidden[layer.id])
-                          .map((layer) => ({ ...layer, visible: true }))
+                          .map((layer) => ({
+                            ...layer,
+                            visible: true,
+                            opacity:
+                              layer.id === editingRouteLayerId ? (layer.opacity ?? 1) * 0.35 : layer.opacity,
+                          }))
                   }
                   editingCamera={
                     searchNavigation
@@ -1751,8 +2480,62 @@ export function App() {
                   selectedId={selectedId}
                   onSelect={selectLayer}
                   onMovePin={(id, x, y) => updateLayer(id, { x, y })}
+                  onMoveShapePoint={(layerId, pointId, x, y) => {
+                    const layer = projectRef.current.layers.find((candidate) => candidate.id === layerId);
+                    if (layer?.type !== 'shape') return;
+                    const next = updateShapePoint(layer, pointId, x, y);
+                    updateProject((current) => ({
+                      ...current,
+                      layers: current.layers.map((candidate) =>
+                        candidate.id === layerId ? next : candidate,
+                      ),
+                    }));
+                  }}
+                  onMoveShape={(layerId, dx, dy) => {
+                    updateProject((current) => ({
+                      ...current,
+                      layers: current.layers.map((layer) =>
+                        layer.id === layerId && layer.type === 'shape' ? moveShape(layer, dx, dy) : layer,
+                      ),
+                    }));
+                  }}
+                  onShapeDrawPoint={
+                    placing === 'shape' && shapeKindToPlace === 'free-draw'
+                      ? (point) =>
+                          setShapeDraft((current) => {
+                            const last = current[current.length - 1];
+                            if (last && Math.hypot(last.x - point.x, last.y - point.y) < 1) return current;
+                            return [
+                              ...current,
+                              { id: `shape-point-${crypto.randomUUID()}`, x: point.x, y: point.y },
+                            ];
+                          })
+                      : undefined
+                  }
+                  onShapeDrawFinish={
+                    placing === 'shape' && shapeKindToPlace === 'free-draw'
+                      ? () =>
+                          requestAnimationFrame(() =>
+                            window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })),
+                          )
+                      : undefined
+                  }
+                  onMoveRouteWaypoint={
+                    routePlanner
+                      ? undefined
+                      : (layerId, waypointId, longitude, latitude) => {
+                          const route = projectRef.current.layers.find((layer) => layer.id === layerId);
+                          if (route?.type !== 'route') return;
+                          const next = updateRoutePoint(route, waypointId, { longitude, latitude });
+                          updateProject((current) => ({
+                            ...current,
+                            layers: current.layers.map((layer) => (layer.id === layerId ? next : layer)),
+                          }));
+                        }
+                  }
                   onBackgroundClick={(point) => {
-                    if (placing === 'pin') placeLayerAt('pin', point);
+                    if (placing === 'pin' || placing === 'text' || placing === 'shape')
+                      placeLayerAt(placing, point);
                     else clearSelection();
                   }}
                   onRegionPoint={
@@ -1764,6 +2547,118 @@ export function App() {
                       : undefined
                   }
                   regionDraft={regionDraft}
+                  onRoutePoint={
+                    customRouteSession
+                      ? undefined
+                      : routePlanner && routePickTarget
+                        ? (point) => {
+                            const waypoint = createRoutePoint(
+                              point[0],
+                              point[1],
+                              `${point[1].toFixed(4)}, ${point[0].toFixed(4)}`,
+                            );
+                            setRoutePlanner((current) => {
+                              if (!current) return current;
+                              if (typeof routePickTarget === 'object' && routePickTarget.kind === 'stop') {
+                                return replaceStopPoint(current, routePickTarget.id, waypoint);
+                              }
+                              return setRoutePlannerPoint(current, routePickTarget as any, waypoint);
+                            });
+                            setNotice(
+                              typeof routePickTarget === 'string'
+                                ? `Route ${routePickTarget} selected on map`
+                                : 'Stop selected on map',
+                            );
+                            setRoutePickTarget(null);
+                          }
+                        : placing === 'route'
+                          ? (point) => {
+                              const waypoint = createRoutePoint(
+                                point[0],
+                                point[1],
+                                `Point ${routeDraft.length + 1}`,
+                              );
+                              const nextDraft = [...routeDraft, waypoint];
+                              if (nextDraft.length === 2) {
+                                const layer = createRouteLayer(nextDraft);
+                                updateProject((current) => addProjectLayer(current, layer));
+                                selectLayer(layer.id);
+                                setRouteDraft([]);
+                                setPlacing(null);
+                                setNotice(`${layer.name} Flow added`);
+                                return;
+                              }
+                              setRouteDraft(nextDraft);
+                              setNotice('Route waypoint added — click again or press Enter to finish');
+                            }
+                          : undefined
+                  }
+                  shapeDraftKind={placing === 'shape' ? shapeKindToPlace : undefined}
+                  shapeDraft={
+                    placing === 'shape'
+                      ? shapeDraft.map((point) => mapMotionWorldToLngLat(point.x, point.y))
+                      : []
+                  }
+                  routeDraft={
+                    customRouteDraftCoordinates ??
+                    pathStopCoordinates ??
+                    (routePlanner
+                      ? routePlannerPoints(routePlanner).map((point) => [point.longitude, point.latitude])
+                      : routeDraft.map((point) => [point.longitude, point.latitude]))
+                  }
+                  routeCandidate={
+                    (placing === 'shape' && shapeKindToPlace === 'polygon' && shapeDraft.length > 1
+                      ? [...shapeDraft, shapeDraft[0]].map((point) =>
+                          mapMotionWorldToLngLat(point.x, point.y),
+                        )
+                      : undefined) ??
+                    customRouteCandidate ??
+                    routePlanner?.sections.flatMap((section) => {
+                      const plan =
+                        section.plans.find((item) => item.id === section.selectedPlanId) ?? section.plans[0];
+                      return plan?.geometry ?? [];
+                    })
+                  }
+                  customRouteControlPointIds={(
+                    customRouteSession?.draft.controlPoints ?? pathStopSection?.customSettings?.controlPoints
+                  )?.map((point) => point.id)}
+                  selectedCustomRouteControlPointId={customRouteSession?.selectedControlPointId}
+                  onCustomRoutePoint={
+                    customRouteSession
+                      ? (point, insertionIndex) =>
+                          setCustomRouteSession((session) =>
+                            session
+                              ? {
+                                  ...session,
+                                  draft: insertCustomRouteControlPoint(
+                                    session.draft,
+                                    insertionIndex,
+                                    createCustomRouteControlPoint(point[0], point[1]),
+                                  ),
+                                  selectedControlPointId: null,
+                                }
+                              : session,
+                          )
+                      : undefined
+                  }
+                  onMoveCustomRouteControlPoint={
+                    customRouteSession
+                      ? (id, point) =>
+                          setCustomRouteSession((session) =>
+                            session
+                              ? {
+                                  ...session,
+                                  draft: moveCustomRouteControlPoint(session.draft, id, point[0], point[1]),
+                                }
+                              : session,
+                          )
+                      : undefined
+                  }
+                  onSelectCustomRouteControlPoint={(id) =>
+                    setCustomRouteSession((session) =>
+                      session ? { ...session, selectedControlPointId: id } : session,
+                    )
+                  }
                   assetUrls={assetUrls}
                   navigationRequest={searchNavigation}
                 />
@@ -1793,7 +2688,16 @@ export function App() {
                     labelLanguage: project.mapSettings.labelLanguage,
                     selectedId,
                     onSelect: selectLayer,
-                    onMoveLayer: (id, x, y) => updateLayer(id, { x, y }),
+                    onMoveLayer: (id, x, y) => {
+                      const layer = projectRef.current.layers.find((candidate) => candidate.id === id);
+                      if (layer?.type === 'shape') {
+                        const next = moveShape(layer, x - layer.x, y - layer.y);
+                        updateProject((current) => ({
+                          ...current,
+                          layers: current.layers.map((candidate) => (candidate.id === id ? next : candidate)),
+                        }));
+                      } else updateLayer(id, { x, y });
+                    },
                     onDeleteSelected: projectMode ? remove : undefined,
                     onBackgroundClick: (point) => {
                       if (placing && point) placeLayerAt(placing, point);
@@ -1821,6 +2725,43 @@ export function App() {
                 </button>
               ))}
             </div>
+            {shapeToolOpen && (
+              <div className="region-tool-popover shape-tool-popover">
+                <strong>Create Shape</strong>
+                {(
+                  [
+                    ['rectangle', 'Rectangle'],
+                    ['square', 'Square'],
+                    ['ellipse', 'Ellipse'],
+                    ['circle', 'Circle'],
+                    ['triangle', 'Equilateral Triangle'],
+                    ['regular-polygon', 'Regular Polygon'],
+                    ['polyline', 'Line / Polyline'],
+                    ['polygon', 'Polygon'],
+                    ['free-draw', 'Free Draw'],
+                    ['arrow', 'Arrow'],
+                  ] as Array<[ShapeKind, string]>
+                ).map(([kind, label]) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    onClick={() => {
+                      setShapeKindToPlace(kind);
+                      setShapeDraft([]);
+                      setShapeToolOpen(false);
+                      setPlacing('shape');
+                      setNotice(
+                        ['polyline', 'polygon', 'free-draw', 'arrow'].includes(kind)
+                          ? `Click Shape points for ${label}; Enter to finish`
+                          : `Click the map to place ${label}`,
+                      );
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
             {regionToolOpen && (
               <div className="region-tool-popover">
                 <strong>Create Region</strong>
@@ -1911,6 +2852,23 @@ export function App() {
             onGo={goToSearchResult}
             onAddPin={addPinFromSearch}
             onAddRegion={addRegionFromSearch}
+            routeAction={
+              (routePlanner
+                ? typeof routePickTarget === 'object'
+                  ? 'stop'
+                  : (routePickTarget ??
+                    (!routePlanner.source ? 'source' : !routePlanner.destination ? 'destination' : 'stop'))
+                : placing === 'route'
+                  ? routeDraft.length === 0
+                    ? 'start'
+                    : routeDraft.length === 1
+                      ? 'destination'
+                      : 'point'
+                  : selected?.type === 'route'
+                    ? 'point'
+                    : undefined) as any
+            }
+            onRoutePoint={addRoutePointFromSearch}
           />
         )}
         <aside
@@ -1930,6 +2888,93 @@ export function App() {
             disabled={playbackState !== 'stopped'}
             onChange={(patch) => setCamera((current) => roundCamera({ ...current, ...patch }))}
           />
+          {routePlanner && (
+            <RoutePlannerPanel
+              draft={routePlanner}
+              pickTarget={routePickTarget as any}
+              roadConfigured={Boolean(routingSettings.openRouteServiceApiKey)}
+              settingsOpen={routingSettingsOpen}
+              routingSettings={routingSettings}
+              onConfigure={() => setRoutingSettingsOpen(true)}
+              onCloseSettings={() => setRoutingSettingsOpen(false)}
+              onSaveSettings={async (settings) => {
+                await saveRoutingServiceSettings(settings);
+                setRoutingSettings(settings);
+                setRoutingSettingsOpen(false);
+              }}
+              onPick={(target) => {
+                setRoutePickTarget(target);
+                setNotice(`Click map to set route ${target} · Esc to cancel`);
+              }}
+              onSearch={(target) => {
+                setRoutePickTarget(target);
+                setLocationSearchOpen(true);
+                setLocationSearchFocusRequest((request) => request + 1);
+              }}
+              onChange={(next) => {
+                routeRequestRef.current?.abort();
+                setRoutePlanner(invalidateRoutePlans(next));
+              }}
+              onCalculate={(sectionId) => void calculatePlannedRoute(sectionId)}
+              pathStopDrawer={pathStopDrawer}
+              onAddStop={() => {
+                const stop = createRoutePoint(0, 0, 'Select location…');
+                setRoutePlanner((current) => current && addRoutePlannerStop(current, stop));
+                setRoutePickTarget({ id: stop.id, kind: 'stop' });
+                setLocationSearchOpen(true);
+                setLocationSearchFocusRequest((request) => request + 1);
+              }}
+              onOpenPathStops={(sectionId) => setPathStopDrawer({ sectionId, selectedIds: [] })}
+              onTogglePathStop={(id) =>
+                setPathStopDrawer((drawer) =>
+                  drawer
+                    ? {
+                        ...drawer,
+                        selectedIds: drawer.selectedIds.includes(id)
+                          ? drawer.selectedIds.filter((item) => item !== id)
+                          : [...drawer.selectedIds, id],
+                      }
+                    : drawer,
+                )
+              }
+              onApplyPathStops={() => {
+                if (!pathStopDrawer) return;
+                setRoutePlanner(
+                  (current) =>
+                    current &&
+                    promoteCustomControlsToStops(
+                      current,
+                      pathStopDrawer.sectionId,
+                      pathStopDrawer.selectedIds,
+                    ),
+                );
+                setPathStopDrawer(null);
+              }}
+              onClosePathStops={() => setPathStopDrawer(null)}
+              onConvertMaritime={(sectionId) =>
+                setRoutePlanner((current) => current && convertMaritimeSectionToCustom(current, sectionId))
+              }
+              customRouteSession={customRouteSession}
+              onBeginCustomPath={beginCustomRoutePath}
+              onFinishCustomPath={finishCustomRoutePath}
+              onCancelCustomPath={() => setCustomRouteSession(null)}
+              onClearCustomPath={clearCustomRoutePath}
+              onCustomPathShape={(sectionId, pathShape) => {
+                if (customRouteSession?.sectionId === sectionId)
+                  setCustomRouteSession((session) =>
+                    session
+                      ? { ...session, draft: customRouteSettings(pathShape, session.draft.controlPoints) }
+                      : session,
+                  );
+                else
+                  setRoutePlanner(
+                    (current) => current && setCustomRoutePathShape(current, sectionId, pathShape),
+                  );
+              }}
+              onUse={usePlannedRoute}
+              onCancel={cancelRoutePlanning}
+            />
+          )}
           {!projectMode && selectedTransition && (
             <TransitionInspector
               transition={selectedTransition}
@@ -1944,7 +2989,7 @@ export function App() {
               onChange={(patch) => playbackState === 'stopped' && updateTransition(patch)}
             />
           )}
-          {selected ? (
+          {selected && !routePlanner ? (
             <Inspector
               layer={selected}
               onChange={(patch) => updateLayer(selected.id, patch)}
@@ -1952,6 +2997,7 @@ export function App() {
               onRemove={remove}
               canRemove={projectMode}
               onMove={move}
+              onEditRoute={selected.type === 'route' ? () => editAcceptedRoute(selected) : undefined}
               assetUrls={assetUrls}
               onAddAsset={(asset) =>
                 updateProject((p) => ({
@@ -1982,6 +3028,7 @@ export function App() {
                         toName: destView?.name ?? '',
                         inTransition: segmentVisibleIds.has(selected.id),
                         continuouslyVisible: sourceMembers.has(selected.id),
+                        cameraZoom: sourceView.camera.zoom,
                         anim: transitionAnimOf(transition, selected.id),
                         warnings: validateTransitionLayer({
                           sourceMemberIds: sourceMembers,
@@ -1992,6 +3039,10 @@ export function App() {
                           transitionDuration: transition.duration,
                         }),
                         onSetMembership: (inTransition) => setSegmentMembership(selected.id, inTransition),
+                        onSetDerivedMembership: (inTransition) =>
+                          updateProject((current) =>
+                            setTransitionLayerIncluded(current, transition.id, selected.id, inTransition),
+                          ),
                         onPatchAnim: (patch) => patchTransitionAnim(selected.id, patch),
                       };
                     })()
@@ -2008,6 +3059,7 @@ export function App() {
                         viewIndex: editingViewIndex,
                         viewName: activeView.name,
                         holdDuration: activeView.holdDuration,
+                        cameraZoom: activeView.camera.zoom,
                         inView: segmentVisibleIds.has(selected.id),
                         anim: viewAnimOf(activeView, selected.id),
                         warnings: validateViewLayer({
@@ -2016,6 +3068,10 @@ export function App() {
                           holdDuration: activeView.holdDuration,
                         }),
                         onSetMembership: (inView) => setSegmentMembership(selected.id, inView),
+                        onSetDerivedMembership: (inView) =>
+                          updateProject((current) =>
+                            setViewLayerIncluded(current, activeView.id, selected.id, inView),
+                          ),
                         onPatchAnim: (patch) => patchViewAnim(selected.id, patch),
                       };
                     })()
@@ -2536,10 +3592,25 @@ function OnlinePreviewMap({
   selectedId,
   onSelect,
   onMovePin,
+  onMoveShapePoint,
+  onMoveShape,
+  onShapeDrawPoint,
+  onShapeDrawFinish,
+  onMoveRouteWaypoint,
   onBackgroundClick,
   onRegionPoint,
   onRegionFinish,
   regionDraft,
+  onRoutePoint,
+  routeDraft,
+  routeCandidate,
+  shapeDraftKind,
+  shapeDraft,
+  customRouteControlPointIds,
+  selectedCustomRouteControlPointId,
+  onCustomRoutePoint,
+  onMoveCustomRouteControlPoint,
+  onSelectCustomRouteControlPoint,
   assetUrls,
   navigationRequest,
 }: {
@@ -2554,10 +3625,25 @@ function OnlinePreviewMap({
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onMovePin: (id: string, x: number, y: number) => void;
+  onMoveShapePoint?: (layerId: string, pointId: string, x: number, y: number) => void;
+  onMoveShape?: (layerId: string, dx: number, dy: number) => void;
+  onShapeDrawPoint?: (point: { x: number; y: number }) => void;
+  onShapeDrawFinish?: () => void;
+  onMoveRouteWaypoint?: (layerId: string, waypointId: string, longitude: number, latitude: number) => void;
   onBackgroundClick: (point: { x: number; y: number }) => void;
   onRegionPoint?: (point: [number, number]) => void;
   onRegionFinish?: () => void;
   regionDraft?: [number, number][];
+  onRoutePoint?: (point: [number, number]) => void;
+  routeDraft?: [number, number][];
+  routeCandidate?: [number, number][];
+  shapeDraftKind?: ShapeKind;
+  shapeDraft?: [number, number][];
+  customRouteControlPointIds?: string[];
+  selectedCustomRouteControlPointId?: string | null;
+  onCustomRoutePoint?: (point: [number, number], insertionIndex: number) => void;
+  onMoveCustomRouteControlPoint?: (id: string, point: [number, number]) => void;
+  onSelectCustomRouteControlPoint?: (id: string | null) => void;
   assetUrls: Readonly<Record<string, string>>;
   navigationRequest?: { id: number; camera: CameraState } | null;
 }) {
@@ -2575,10 +3661,27 @@ function OnlinePreviewMap({
       selectedId={playbackState === 'stopped' ? selectedId : null}
       onSelect={onSelect}
       onMovePin={onMovePin}
+      onMoveShapePoint={onMoveShapePoint}
+      onMoveShape={onMoveShape}
+      onShapeDrawPoint={onShapeDrawPoint}
+      onShapeDrawFinish={onShapeDrawFinish}
+      onMoveRouteWaypoint={onMoveRouteWaypoint}
       onBackgroundClick={onBackgroundClick}
       onRegionPoint={onRegionPoint}
       onRegionFinish={onRegionFinish}
       regionDraft={regionDraft}
+      onRoutePoint={onRoutePoint}
+      routeDraft={playbackState === 'stopped' ? routeDraft : []}
+      routeCandidate={playbackState === 'stopped' ? routeCandidate : undefined}
+      shapeDraftKind={playbackState === 'stopped' ? shapeDraftKind : undefined}
+      shapeDraft={playbackState === 'stopped' ? shapeDraft : []}
+      customRouteControlPointIds={playbackState === 'stopped' ? customRouteControlPointIds : []}
+      selectedCustomRouteControlPointId={
+        playbackState === 'stopped' ? selectedCustomRouteControlPointId : undefined
+      }
+      onCustomRoutePoint={onCustomRoutePoint}
+      onMoveCustomRouteControlPoint={onMoveCustomRouteControlPoint}
+      onSelectCustomRouteControlPoint={onSelectCustomRouteControlPoint}
       assetUrls={assetUrls}
       navigationRequest={navigationRequest}
     />
@@ -3117,9 +4220,11 @@ interface TransitionLayerContext {
   toName: string;
   inTransition: boolean;
   continuouslyVisible: boolean;
+  cameraZoom: number;
   anim: import('../core/project').SegmentLayerAnimation | undefined;
   warnings: SegmentWarning[];
   onSetMembership: (inTransition: boolean) => void;
+  onSetDerivedMembership: (inTransition: boolean) => void;
   onPatchAnim: (patch: Partial<import('../core/project').SegmentLayerAnimation>) => void;
 }
 
@@ -3127,11 +4232,158 @@ interface ViewLayerContext {
   viewIndex: number;
   viewName: string;
   holdDuration: number;
+  cameraZoom: number;
   inView: boolean;
   anim: import('../core/project').SegmentLayerAnimation | undefined;
   warnings: SegmentWarning[];
   onSetMembership: (inView: boolean) => void;
+  onSetDerivedMembership: (inView: boolean) => void;
   onPatchAnim: (patch: Partial<import('../core/project').SegmentLayerAnimation>) => void;
+}
+
+function TextTimelineControls({
+  transitionContext,
+  viewContext,
+}: {
+  transitionContext?: TransitionLayerContext;
+  viewContext?: ViewLayerContext;
+}) {
+  const context = transitionContext ?? viewContext;
+  if (!context) return null;
+  const isTransition = Boolean(transitionContext);
+  const included = transitionContext?.inTransition ?? viewContext?.inView ?? false;
+  const anim = context.anim;
+  return (
+    <div className="pin-section transition-layer-section" data-text-timeline-settings>
+      <span className="pin-section-title">
+        Timeline{' '}
+        <em className="transition-section-context">
+          {transitionContext
+            ? `${transitionContext.fromName} → ${transitionContext.toName}`
+            : viewContext?.viewName}
+        </em>
+      </span>
+      <p className="global-layer-note">These settings apply only to the selected View or Transition.</p>
+      <label className="toggle">
+        <span>Text exists in this {isTransition ? 'Transition' : 'View'}</span>
+        <input
+          type="checkbox"
+          checked={included}
+          onChange={(event) => context.onSetMembership(event.target.checked)}
+        />
+      </label>
+      {!isTransition && viewContext?.holdDuration === 0 && (
+        <p className="segment-warning info">
+          View Hold is 0s. This View has no playback interval; its settings remain saved.
+        </p>
+      )}
+      {included && (
+        <>
+          <span className="pin-section-sub">Appear</span>
+          <label className="toggle">
+            <span>Enable Appear</span>
+            <input
+              type="checkbox"
+              checked={Boolean(anim?.appearEnabled)}
+              onChange={(event) => context.onPatchAnim({ appearEnabled: event.target.checked })}
+            />
+          </label>
+          {anim?.appearEnabled && (
+            <>
+              <label>
+                Type
+                <select
+                  value={anim.appearType ?? 'fade'}
+                  onChange={(event) =>
+                    context.onPatchAnim({
+                      appearType: event.target.value as import('../core/project').PinAppearType,
+                    })
+                  }
+                >
+                  <option value="fade">Fade</option>
+                  <option value="pop">Pop</option>
+                  <option value="drop">Drop</option>
+                </select>
+              </label>
+              <div className="two-col">
+                <RegionTimingField
+                  label="Appear Delay"
+                  value={anim.appearDelay ?? 0}
+                  onChange={(value) => context.onPatchAnim({ appearDelay: value })}
+                />
+                <RegionTimingField
+                  label="Appear Duration"
+                  value={anim.appearDuration ?? 0.6}
+                  onChange={(value) => context.onPatchAnim({ appearDuration: Math.max(0.05, value) })}
+                />
+              </div>
+            </>
+          )}
+          <span className="pin-section-sub">Layer Hold</span>
+          <RegionTimingField
+            label="Hold"
+            value={anim?.layerHoldDuration ?? 0}
+            onChange={(value) => context.onPatchAnim({ layerHoldDuration: value })}
+          />
+          <span className="pin-section-sub">Wipe Out</span>
+          <label className="toggle">
+            <span>Enable Wipe Out</span>
+            <input
+              type="checkbox"
+              checked={Boolean(anim?.wipeEnabled)}
+              onChange={(event) => context.onPatchAnim({ wipeEnabled: event.target.checked })}
+            />
+          </label>
+          {anim?.wipeEnabled && (
+            <div className="two-col">
+              <RegionTimingField
+                label="Wipe Out Delay"
+                value={anim.wipeDelay ?? 0}
+                onChange={(value) => context.onPatchAnim({ wipeDelay: value })}
+              />
+              <RegionTimingField
+                label="Wipe Out Duration"
+                value={anim.wipeDuration ?? 0.5}
+                onChange={(value) => context.onPatchAnim({ wipeDuration: Math.max(0.05, value) })}
+              />
+            </div>
+          )}
+          <label className="toggle">
+            <span>Scale with Map Zoom</span>
+            <input
+              type="checkbox"
+              checked={Boolean(anim?.textScaleWithMapZoom)}
+              onChange={(event) =>
+                context.onPatchAnim({
+                  textScaleWithMapZoom: event.target.checked,
+                  textReferenceZoom: context.cameraZoom,
+                })
+              }
+            />
+          </label>
+          <label>
+            Orientation
+            <select
+              value={anim?.textOrientation ?? 'face-camera'}
+              onChange={(event) =>
+                context.onPatchAnim({
+                  textOrientation: event.target.value as import('../core/project').TextOrientation,
+                })
+              }
+            >
+              <option value="face-camera">Face Camera</option>
+              <option value="flat-on-map">Flat on Map</option>
+            </select>
+          </label>
+        </>
+      )}
+      {context.warnings.map((warning, index) => (
+        <p key={index} className={`segment-warning ${warning.level}`}>
+          ⚠ {warning.message}
+        </p>
+      ))}
+    </div>
+  );
 }
 
 function HexColorField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
@@ -3364,6 +4616,1104 @@ function RegionTimingField({
   );
 }
 
+function RouteSettings({
+  layer,
+  onChange,
+  assetUrls,
+  onAddAsset,
+  transitionContext,
+  viewContext,
+}: {
+  layer: Layer;
+  onChange: (patch: Partial<Layer>) => void;
+  assetUrls: Record<string, string>;
+  onAddAsset?: (asset: import('../core/project').ProjectAsset) => void;
+  transitionContext?: TransitionLayerContext;
+  viewContext?: ViewLayerContext;
+}) {
+  const [selectedSegmentId, setSelectedSegmentId] = useState(layer.routeSegments?.[0]?.id ?? '');
+  const [myVehicles, setMyVehicles] = useState<VehicleStyleEntry[]>(() => getVehicleStyles());
+  const selectedSegment =
+    layer.routeSegments?.find((segment) => segment.id === selectedSegmentId) ?? layer.routeSegments?.[0];
+  const defaults = { ...ROUTE_DEFAULTS, ...(layer.routeDefaults ?? {}) };
+  const timelineContext = transitionContext ?? viewContext;
+  const canAnimate = Boolean(transitionContext || (viewContext?.holdDuration ?? 0) > 0);
+  const patchLayer = (next: Layer) =>
+    onChange({
+      routePoints: next.routePoints,
+      routeSegments: next.routeSegments,
+      routeDefaults: next.routeDefaults,
+      name: next.name,
+    });
+  const patchSegment = (patch: import('../core/project').RouteSegmentAppearance) => {
+    if (!selectedSegment) return;
+    patchLayer(routeSegmentAppearancePatch(layer, selectedSegment.id, patch));
+  };
+  const patchSegmentTiming = (segmentId: string, patch: Partial<RouteSegmentAnimation>) => {
+    if (!timelineContext) return;
+    const next = patchRouteSectionTimelineUsage(timelineContext.anim, segmentId, patch);
+    timelineContext.onPatchAnim({ routeSegmentAnimations: next.routeSegmentAnimations });
+    if (patch.included !== undefined) {
+      const sectionIds = (layer.routeSegments ?? []).map((section) => section.id);
+      timelineContext.onSetDerivedMembership(
+        routeParentIncludedFromSections(
+          next,
+          sectionIds,
+          'inTransition' in timelineContext ? timelineContext.inTransition : timelineContext.inView,
+        ),
+      );
+    }
+  };
+  const chooseCustomVehicleImage = async (segmentId: string) => {
+    try {
+      const sourcePath = await openFile({
+        title: 'Choose Custom Vehicle Image',
+        multiple: false,
+        directory: false,
+        filters: [{ name: 'PNG, WebP, or JPEG image', extensions: ['png', 'webp', 'jpg', 'jpeg'] }],
+      });
+      if (typeof sourcePath !== 'string') return;
+      const asset = await ingestProjectImage(sourcePath);
+      onAddAsset?.(asset);
+      patchSegmentTiming(segmentId, { vehicleType: 'custom', vehicleAssetId: asset.id });
+    } catch (error) {
+      console.error('Choose custom vehicle image failed:', error);
+    }
+  };
+  const projectAssetFromVehicleStyle = async (entry: VehicleStyleEntry) => {
+    const base64 = entry.imageDataUrl.slice(entry.imageDataUrl.indexOf(',') + 1);
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    const asset = await ingestProjectImageBytes(Array.from(bytes), entry.filename);
+    onAddAsset?.(asset);
+    return asset;
+  };
+  const useVehicleStyle = async (segmentId: string, entry: VehicleStyleEntry) => {
+    try {
+      const asset = await projectAssetFromVehicleStyle(entry);
+      patchSegmentTiming(segmentId, { vehicleType: 'custom', vehicleAssetId: asset.id });
+    } catch (error) {
+      console.error('Apply My Vehicle failed:', error);
+    }
+  };
+  const addVehicleStyle = async (segmentId: string) => {
+    try {
+      const sourcePath = await openFile({
+        title: 'Add Vehicle to My Vehicles',
+        multiple: false,
+        directory: false,
+        filters: [{ name: 'PNG, WebP, or JPEG image', extensions: ['png', 'webp', 'jpg', 'jpeg'] }],
+      });
+      if (typeof sourcePath !== 'string') return;
+      const asset = await ingestProjectImage(sourcePath);
+      onAddAsset?.(asset);
+      const imageDataUrl = await resolveProjectAssetDataUrl(asset);
+      const suggestedName = asset.filename.replace(/\.[^.]+$/, '') || 'My Vehicle';
+      const name = window.prompt('Vehicle name', suggestedName)?.trim();
+      if (!name) return;
+      saveVehicleStyle(name, imageDataUrl, asset.filename);
+      setMyVehicles(getVehicleStyles());
+      patchSegmentTiming(segmentId, { vehicleType: 'custom', vehicleAssetId: asset.id });
+    } catch (error) {
+      console.error('Add My Vehicle failed:', error);
+    }
+  };
+  return (
+    <>
+      <div className="pin-section route-section">
+        <span className="pin-section-title">Route Sections</span>
+        <div className="route-segment-list">
+          {(layer.routeSegments ?? []).map((segment, index) => {
+            const start = layer.routePoints?.find((point) => point.id === segment.startPointId);
+            const end = layer.routePoints?.find((point) => point.id === segment.endPointId);
+            return (
+              <button
+                key={segment.id}
+                type="button"
+                className={segment.id === selectedSegment?.id ? 'active' : ''}
+                onClick={() => setSelectedSegmentId(segment.id)}
+              >
+                <strong>
+                  {index + 1}. {start?.name ?? 'Point'} → {end?.name ?? 'Point'}
+                </strong>
+                <span>Section {index + 1}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {selectedSegment && (
+        <div className="pin-section route-section">
+          <span className="pin-section-title">Selected Section</span>
+          <div className="two-col">
+            <label>
+              Line Color Override
+              <HexColorField
+                value={selectedSegment.appearance?.lineColor ?? defaults.lineColor}
+                onChange={(lineColor) => patchSegment({ lineColor })}
+              />
+            </label>
+            <label>
+              Width Override
+              <input
+                type="number"
+                min="1"
+                max="30"
+                step="0.1"
+                value={selectedSegment.appearance?.lineWidth ?? defaults.lineWidth}
+                onWheel={(event) => event.stopPropagation()}
+                onChange={(event) =>
+                  patchSegment({ lineWidth: Math.max(1, Math.min(30, Number(event.target.value))) })
+                }
+              />
+            </label>
+            <label>
+              Opacity %
+              <input
+                type="number"
+                min="0"
+                max="100"
+                value={Math.round((selectedSegment.appearance?.lineOpacity ?? defaults.lineOpacity) * 100)}
+                onWheel={(event) => event.stopPropagation()}
+                onChange={(event) =>
+                  patchSegment({
+                    lineOpacity: Math.max(0, Math.min(1, Number(event.target.value) / 100)),
+                  })
+                }
+              />
+            </label>
+            <label>
+              Line Style
+              <select
+                value={selectedSegment.appearance?.lineStyle ?? defaults.lineStyle}
+                onChange={(event) =>
+                  patchSegment({
+                    lineStyle: event.target.value as 'solid' | 'dashed' | 'dotted' | 'railway',
+                  })
+                }
+              >
+                <option value="solid">Solid</option>
+                <option value="dashed">Dashed</option>
+                <option value="dotted">Dotted</option>
+                <option value="railway">Railway</option>
+              </select>
+            </label>
+            <label>
+              Arrow
+              <select
+                value={selectedSegment.appearance?.arrow ?? defaults.arrow}
+                onChange={(event) => patchSegment({ arrow: event.target.value as 'none' | 'end' })}
+              >
+                <option value="none">None</option>
+                <option value="end">End Arrow</option>
+              </select>
+            </label>
+          </div>
+          <button
+            type="button"
+            className="quiet"
+            onClick={() => patchLayer(applyRouteSectionAppearanceToAll(layer, selectedSegment.id))}
+          >
+            Apply to all sections
+          </button>
+        </div>
+      )}
+      {timelineContext && (
+        <div className="pin-section route-section">
+          <span className="pin-section-title">Route Section Usage · Actual Seconds</span>
+          <label className="toggle">
+            <span>Layer exists in this {transitionContext ? 'Transition' : 'View'}</span>
+            <input
+              type="checkbox"
+              checked={routeParentIncludedFromSections(
+                timelineContext.anim,
+                (layer.routeSegments ?? []).map((section) => section.id),
+                'inTransition' in timelineContext ? timelineContext.inTransition : timelineContext.inView,
+              )}
+              onChange={(event) => timelineContext.onSetMembership(event.target.checked)}
+            />
+          </label>
+          <button
+            type="button"
+            className="quiet"
+            onClick={() => {
+              const sequence = autoSequenceRouteSegments(layer.routeSegments ?? []);
+              let next = timelineContext.anim;
+              for (const section of layer.routeSegments ?? [])
+                next = patchRouteSectionTimelineUsage(next, section.id, {
+                  ...sequence[section.id],
+                  included: routeSectionTimelineUsage(
+                    timelineContext.anim,
+                    section.id,
+                    'inTransition' in timelineContext ? timelineContext.inTransition : timelineContext.inView,
+                  ).included,
+                });
+              timelineContext.onPatchAnim({ routeSegmentAnimations: next?.routeSegmentAnimations });
+            }}
+          >
+            Auto Sequence Sections
+          </button>
+          {(layer.routeSegments ?? []).map((segment, index) => {
+            const parentIncluded =
+              'inTransition' in timelineContext ? timelineContext.inTransition : timelineContext.inView;
+            const timing = routeSectionTimelineUsage(timelineContext.anim, segment.id, parentIncluded);
+            const start = layer.routePoints?.find((point) => point.id === segment.startPointId);
+            const end = layer.routePoints?.find((point) => point.id === segment.endPointId);
+            return (
+              <div className="route-timing" key={segment.id}>
+                <strong>
+                  Section {index + 1}: {start?.name ?? 'Point'} → {end?.name ?? 'Point'}
+                </strong>
+                <label className="toggle">
+                  <span>Exists in this {transitionContext ? 'Transition' : 'View'}</span>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(timing.included)}
+                    onChange={(event) => patchSegmentTiming(segment.id, { included: event.target.checked })}
+                  />
+                </label>
+                <label>
+                  Appear
+                  <select
+                    disabled={!timing.included || !canAnimate}
+                    value={!timing.appearEnabled ? 'none' : (timing.appearType ?? 'fade')}
+                    onChange={(event) => {
+                      const value = event.target.value as 'none' | 'fade' | 'pop' | 'drop' | 'draw-route';
+                      patchSegmentTiming(segment.id, {
+                        appearEnabled: value !== 'none',
+                        appearType: value === 'none' ? 'fade' : value,
+                        drawEnabled: value === 'draw-route',
+                      });
+                    }}
+                  >
+                    <option value="none">None</option>
+                    <option value="fade">Fade</option>
+                    <option value="pop">Pop</option>
+                    <option value="drop">Drop</option>
+                    <option value="draw-route">Draw Route</option>
+                  </select>
+                </label>
+                <div className="two-col">
+                  <label>
+                    Appear Delay
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      disabled={!timing.included || !timing.appearEnabled || !canAnimate}
+                      value={timing.appearDelay ?? timing.drawDelay ?? 0}
+                      onWheel={(event) => event.stopPropagation()}
+                      onChange={(event) =>
+                        patchSegmentTiming(segment.id, {
+                          appearDelay: Math.max(0, Number(event.target.value)),
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Appear Duration
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      disabled={!timing.included || !timing.appearEnabled || !canAnimate}
+                      value={timing.appearDuration ?? timing.drawDuration ?? 1.5}
+                      onWheel={(event) => event.stopPropagation()}
+                      onChange={(event) =>
+                        patchSegmentTiming(segment.id, {
+                          appearDuration: Math.max(0, Number(event.target.value)),
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+                <label className="toggle">
+                  <span>Vehicle Movement</span>
+                  <input
+                    type="checkbox"
+                    disabled={!timing.included || !canAnimate}
+                    checked={Boolean(timing.vehicleEnabled)}
+                    onChange={(event) =>
+                      patchSegmentTiming(segment.id, {
+                        vehicleEnabled: event.target.checked,
+                        vehicleFollowsDraw: false,
+                      })
+                    }
+                  />
+                </label>
+                <div className="two-col">
+                  <label>
+                    Vehicle Type
+                    <select
+                      disabled={!timing.included}
+                      value={timing.vehicleType ?? defaultVehicleForPathType(segment.pathType)}
+                      onChange={(event) =>
+                        patchSegmentTiming(segment.id, {
+                          vehicleType: event.target.value as RouteVehicleType,
+                        })
+                      }
+                    >
+                      {ROUTE_VEHICLE_GROUPS.map((group) => (
+                        <optgroup key={group.label} label={group.label}>
+                          {group.vehicles.map((value) => (
+                            <option key={value} value={value}>
+                              {ROUTE_VEHICLE_LABELS[value]}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))}
+                      <option value="custom">Custom / Project Image</option>
+                    </select>
+                  </label>
+                  <label>
+                    Vehicle Size
+                    <input
+                      type="number"
+                      min="8"
+                      max="96"
+                      value={timing.vehicleSize ?? 22}
+                      disabled={!timing.included}
+                      onWheel={(event) => event.stopPropagation()}
+                      onChange={(event) =>
+                        patchSegmentTiming(segment.id, {
+                          vehicleSize: Math.max(8, Math.min(96, Number(event.target.value))),
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+                {timing.vehicleType === 'custom' && (
+                  <div className="custom-icon-preview">
+                    {timing.vehicleAssetId && assetUrls[timing.vehicleAssetId] ? (
+                      <img
+                        src={assetUrls[timing.vehicleAssetId]}
+                        alt="Custom vehicle"
+                        draggable={false}
+                        style={{ width: 48, height: 48, objectFit: 'contain' }}
+                      />
+                    ) : (
+                      <small>Missing custom image; Directional Capsule fallback is used.</small>
+                    )}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  className="quiet"
+                  disabled={!timing.included}
+                  onClick={() => void chooseCustomVehicleImage(segment.id)}
+                >
+                  Custom Vehicle Image…
+                </button>
+                <div className="pin-section route-vehicle-library">
+                  <span className="pin-section-title">My Vehicles</span>
+                  <div className="pin-style-grid">
+                    {myVehicles.map((entry) => (
+                      <div key={entry.id} className="pin-style-tile my-style-tile">
+                        <button
+                          type="button"
+                          className="pin-style-main"
+                          title={`Use ${entry.name}`}
+                          onClick={() => void useVehicleStyle(segment.id, entry)}
+                        >
+                          <img src={entry.imageDataUrl} alt={entry.name} draggable={false} />
+                          <span>{entry.name}</span>
+                        </button>
+                        <div className="pin-style-tile-actions">
+                          <button
+                            type="button"
+                            className="pin-style-action"
+                            title="Rename vehicle"
+                            onClick={() => {
+                              const name = window.prompt('Rename vehicle', entry.name)?.trim();
+                              if (!name) return;
+                              renameVehicleStyle(entry.id, name);
+                              setMyVehicles(getVehicleStyles());
+                            }}
+                          >
+                            ✎
+                          </button>
+                          <button
+                            type="button"
+                            className="pin-style-action danger"
+                            title="Remove from My Vehicles"
+                            onClick={() => {
+                              if (!window.confirm(`Remove "${entry.name}" from My Vehicles?`)) return;
+                              deleteVehicleStyle(entry.id);
+                              setMyVehicles(getVehicleStyles());
+                            }}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      className="pin-style-tile add"
+                      title="Add a persistent reusable vehicle"
+                      onClick={() => void addVehicleStyle(segment.id)}
+                    >
+                      <span className="pin-style-add-icon">+</span>
+                      <span>Add Vehicle</span>
+                    </button>
+                  </div>
+                </div>
+                <div className="two-col">
+                  <label>
+                    Vehicle Delay
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={timing.vehicleDelay ?? 0}
+                      onWheel={(event) => event.stopPropagation()}
+                      onChange={(event) =>
+                        patchSegmentTiming(segment.id, {
+                          vehicleDelay: Math.max(0, Number(event.target.value)),
+                          vehicleFollowsDraw: false,
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Vehicle Duration
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={timing.vehicleDuration ?? 1.5}
+                      onWheel={(event) => event.stopPropagation()}
+                      onChange={(event) =>
+                        patchSegmentTiming(segment.id, {
+                          vehicleDuration: Math.max(0, Number(event.target.value)),
+                          vehicleFollowsDraw: false,
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+                <div className="two-col">
+                  <label className="toggle">
+                    <span>Follow Path Direction</span>
+                    <input
+                      type="checkbox"
+                      disabled={!timing.included}
+                      checked={timing.vehicleFollowDirection ?? true}
+                      onChange={(event) =>
+                        patchSegmentTiming(segment.id, {
+                          vehicleFollowDirection: event.target.checked,
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Rotation Offset
+                    <input
+                      type="number"
+                      step="1"
+                      disabled={!timing.included}
+                      value={timing.vehicleOrientationOffset ?? 0}
+                      onWheel={(event) => event.stopPropagation()}
+                      onChange={(event) =>
+                        patchSegmentTiming(segment.id, {
+                          vehicleOrientationOffset: Number(event.target.value) || 0,
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+                <label className="toggle">
+                  <span>Repetitive Movement</span>
+                  <input
+                    type="checkbox"
+                    disabled={!timing.included || !timing.vehicleEnabled || !canAnimate}
+                    checked={Boolean(timing.vehicleRepetitive)}
+                    onChange={(event) =>
+                      patchSegmentTiming(segment.id, { vehicleRepetitive: event.target.checked })
+                    }
+                  />
+                </label>
+                {timing.vehicleRepetitive && (
+                  <label>
+                    Interval Time
+                    <input
+                      type="number"
+                      min="0.05"
+                      step="0.1"
+                      disabled={!timing.included || !timing.vehicleEnabled || !canAnimate}
+                      value={timing.vehicleInterval ?? 1}
+                      onWheel={(event) => event.stopPropagation()}
+                      onChange={(event) =>
+                        patchSegmentTiming(segment.id, {
+                          vehicleInterval: Math.max(0.05, Number(event.target.value) || 0.05),
+                        })
+                      }
+                    />
+                  </label>
+                )}
+                <label className="toggle">
+                  <span>Wipe Out</span>
+                  <input
+                    type="checkbox"
+                    disabled={!timing.included}
+                    checked={Boolean(timing.wipeEnabled ?? timing.routeWipeEnabled)}
+                    onChange={(event) =>
+                      patchSegmentTiming(segment.id, { wipeEnabled: event.target.checked })
+                    }
+                  />
+                </label>
+                {(timing.wipeEnabled ?? timing.routeWipeEnabled) && (
+                  <div className="two-col">
+                    <label>
+                      Wipe Delay
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.1"
+                        value={timing.wipeDelay ?? timing.routeWipeDelay ?? 0}
+                        onWheel={(event) => event.stopPropagation()}
+                        onChange={(event) =>
+                          patchSegmentTiming(segment.id, {
+                            wipeDelay: Math.max(0, Number(event.target.value)),
+                          })
+                        }
+                      />
+                    </label>
+                    <label>
+                      Wipe Duration
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.1"
+                        value={timing.wipeDuration ?? timing.routeWipeDuration ?? 1.5}
+                        onWheel={(event) => event.stopPropagation()}
+                        onChange={(event) =>
+                          patchSegmentTiming(segment.id, {
+                            wipeDuration: Math.max(0, Number(event.target.value)),
+                          })
+                        }
+                      />
+                    </label>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  className="quiet"
+                  onClick={() => {
+                    const sectionIds = (layer.routeSegments ?? []).map((section) => section.id);
+                    const next = applyRouteSectionTimelineToAll(
+                      timelineContext.anim,
+                      sectionIds,
+                      segment.id,
+                      parentIncluded,
+                    );
+                    timelineContext.onPatchAnim({ routeSegmentAnimations: next.routeSegmentAnimations });
+                    timelineContext.onSetDerivedMembership(
+                      routeParentIncludedFromSections(next, sectionIds, parentIncluded),
+                    );
+                  }}
+                >
+                  Apply to all sections
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </>
+  );
+}
+
+const formatRouteDistance = (meters: number) =>
+  meters < 1000 ? `${Math.round(meters)} m` : `${(meters / 1000).toFixed(meters < 10_000 ? 1 : 0)} km`;
+const formatRouteTravelTime = (seconds: number) => {
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const remaining = minutes % 60;
+  return `${hours} h${remaining ? ` ${remaining} min` : ''}`;
+};
+
+function RoutePlannerPanel({
+  draft,
+  pickTarget,
+  roadConfigured,
+  settingsOpen,
+  routingSettings,
+  onConfigure,
+  onCloseSettings,
+  onSaveSettings,
+  onPick,
+  onSearch,
+  onChange,
+  onCalculate,
+  pathStopDrawer,
+  onAddStop,
+  onOpenPathStops,
+  onTogglePathStop,
+  onApplyPathStops,
+  onClosePathStops,
+  onConvertMaritime,
+  customRouteSession,
+  onBeginCustomPath,
+  onFinishCustomPath,
+  onCancelCustomPath,
+  onClearCustomPath,
+  onCustomPathShape,
+  onUse,
+  onCancel,
+}: {
+  draft: RoutePlannerDraft;
+  pickTarget: RoutePickTarget | null;
+  roadConfigured: boolean;
+  settingsOpen: boolean;
+  routingSettings: RoutingServiceSettings;
+  onConfigure: () => void;
+  onCloseSettings: () => void;
+  onSaveSettings: (settings: RoutingServiceSettings) => Promise<void>;
+  onPick: (target: RoutePickTarget) => void;
+  onSearch: (target: RoutePickTarget) => void;
+  onChange: (draft: RoutePlannerDraft) => void;
+  onCalculate: (sectionId?: string) => void;
+  pathStopDrawer: { sectionId: string; selectedIds: string[] } | null;
+  onAddStop: () => void;
+  onOpenPathStops: (sectionId: string) => void;
+  onTogglePathStop: (id: string) => void;
+  onApplyPathStops: () => void;
+  onClosePathStops: () => void;
+  onConvertMaritime: (sectionId: string) => void;
+  customRouteSession: {
+    sectionId: string;
+    draft: CustomRouteGeneratorSettings;
+    selectedControlPointId: string | null;
+  } | null;
+  onBeginCustomPath: (sectionId: string) => void;
+  onFinishCustomPath: () => void;
+  onCancelCustomPath: () => void;
+  onClearCustomPath: (sectionId: string) => void;
+  onCustomPathShape: (sectionId: string, pathShape: CustomRoutePathShape) => void;
+  onUse: () => void;
+  onCancel: () => void;
+}) {
+  if (settingsOpen)
+    return (
+      <RoutingServicesPanel settings={routingSettings} onSave={onSaveSettings} onClose={onCloseSettings} />
+    );
+  const field = (label: string, target: 'source' | 'destination', point?: RoutePoint) => (
+    <div className="route-planner-field">
+      <strong>{label}</strong>
+      <span>{point?.name ?? 'Select location…'}</span>
+      <div className="route-planner-actions">
+        <button type="button" onClick={() => onSearch(target as RoutePickTarget)}>
+          Search
+        </button>
+        <button
+          type="button"
+          className={pickTarget === target ? 'active' : ''}
+          onClick={() => onPick(target)}
+        >
+          {pickTarget === target ? 'Click map…' : 'Pick on Map'}
+        </button>
+        {point && (
+          <button type="button" onClick={() => onChange({ ...draft, [target]: undefined })}>
+            ×
+          </button>
+        )}
+      </div>
+    </div>
+  );
+  return (
+    <section className="route-planner" aria-label="Route Planner">
+      <h3>Route Planner</h3>
+      <div className="route-service-status">
+        <span>Road: {roadConfigured ? 'Connected' : 'Not configured'}</span>
+        <span>Maritime: Built-in · Ready</span>
+        <span>Air: Built-in · Ready</span>
+      </div>
+      <button type="button" onClick={onConfigure}>
+        Configure Routing
+      </button>
+      {field('SOURCE', 'source', draft.source)}
+      {draft.stops.map((stop, index) => (
+        <div className="route-planner-field" key={stop.id}>
+          <strong>Stop {index + 1}</strong>
+          <span>{stop.name}</span>
+          <div className="route-planner-actions">
+            <button type="button" onClick={() => onSearch({ id: stop.id, kind: 'stop' })}>
+              Search
+            </button>
+            <button
+              type="button"
+              className={
+                pickTarget !== null && typeof pickTarget === 'object' && pickTarget.id === stop.id
+                  ? 'active'
+                  : ''
+              }
+              onClick={() => onPick({ id: stop.id, kind: 'stop' })}
+            >
+              Pick on Map
+            </button>
+            {draft.stops.length > 1 && index > 0 && (
+              <button
+                type="button"
+                aria-label={`Move Stop ${index + 1} up`}
+                onClick={() => onChange(moveStop(draft, stop.id, 'up'))}
+              >
+                ↑
+              </button>
+            )}
+            {draft.stops.length > 1 && index < draft.stops.length - 1 && (
+              <button
+                type="button"
+                aria-label={`Move Stop ${index + 1} down`}
+                onClick={() => onChange(moveStop(draft, stop.id, 'down'))}
+              >
+                ↓
+              </button>
+            )}
+            <button
+              type="button"
+              aria-label={`Remove Stop ${index + 1}`}
+              onClick={() => onChange(removeStop(draft, stop.id))}
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      ))}
+      {field('DESTINATION', 'destination', draft.destination)}
+      <button type="button" onClick={onAddStop}>
+        + Add Stop
+      </button>
+      {draft.sections.some(
+        (section) => section.pathType === 'custom' && section.customSettings?.controlPoints.length,
+      ) && (
+        <button
+          type="button"
+          onClick={() =>
+            onOpenPathStops(
+              draft.sections.find(
+                (section) => section.pathType === 'custom' && section.customSettings?.controlPoints.length,
+              )!.id,
+            )
+          }
+        >
+          Add Stops From Path
+        </button>
+      )}
+      {pathStopDrawer &&
+        (() => {
+          const section = draft.sections.find((candidate) => candidate.id === pathStopDrawer.sectionId);
+          return section?.customSettings ? (
+            <div className="route-path-stop-drawer">
+              <strong>ADD STOPS FROM PATH</strong>
+              {section.customSettings.controlPoints.map((point, index) => (
+                <label key={point.id}>
+                  <input
+                    type="checkbox"
+                    checked={pathStopDrawer.selectedIds.includes(point.id)}
+                    onChange={() => onTogglePathStop(point.id)}
+                  />{' '}
+                  Point {index + 1}
+                </label>
+              ))}
+              <div className="route-planner-actions">
+                <button
+                  type="button"
+                  disabled={!pathStopDrawer.selectedIds.length}
+                  onClick={onApplyPathStops}
+                >
+                  Add Selected Stops
+                </button>
+                <button type="button" onClick={onClosePathStops}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : null;
+        })()}
+      <label>
+        Preference
+        <select
+          value={draft.preference}
+          onChange={(event) =>
+            onChange({ ...draft, preference: event.target.value as RoutePlannerDraft['preference'] })
+          }
+        >
+          <option value="fastest">Fastest</option>
+          <option value="shortest">Shortest</option>
+          <option value="recommended">Recommended</option>
+        </select>
+      </label>
+      <div className="route-sections-planner">
+        <h4>Route Sections</h4>
+        {draft.sections.map((section, index) => {
+          const points = routePlannerPoints(draft);
+          const start = points.find((point) => point.id === section.startPointId);
+          const end = points.find((point) => point.id === section.endPointId);
+          const plan = section.plans.find((item) => item.id === section.selectedPlanId) ?? section.plans[0];
+          const routing =
+            section.pathType === 'road'
+              ? 'OpenRouteService · real roads'
+              : section.pathType === 'air'
+                ? 'Built-in Great Circle'
+                : section.pathType === 'maritime'
+                  ? 'Built-in — Experimental'
+                  : 'Custom Path';
+          return (
+            <article className="route-section-card" key={section.id}>
+              <strong>
+                {index + 1}. {start?.name ?? 'Source'} → {end?.name ?? 'Destination'}
+              </strong>
+              <label>
+                Path Type
+                <select
+                  value={section.pathType}
+                  onChange={(event) =>
+                    onChange(
+                      setRoutePlannerSectionPathType(draft, section.id, event.target.value as PathType),
+                    )
+                  }
+                >
+                  <option value="road">Road</option>
+                  <option value="maritime">Maritime</option>
+                  <option value="air">Air</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </label>
+              <small>{routing}</small>
+              {section.pathType === 'air' && (
+                <label>
+                  Air Path
+                  <select
+                    value={section.airModel ?? 'great-circle'}
+                    onChange={(event) =>
+                      onChange(setSectionAirModel(draft, section.id, event.target.value as AirModel))
+                    }
+                  >
+                    <option value="great-circle">Great Circle</option>
+                    <option value="direct">Direct</option>
+                  </select>
+                </label>
+              )}
+              {section.pathType === 'custom' &&
+                (() => {
+                  const editing = customRouteSession?.sectionId === section.id;
+                  const settings = editing ? customRouteSession.draft : section.customSettings;
+                  const ready = section.status === 'ready' && section.plans.length > 0;
+                  return (
+                    <div className="custom-route-path">
+                      <strong>CUSTOM PATH</strong>
+                      <label>
+                        Path Shape
+                        <select
+                          value={settings?.pathShape ?? 'exact'}
+                          onChange={(event) =>
+                            onCustomPathShape(section.id, event.target.value as CustomRoutePathShape)
+                          }
+                        >
+                          <option value="exact">Exact</option>
+                          <option value="smooth">Smooth</option>
+                        </select>
+                      </label>
+                      <div className="route-planner-actions">
+                        {!editing && (
+                          <button type="button" onClick={() => onBeginCustomPath(section.id)}>
+                            {ready ? 'Edit Path' : 'Draw Path'}
+                          </button>
+                        )}
+                        {editing && (
+                          <>
+                            <button type="button" onClick={onFinishCustomPath}>
+                              Finish
+                            </button>
+                            <button type="button" onClick={onCancelCustomPath}>
+                              Cancel Edit
+                            </button>
+                          </>
+                        )}
+                        {ready && (
+                          <button type="button" onClick={() => onClearCustomPath(section.id)}>
+                            Clear Path
+                          </button>
+                        )}
+                      </div>
+                      <small>{settings?.controlPoints.length ?? 0} intermediate points</small>
+                    </div>
+                  );
+                })()}
+              <span>
+                Status:{' '}
+                {section.pathType === 'custom'
+                  ? customRouteSession?.sectionId === section.id
+                    ? 'Editing custom path...'
+                    : section.status === 'ready'
+                      ? 'Ready'
+                      : 'Custom path required'
+                  : section.status === 'idle'
+                    ? 'Needs calculation'
+                    : section.status === 'ready' && section.pathType === 'maritime'
+                      ? 'Calculated — Experimental'
+                      : section.status}
+              </span>
+              {plan && (
+                <small>
+                  {formatRouteDistance(plan.distanceMeters)}
+                  {section.pathType === 'maritime'
+                    ? ` · ${(plan.distanceMeters / 1852).toFixed(0)} nm`
+                    : ''}{' '}
+                  · {plan.routeSummary}
+                </small>
+              )}
+              {section.pathType === 'maritime' && plan && (
+                <button type="button" onClick={() => onConvertMaritime(section.id)}>
+                  Convert to Custom Path
+                </button>
+              )}
+              {section.error && <small className="route-planner-error">{section.error}</small>}
+              {section.pathType !== 'custom' && (
+                <button
+                  type="button"
+                  disabled={section.status === 'calculating'}
+                  onClick={() => onCalculate(section.id)}
+                >
+                  {section.status === 'calculating' ? 'Calculating…' : 'Calculate'}
+                </button>
+              )}
+            </article>
+          );
+        })}
+      </div>
+      {!roadConfigured && draft.sections.some((section) => section.pathType === 'road') && (
+        <p className="route-planner-warning">
+          Road routing is not configured. Use Configure Routing to connect OpenRouteService.
+        </p>
+      )}
+      <div className="route-planner-actions">
+        <button
+          type="button"
+          disabled={!draft.source || !draft.destination || draft.status === 'calculating'}
+          onClick={() => onCalculate()}
+        >
+          {draft.status === 'calculating' ? 'Calculating sections…' : 'Calculate All'}
+        </button>
+        <button type="button" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+      {draft.error && (
+        <p className="route-planner-error" role="alert">
+          {draft.error}
+        </p>
+      )}
+      {draft.sections.length > 0 &&
+        draft.sections.every((section) => section.plans.length > 0) &&
+        !customRouteSession && (
+          <button type="button" onClick={onUse}>
+            Use Route
+          </button>
+        )}
+    </section>
+  );
+}
+
+function RoutingServicesPanel({
+  settings,
+  onSave,
+  onClose,
+}: {
+  settings: RoutingServiceSettings;
+  onSave: (settings: RoutingServiceSettings) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState(settings);
+  const [testing, setTesting] = useState(false);
+  const [status, setStatus] = useState<string>();
+  const test = async () => {
+    const key = draft.openRouteServiceApiKey;
+    if (!key.trim()) {
+      setStatus('API key required');
+      return;
+    }
+    const controller = new AbortController();
+    setTesting(true);
+    try {
+      await saveRoutingServiceSettings(draft);
+      const planner = new OpenRouteServicePlanner(key.trim());
+      await planner.testConnection(controller.signal);
+      setStatus('Connected');
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Connection failed');
+    } finally {
+      setTesting(false);
+    }
+  };
+  const service = () => (
+    <div className="route-planner-field">
+      <strong>Road Routing</strong>
+      <span>OpenRouteService</span>
+      <label>
+        API Key
+        <input
+          type="password"
+          autoComplete="off"
+          value={draft.openRouteServiceApiKey}
+          placeholder="Enter API key"
+          onChange={(event) =>
+            setDraft((current) => ({ ...current, openRouteServiceApiKey: event.target.value }))
+          }
+        />
+      </label>
+      <div className="route-planner-actions">
+        <button type="button" disabled={testing} onClick={() => void test()}>
+          {testing ? 'Testing…' : 'Test Connection'}
+        </button>
+        <button
+          type="button"
+          onClick={() => setDraft((current) => ({ ...current, openRouteServiceApiKey: '' }))}
+        >
+          Remove
+        </button>
+      </div>
+      {status && <small>{status}</small>}
+    </div>
+  );
+  return (
+    <section className="route-planner" aria-label="Routing Services">
+      <h3>Routing Services</h3>
+      {service()}
+      <div className="route-planner-field">
+        <strong>Maritime Routing</strong>
+        <span>Built-in Maritime Engine</span>
+        <small>Status: Ready · No API key</small>
+      </div>
+      <div className="route-planner-field">
+        <strong>Air Routing</strong>
+        <span>Built-in Great Circle</span>
+        <small>Status: Ready</small>
+      </div>
+      <div className="route-planner-field">
+        <strong>Train Routing</strong>
+        <span>Custom Path</span>
+        <small>Automatic routing unavailable</small>
+      </div>
+      <p className="route-service-privacy">
+        Keys are stored only in this device's application-data directory and are never included in projects or
+        exports.
+      </p>
+      <div className="route-planner-actions">
+        <button type="button" onClick={() => void onSave(draft)}>
+          Save
+        </button>
+        <button type="button" onClick={onClose}>
+          Back
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function Inspector({
   layer,
   onChange,
@@ -3371,6 +5721,7 @@ function Inspector({
   onRemove,
   canRemove,
   onMove,
+  onEditRoute,
   assetUrls = {},
   onAddAsset,
   transitionContext,
@@ -3382,12 +5733,16 @@ function Inspector({
   onRemove: () => void;
   canRemove: boolean;
   onMove: (d: -1 | 1) => void;
+  onEditRoute?: () => void;
   assetUrls?: Record<string, string>;
   onAddAsset?: (asset: import('../core/project').ProjectAsset) => void;
   transitionContext?: TransitionLayerContext;
   viewContext?: ViewLayerContext;
 }) {
   const isText = layer.type === 'text';
+  const appearOptions = getAppearOptionsForLayer(layer);
+  const appearTypeForLayer = (animation: import('../core/project').SegmentLayerAnimation | undefined) =>
+    appearOptions.some((option) => option.value === animation?.appearType) ? animation!.appearType! : 'fade';
   const [myStyles, setMyStyles] = useState<PinStyleEntry[]>(() => getPinStyles());
   const [savingStyle, setSavingStyle] = useState(false);
   const isCustom = (layer.pinStyle ?? 'dot') === 'custom';
@@ -3498,6 +5853,334 @@ function Inspector({
         Name
         <input value={layer.name} onChange={(e) => onChange({ name: e.target.value })} />
       </label>
+      {layer.type === 'shape' && (
+        <div className="pin-section shape-properties">
+          <span className="pin-section-title">Shape Geometry</span>
+          <label>
+            Type
+            <select
+              value={layer.shapeKind ?? 'rectangle'}
+              onChange={(event) => {
+                const shapeKind = event.target.value as ShapeKind;
+                const replacement = createShapeLayerAt(shapeKind, layer.x, layer.y);
+                onChange({
+                  shapeKind,
+                  name:
+                    shapeKind === 'free-draw' ? 'Free Draw' : shapeKind[0].toUpperCase() + shapeKind.slice(1),
+                  shapePoints: replacement.shapePoints,
+                  shapeWidthKm: replacement.shapeWidthKm,
+                  shapeHeightKm: replacement.shapeHeightKm,
+                  shapeRadiusKm: replacement.shapeRadiusKm,
+                  shapeRegularSides: replacement.shapeRegularSides,
+                  shapeFillOpacity:
+                    shapeKind === 'polyline' || shapeKind === 'free-draw'
+                      ? 0
+                      : (layer.shapeFillOpacity ?? 0.28),
+                });
+              }}
+            >
+              <option value="rectangle">Rectangle</option>
+              <option value="square">Square</option>
+              <option value="ellipse">Ellipse</option>
+              <option value="circle">Circle</option>
+              <option value="triangle">Equilateral Triangle</option>
+              <option value="regular-polygon">Regular Polygon</option>
+              <option value="polyline">Line / Polyline</option>
+              <option value="polygon">Polygon</option>
+              <option value="free-draw">Free Draw</option>
+              <option value="arrow">Arrow</option>
+            </select>
+          </label>
+          {['rectangle', 'square', 'ellipse'].includes(layer.shapeKind ?? 'rectangle') && (
+            <div className="two-col">
+              <label>
+                {layer.shapeKind === 'square' ? 'Size (km)' : 'Width (km)'}
+                <input
+                  type="number"
+                  min="1"
+                  value={Math.round(layer.shapeWidthKm ?? 1000)}
+                  onChange={(event) =>
+                    onChange(resizeExactShape(layer, { widthKm: Number(event.target.value) || 1 }))
+                  }
+                />
+              </label>
+              {layer.shapeKind !== 'square' && (
+                <label>
+                  Height (km)
+                  <input
+                    type="number"
+                    min="1"
+                    value={Math.round(layer.shapeHeightKm ?? 650)}
+                    onChange={(event) =>
+                      onChange(resizeExactShape(layer, { heightKm: Number(event.target.value) || 1 }))
+                    }
+                  />
+                </label>
+              )}
+            </div>
+          )}
+          {layer.shapeKind === 'circle' && (
+            <label>
+              Radius (km)
+              <input
+                type="number"
+                min="1"
+                value={Math.round(layer.shapeRadiusKm ?? 500)}
+                onChange={(event) =>
+                  onChange(
+                    resizeExactShape(layer, {
+                      widthKm: Math.max(1, Number(event.target.value)) * 2,
+                      radiusKm: Math.max(1, Number(event.target.value)),
+                    }),
+                  )
+                }
+              />
+            </label>
+          )}
+          {(layer.shapeKind === 'triangle' || layer.shapeKind === 'regular-polygon') && (
+            <>
+              {layer.shapeKind === 'regular-polygon' && (
+                <label>
+                  Sides
+                  <input
+                    type="number"
+                    min="3"
+                    max="64"
+                    step="1"
+                    value={layer.shapeRegularSides ?? 5}
+                    onChange={(event) =>
+                      onChange(resizeExactShape(layer, { sides: Number(event.target.value) }))
+                    }
+                  />
+                </label>
+              )}
+              <label>
+                Radius (km)
+                <input
+                  type="number"
+                  min="1"
+                  value={Math.round(layer.shapeRadiusKm ?? 500)}
+                  onChange={(event) =>
+                    onChange(resizeExactShape(layer, { radiusKm: Number(event.target.value) || 1 }))
+                  }
+                />
+              </label>
+            </>
+          )}
+          {['rectangle', 'square', 'ellipse', 'triangle', 'regular-polygon'].includes(
+            layer.shapeKind ?? 'rectangle',
+          ) && (
+            <label>
+              Rotation
+              <input
+                type="number"
+                min="-360"
+                max="360"
+                value={layer.shapeRotation ?? 0}
+                onChange={(event) =>
+                  onChange(resizeExactShape(layer, { rotation: Number(event.target.value) || 0 }))
+                }
+              />
+            </label>
+          )}
+          {['polygon', 'polyline', 'free-draw', 'rectangle'].includes(layer.shapeKind ?? 'rectangle') && (
+            <label>
+              Roundness
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={layer.shapeRoundness ?? 0}
+                onChange={(event) => onChange({ shapeRoundness: Number(event.target.value) })}
+              />
+              <output>{Math.round(layer.shapeRoundness ?? 0)}</output>
+            </label>
+          )}
+          {layer.shapeKind === 'arrow' && (
+            <>
+              <label>
+                Start Angle
+                <input
+                  type="range"
+                  min="-80"
+                  max="80"
+                  step="1"
+                  value={layer.shapeArrowStartAngle ?? 0}
+                  onChange={(event) => onChange({ shapeArrowStartAngle: Number(event.target.value) })}
+                />
+                <output>{Math.round(layer.shapeArrowStartAngle ?? 0)}°</output>
+              </label>
+              <label className="toggle">
+                <span>Arrowhead at End</span>
+                <input
+                  type="checkbox"
+                  checked={layer.shapeArrowheadEnabled !== false}
+                  onChange={(event) => onChange({ shapeArrowheadEnabled: event.target.checked })}
+                />
+              </label>
+              <label>
+                Arrowhead Size (km)
+                <input
+                  type="number"
+                  min="1"
+                  max="1000"
+                  value={layer.shapeArrowHeadSize ?? layer.shapeArrowHeadLength ?? 120}
+                  onChange={(event) =>
+                    onChange({ shapeArrowHeadSize: Math.max(1, Number(event.target.value)) })
+                  }
+                />
+              </label>
+              <label>
+                Arrowhead Angle
+                <input
+                  type="number"
+                  min="10"
+                  max="140"
+                  value={layer.shapeArrowHeadAngle ?? 44}
+                  onChange={(event) =>
+                    onChange({
+                      shapeArrowHeadAngle: Math.max(10, Math.min(140, Number(event.target.value))),
+                    })
+                  }
+                />
+              </label>
+            </>
+          )}
+          <span className="pin-section-sub">Fill</span>
+          {!['polyline', 'free-draw', 'arrow'].includes(layer.shapeKind ?? 'rectangle') && (
+            <>
+              <label>
+                Fill Color
+                <HexColorField
+                  value={layer.shapeFillColor ?? layer.color}
+                  onChange={(shapeFillColor) => onChange({ shapeFillColor })}
+                />
+              </label>
+              <label>
+                Fill opacity
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={layer.shapeFillOpacity ?? 0.28}
+                  onChange={(event) => onChange({ shapeFillOpacity: Number(event.target.value) })}
+                />
+              </label>
+            </>
+          )}
+          <span className="pin-section-sub">Stroke</span>
+          <label>
+            Stroke Color
+            <HexColorField
+              value={layer.shapeStrokeColor ?? layer.color}
+              onChange={(shapeStrokeColor) => onChange({ shapeStrokeColor })}
+            />
+          </label>
+          <div className="two-col">
+            <label>
+              Stroke Width
+              <input
+                type="number"
+                min="0"
+                max="50"
+                step="0.5"
+                value={layer.shapeStrokeWidth ?? 3}
+                onChange={(event) => onChange({ shapeStrokeWidth: Math.max(0, Number(event.target.value)) })}
+              />
+            </label>
+            <label>
+              Stroke Opacity
+              <input
+                type="number"
+                min="0"
+                max="1"
+                step="0.05"
+                value={layer.shapeStrokeOpacity ?? 1}
+                onChange={(event) =>
+                  onChange({ shapeStrokeOpacity: Math.max(0, Math.min(1, Number(event.target.value))) })
+                }
+              />
+            </label>
+          </div>
+          <label>
+            Stroke style
+            <select
+              value={layer.shapeStrokeStyle ?? 'solid'}
+              onChange={(event) =>
+                onChange({
+                  shapeStrokeStyle: event.target.value as import('../core/project').ShapeStrokeStyle,
+                })
+              }
+            >
+              <option value="solid">Solid</option>
+              <option value="dashed">Dashed</option>
+              <option value="dotted">Dotted</option>
+            </select>
+          </label>
+          <span className="pin-section-sub">Control points</span>
+          {editableShapePoints(layer).map((item, index) => (
+            <div className="shape-point-row" key={item.id}>
+              <small>{index + 1}</small>
+              <input
+                aria-label={`Shape point ${index + 1} X`}
+                type="number"
+                value={Math.round(item.x * 100) / 100}
+                onChange={(event) =>
+                  onChange(updateShapePoint(layer, item.id, Number(event.target.value), item.y))
+                }
+              />
+              <input
+                aria-label={`Shape point ${index + 1} Y`}
+                type="number"
+                value={Math.round(item.y * 100) / 100}
+                onChange={(event) =>
+                  onChange(updateShapePoint(layer, item.id, item.x, Number(event.target.value)))
+                }
+              />
+              {['polyline', 'polygon', 'free-draw'].includes(layer.shapeKind ?? '') && (
+                <>
+                  <button
+                    type="button"
+                    title="Insert point after"
+                    disabled={layer.shapeKind !== 'polygon' && index === (layer.shapePoints?.length ?? 0) - 1}
+                    onClick={() => onChange(insertShapePoint(layer, item.id))}
+                  >
+                    +
+                  </button>
+                  <button
+                    type="button"
+                    title="Delete point"
+                    disabled={
+                      layer.shapeKind === 'arrow' &&
+                      (index === 0 || index === (layer.shapePoints?.length ?? 0) - 1)
+                    }
+                    onClick={() => onChange(deleteShapePoint(layer, item.id))}
+                  >
+                    ×
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
+          <p className="global-layer-note">Drag control points directly on the map for geographic editing.</p>
+        </div>
+      )}
+      {layer.type === 'route' && (
+        <>
+          <button type="button" className="route-edit-button" onClick={onEditRoute}>
+            Edit Route
+          </button>
+          <RouteSettings
+            layer={layer}
+            onChange={onChange}
+            assetUrls={assetUrls}
+            onAddAsset={onAddAsset}
+            transitionContext={transitionContext}
+            viewContext={viewContext}
+          />
+        </>
+      )}
       {layer.type === 'pin' && (
         <>
           <div className="pin-section">
@@ -3877,8 +6560,11 @@ function Inspector({
           </p>
         </>
       )}
-      {transitionContext && layer.type !== 'region' && (
-        <div className="pin-section transition-layer-section">
+      {transitionContext && layer.type !== 'region' && layer.type !== 'route' && layer.type !== 'text' && (
+        <div
+          className="pin-section transition-layer-section"
+          data-shape-timeline-settings={layer.type === 'shape' ? true : undefined}
+        >
           <span className="pin-section-title">
             Transition Layer{' '}
             <em className="transition-section-context">
@@ -3897,6 +6583,21 @@ function Inspector({
             <p className="transition-hint">Enable this layer for the transition to configure animation.</p>
           ) : (
             <>
+              {isText && (
+                <label className="toggle">
+                  <span>Scale with Map Zoom</span>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(transitionContext.anim?.textScaleWithMapZoom)}
+                    onChange={(event) =>
+                      transitionContext.onPatchAnim({
+                        textScaleWithMapZoom: event.target.checked,
+                        textReferenceZoom: transitionContext.cameraZoom,
+                      })
+                    }
+                  />
+                </label>
+              )}
               <span className="pin-section-sub">Appear</span>
               <label className="toggle">
                 <span>Enable Appear</span>
@@ -3911,16 +6612,19 @@ function Inspector({
                   <label>
                     Type
                     <select
-                      value={transitionContext.anim.appearType ?? 'fade'}
+                      value={appearTypeForLayer(transitionContext.anim)}
                       onChange={(e) =>
                         transitionContext.onPatchAnim({
-                          appearType: e.target.value as import('../core/project').PinAppearType,
+                          appearType: e.target
+                            .value as import('../core/project').SegmentLayerAnimation['appearType'],
                         })
                       }
                     >
-                      <option value="fade">Fade</option>
-                      <option value="pop">Pop</option>
-                      <option value="drop">Drop</option>
+                      {appearOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
                     </select>
                   </label>
                   <div className="two-col">
@@ -3996,6 +6700,22 @@ function Inspector({
                   />
                 </div>
               )}
+              {layer.type === 'shape' && layer.shapeKind === 'arrow' && (
+                <label>
+                  Orientation
+                  <select
+                    value={transitionContext.anim?.shapeOrientation ?? 'flat-on-map'}
+                    onChange={(event) =>
+                      transitionContext.onPatchAnim({
+                        shapeOrientation: event.target.value as import('../core/project').TextOrientation,
+                      })
+                    }
+                  >
+                    <option value="flat-on-map">Flat on Map</option>
+                    <option value="face-camera">Face Camera</option>
+                  </select>
+                </label>
+              )}
             </>
           )}
           {transitionContext.warnings.map((warning, index) => (
@@ -4005,8 +6725,11 @@ function Inspector({
           ))}
         </div>
       )}
-      {viewContext && layer.type !== 'region' && (
-        <div className="pin-section transition-layer-section">
+      {viewContext && layer.type !== 'region' && layer.type !== 'route' && layer.type !== 'text' && (
+        <div
+          className="pin-section transition-layer-section"
+          data-shape-timeline-settings={layer.type === 'shape' ? true : undefined}
+        >
           <span className="pin-section-title">
             View Animation <em className="transition-section-context">{viewContext.viewName}</em>
           </span>
@@ -4028,6 +6751,21 @@ function Inspector({
             <p className="transition-hint">Enable this layer for the View to configure animation.</p>
           ) : (
             <>
+              {isText && (
+                <label className="toggle">
+                  <span>Scale with Map Zoom</span>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(viewContext.anim?.textScaleWithMapZoom)}
+                    onChange={(event) =>
+                      viewContext.onPatchAnim({
+                        textScaleWithMapZoom: event.target.checked,
+                        textReferenceZoom: viewContext.cameraZoom,
+                      })
+                    }
+                  />
+                </label>
+              )}
               <span className="pin-section-sub">Appear</span>
               <label className="toggle">
                 <span>Enable Appear</span>
@@ -4042,16 +6780,19 @@ function Inspector({
                   <label>
                     Type
                     <select
-                      value={viewContext.anim.appearType ?? 'fade'}
+                      value={appearTypeForLayer(viewContext.anim)}
                       onChange={(e) =>
                         viewContext.onPatchAnim({
-                          appearType: e.target.value as import('../core/project').PinAppearType,
+                          appearType: e.target
+                            .value as import('../core/project').SegmentLayerAnimation['appearType'],
                         })
                       }
                     >
-                      <option value="fade">Fade</option>
-                      <option value="pop">Pop</option>
-                      <option value="drop">Drop</option>
+                      {appearOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
                     </select>
                   </label>
                   <div className="two-col">
@@ -4123,6 +6864,22 @@ function Inspector({
                   />
                 </div>
               )}
+              {layer.type === 'shape' && layer.shapeKind === 'arrow' && (
+                <label>
+                  Orientation
+                  <select
+                    value={viewContext.anim?.shapeOrientation ?? 'flat-on-map'}
+                    onChange={(event) =>
+                      viewContext.onPatchAnim({
+                        shapeOrientation: event.target.value as import('../core/project').TextOrientation,
+                      })
+                    }
+                  >
+                    <option value="flat-on-map">Flat on Map</option>
+                    <option value="face-camera">Face Camera</option>
+                  </select>
+                </label>
+              )}
             </>
           )}
           {viewContext.warnings.map((warning, index) => (
@@ -4136,7 +6893,8 @@ function Inspector({
         <label>
           Content
           <textarea
-            dir={layer.textDirection === 'rtl' ? 'rtl' : 'auto'}
+            rows={5}
+            dir={layer.textDirection ?? 'auto'}
             value={layer.text ?? ''}
             onChange={(e) => onChange({ text: e.target.value })}
           />
@@ -4194,14 +6952,88 @@ function Inspector({
             <label>
               Font size
               <input
-                type="range"
-                min="12"
-                max="48"
-                value={layer.fontSize ?? 19}
-                onChange={(e) => onChange({ fontSize: Number(e.target.value) })}
+                aria-label="Text font size"
+                type="number"
+                min="6"
+                max="240"
+                value={layer.fontSize ?? 32}
+                onWheel={(event) => event.stopPropagation()}
+                onChange={(event) => {
+                  const value = Number(event.target.value);
+                  if (Number.isFinite(value)) onChange({ fontSize: Math.max(6, Math.min(240, value)) });
+                }}
               />
             </label>
           </div>
+          <div className="two-col">
+            <label>
+              Font
+              <select
+                value={layer.fontFamily ?? 'inter'}
+                onChange={(e) => {
+                  const fontFamily = e.target.value as Layer['fontFamily'];
+                  onChange({
+                    fontFamily,
+                    ...(fontFamily === 'vazirmatn' ? { fontStyle: 'normal' as const } : {}),
+                  });
+                }}
+              >
+                <option value="inter">Inter</option>
+                <option value="vazirmatn">Vazirmatn</option>
+              </select>
+            </label>
+            <label>
+              Weight
+              <select
+                value={layer.fontWeight ?? 500}
+                onChange={(e) => onChange({ fontWeight: Number(e.target.value) as Layer['fontWeight'] })}
+              >
+                <option value="400">Regular</option>
+                <option value="500">Medium</option>
+                <option value="600">Semibold</option>
+                <option value="700">Bold</option>
+              </select>
+            </label>
+          </div>
+          <div className="two-col">
+            <label>
+              Style
+              <select
+                value={layer.fontStyle ?? 'normal'}
+                disabled={(layer.fontFamily ?? 'inter') === 'vazirmatn'}
+                onChange={(e) => onChange({ fontStyle: e.target.value as Layer['fontStyle'] })}
+              >
+                <option value="normal">Normal</option>
+                <option value="italic">Italic</option>
+              </select>
+            </label>
+            <label>
+              Alignment
+              <select
+                value={layer.textAlign ?? 'center'}
+                onChange={(e) => onChange({ textAlign: e.target.value as Layer['textAlign'] })}
+              >
+                <option value="left">Left</option>
+                <option value="center">Center</option>
+                <option value="right">Right</option>
+              </select>
+            </label>
+          </div>
+          <label>
+            Line spacing
+            <input
+              type="number"
+              min="0.8"
+              max="3"
+              step="0.05"
+              value={layer.lineHeight ?? 1.2}
+              onWheel={(event) => event.stopPropagation()}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                if (Number.isFinite(value)) onChange({ lineHeight: Math.max(0.8, Math.min(3, value)) });
+              }}
+            />
+          </label>
         </>
       )}
       {layer.type === 'region' && (
@@ -4360,25 +7192,29 @@ function Inspector({
           )}
         </>
       )}
-      {layer.type !== 'pin' && layer.type !== 'region' && (
-        <div className="two-col">
-          <label>
-            Color
-            <HexColorField value={layer.color} onChange={(value) => onChange({ color: value })} />
-          </label>
-          <label>
-            Opacity
-            <input
-              type="range"
-              min="0.1"
-              max="1"
-              step="0.05"
-              value={layer.opacity}
-              onChange={(e) => onChange({ opacity: Number(e.target.value) })}
-            />
-          </label>
-        </div>
-      )}
+      {layer.type !== 'pin' &&
+        layer.type !== 'region' &&
+        layer.type !== 'route' &&
+        layer.type !== 'shape' && (
+          <div className="two-col">
+            <label>
+              Color
+              <HexColorField value={layer.color} onChange={(value) => onChange({ color: value })} />
+            </label>
+            <label>
+              Opacity
+              <input
+                type="range"
+                min="0.1"
+                max="1"
+                step="0.05"
+                value={layer.opacity}
+                onChange={(e) => onChange({ opacity: Number(e.target.value) })}
+              />
+            </label>
+          </div>
+        )}
+      {isText && <TextTimelineControls transitionContext={transitionContext} viewContext={viewContext} />}
       <label
         className="toggle"
         title="Prevents moving this layer directly on the map. The layer stays editable in Properties and is still captured in Views."

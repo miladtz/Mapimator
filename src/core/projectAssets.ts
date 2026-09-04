@@ -87,6 +87,18 @@ export function findReferencedAssets(project: Project): Set<string> {
   // canonical Project Layer definition. Migration adopts any legacy-only
   // layer before this runtime path is reached.
   collect(project.layers);
+  const collectTimelineAssets = (
+    configs: Record<string, import('./project').ViewLayerConfig | import('./project').TransitionLayerConfig>,
+  ) => {
+    for (const config of Object.values(configs)) {
+      const animation = config.animation;
+      if (animation?.routeDefaults?.vehicleAssetId) referenced.add(animation.routeDefaults.vehicleAssetId);
+      for (const timing of Object.values(animation?.routeSegmentAnimations ?? {}))
+        if (timing.vehicleAssetId) referenced.add(timing.vehicleAssetId);
+    }
+  };
+  for (const view of project.views) collectTimelineAssets(view.layerConfigs);
+  for (const transition of project.transitions) collectTimelineAssets(transition.layerConfigs);
   return referenced;
 }
 

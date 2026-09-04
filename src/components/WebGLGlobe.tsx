@@ -20,6 +20,7 @@ import {
 import { GlobeWebGLRenderer } from '../core/globeRenderer';
 import { selectMapLabels } from '../core/mapLabels';
 import { pinSizeOf, type CameraState, type Layer, type MapStylePreset, type Project } from '../core/project';
+import { arrowHeadCoordinates, evaluatedShapeCoordinates } from '../core/shapes';
 
 interface Props {
   style: MapStylePreset;
@@ -413,6 +414,54 @@ export function GlobeOverlay({
           </text>
         );
       })}
+      {layers
+        .filter((layer) => layer.visible && layer.type === 'shape')
+        .map((layer) => {
+          const rendered = evaluatedShapeCoordinates(layer);
+          const projected = rendered.coordinates.map((coordinate) => projectPoint(coordinate));
+          if (projected.some((coordinate) => coordinate === null)) return null;
+          const visible = projected as Array<{ x: number; y: number }>;
+          if (visible.length < 2) return null;
+          const path = `${visible
+            .map((coordinate, index) => `${index === 0 ? 'M' : 'L'}${coordinate.x} ${coordinate.y}`)
+            .join(' ')}${rendered.closed ? ' Z' : ''}`;
+          const head =
+            layer.shapeKind === 'arrow'
+              ? arrowHeadCoordinates(layer).map((coordinate) => projectPoint(coordinate))
+              : [];
+          const headPath =
+            head.length === 3 && head.every(Boolean)
+              ? `${(head as Array<{ x: number; y: number }>).map((coordinate, index) => `${index ? 'L' : 'M'}${coordinate.x} ${coordinate.y}`).join(' ')} Z`
+              : '';
+          return (
+            <g key={layer.id} data-layer-id={layer.id}>
+              <path
+                d={path}
+                fill={rendered.closed ? (layer.shapeFillColor ?? layer.color) : 'none'}
+                fillOpacity={rendered.closed ? (layer.shapeFillOpacity ?? 0.25) * layer.opacity : 0}
+                stroke={layer.shapeStrokeColor ?? layer.color}
+                strokeOpacity={(layer.shapeStrokeOpacity ?? 1) * layer.opacity}
+                strokeWidth={(layer.shapeStrokeWidth ?? 3) * Math.max(1, width / 1000)}
+                strokeDasharray={
+                  layer.shapeStrokeStyle === 'dashed'
+                    ? '9 6'
+                    : layer.shapeStrokeStyle === 'dotted'
+                      ? '1 6'
+                      : undefined
+                }
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              {headPath && (
+                <path
+                  d={headPath}
+                  fill={layer.shapeStrokeColor ?? layer.color}
+                  fillOpacity={(layer.shapeStrokeOpacity ?? 1) * layer.opacity}
+                />
+              )}
+            </g>
+          );
+        })}
       {layers
         .filter((layer) => layer.visible && ['pin', 'text', 'geo-effect'].includes(layer.type))
         .map((layer) => {

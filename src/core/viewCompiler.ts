@@ -17,10 +17,13 @@ import {
   viewLayersOf,
   viewMemberIds,
 } from './project';
+import { applyRouteEvaluation } from './routes';
 import { easeCameraProgress, interpolateCamera } from './camera';
 import type { CameraTransitionType } from './camera';
 import { interpolateGlobeCamera } from './globeMath';
 import { interpolateCameraChainTransition } from './cameraContinuity';
+import { textMapZoomScale } from './textLayers';
+import { supportsDrawShape } from './shapes';
 
 export type CompiledSegment =
   | { kind: 'view'; id: string; view: View; start: number; end: number; duration: number }
@@ -205,7 +208,7 @@ const layerLifecycle = (
   const wipeDuration = wipeEnabled ? Math.max(0, anim.wipeDuration ?? (regionDraw ? 1.5 : 0.5)) : 0;
   const wipeEnd = wipeStart + wipeDuration;
   const type = anim.appearType ?? 'fade';
-  const isPin = layer.type === 'pin';
+  const isAnimatedSymbol = layer.type === 'pin' || layer.type === 'text' || layer.type === 'shape';
 
   const evalWipe = (): LayerLifecyclePhase => {
     if (!wipeEnabled) return { opacityMul: 1, visible: true, segmentLocalTime, wipeOpacityMul: 1 };
@@ -220,19 +223,20 @@ const layerLifecycle = (
     if (time < appearStart) return { opacityMul: 0, visible: false, segmentLocalTime, wipeOpacityMul: 1 };
     if (time >= appearEnd) return evalWipe();
     const progress = (time - appearStart) / appearDuration;
-    const eased = type === 'fade' ? progress : easeCameraProgress(progress, 'ease-out');
+    const eased =
+      type === 'fade' || type === 'draw-shape' ? progress : easeCameraProgress(progress, 'ease-out');
     return {
       opacityMul: eased,
       visible: progress > 0,
       segmentLocalTime,
       wipeOpacityMul: 1,
       popScale:
-        isPin && type === 'pop'
+        isAnimatedSymbol && type === 'pop'
           ? 0.85 + 0.15 * eased
-          : isPin && type === 'drop'
+          : isAnimatedSymbol && type === 'drop'
             ? 0.97 + 0.03 * eased
             : undefined,
-      dropY: isPin && type === 'drop' ? -16 * (1 - eased) : undefined,
+      dropY: isAnimatedSymbol && type === 'drop' ? -16 * (1 - eased) : undefined,
     };
   }
   return evalWipe();
@@ -244,6 +248,7 @@ const applyPhaseToLayer = (
   phase: LayerLifecyclePhase,
   projectTime = 0,
   animation?: SegmentLayerAnimation,
+  cameraZoom = 1,
 ) => {
   const authoredOpacity = layer.opacity;
   layer.pinSceneOpacity = phase.opacityMul;
@@ -263,6 +268,25 @@ const applyPhaseToLayer = (
       (phase.wipeOpacityMul ?? 1);
     layer.regionEffectProgress = phase.opacityMul;
     layer.regionEffectTime = animation.regionEffect === 'draw-border' ? phase.segmentLocalTime : projectTime;
+  }
+  if (layer.type === 'route') applyRouteEvaluation(layer, animation, phase.segmentLocalTime);
+  if (layer.type === 'text') {
+    layer.textRenderScale = textMapZoomScale(animation, cameraZoom);
+    layer.textAnimationScale = phase.popScale ?? 1;
+    layer.textDropOffsetY = phase.dropY ?? 0;
+    layer.textOrientation = animation?.textOrientation ?? 'face-camera';
+    layer.textScaleWithMapZoom = Boolean(animation?.textScaleWithMapZoom);
+  }
+  if (layer.type === 'shape') {
+    const drawing =
+      supportsDrawShape(layer.shapeKind) && animation?.appearEnabled && animation.appearType === 'draw-shape';
+    const pathWipe = ['polyline', 'polygon', 'free-draw', 'arrow'].includes(layer.shapeKind ?? '');
+    layer.shapePathProgress = drawing ? phase.opacityMul : pathWipe ? (phase.wipeOpacityMul ?? 1) : 1;
+    layer.shapeAnimationScale = phase.popScale ?? 1;
+    layer.shapeDropOffsetY = phase.dropY ?? 0;
+    layer.shapeOrientation =
+      layer.shapeKind === 'arrow' ? (animation?.shapeOrientation ?? 'flat-on-map') : 'flat-on-map';
+    if (drawing || (pathWipe && animation?.wipeEnabled)) layer.opacity = authoredOpacity;
   }
   if (phase.popScale !== undefined) layer.pinPopScale = phase.popScale;
   else delete layer.pinPopScale;
@@ -290,6 +314,7 @@ const applyContinuingTransitionAnimations = (
   segments: CompiledSegment[],
   currentIndex: number,
   time: number,
+  cameraZoom: number,
 ): Set<string> => {
   const continued = new Set<string>();
   const prevSeg = segments[currentIndex - 1];
@@ -313,7 +338,13 @@ const applyContinuingTransitionAnimations = (
       Math.max(0, anim.layerHoldDuration ?? 0) +
       (anim.wipeEnabled ? Math.max(0.05, anim.wipeDuration ?? 0.5) : 0);
     if (time >= lifecycleEnd) continue;
-    applyPhaseToLayer(layer, layerLifecycle(layer, anim, entering, time, transitionStart), time, anim);
+    applyPhaseToLayer(
+      layer,
+      layerLifecycle(layer, anim, entering, time, transitionStart),
+      time,
+      anim,
+      cameraZoom,
+    );
     continued.add(layer.id);
   }
   return continued;
@@ -354,7 +385,13 @@ export const evaluateProjectAtTime = (project: Project, time: number): RenderedP
   if (segment.kind === 'view') {
     // --- View Hold: project layers included in this View + View lifecycle ---
     const layers = viewLayersOf(project, segment.view);
-    const continued = applyContinuingTransitionAnimations(layers, sequence.segments, index, timelineTime);
+    const continued = applyContinuingTransitionAnimations(
+      layers,
+      sequence.segments,
+      index,
+      timelineTime,
+      segment.view.camera.zoom,
+    );
     for (const layer of layers) {
       if (continued.has(layer.id)) continue;
       const anim = viewAnimOf(segment.view, layer.id);
@@ -367,6 +404,7 @@ export const evaluateProjectAtTime = (project: Project, time: number): RenderedP
         layerLifecycle(layer, anim, true, timelineTime, segment.start),
         timelineTime,
         anim,
+        segment.view.camera.zoom,
       );
     }
     return {
@@ -405,7 +443,13 @@ export const evaluateProjectAtTime = (project: Project, time: number): RenderedP
         ));
   const layers = transitionLayersOf(project, segment.transition);
   const sourceMembers = segmentMemberIds(sequence.segments[index - 1]);
-  const continued = applyContinuingTransitionAnimations(layers, sequence.segments, index, timelineTime);
+  const continued = applyContinuingTransitionAnimations(
+    layers,
+    sequence.segments,
+    index,
+    timelineTime,
+    camera.zoom,
+  );
   const configs = transitionLayerConfigsOf(segment.transition);
   for (const layer of layers) {
     if (continued.has(layer.id)) continue;
@@ -417,6 +461,7 @@ export const evaluateProjectAtTime = (project: Project, time: number): RenderedP
       layerLifecycle(layer, anim, entering, timelineTime, transitionStartTime),
       timelineTime,
       anim,
+      camera.zoom,
     );
   }
   return {

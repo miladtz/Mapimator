@@ -8,6 +8,8 @@ export function SearchPanel({
   onGo,
   onAddPin,
   onAddRegion,
+  routeAction,
+  onRoutePoint,
 }: {
   focusRequest: number;
   recents: readonly SearchResult[];
@@ -15,6 +17,8 @@ export function SearchPanel({
   onGo: (result: SearchResult) => void;
   onAddPin: (result: SearchResult) => void;
   onAddRegion: (result: SearchResult) => void;
+  routeAction?: 'start' | 'point' | 'source' | 'destination' | 'stop';
+  onRoutePoint: (result: SearchResult) => void;
 }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -134,6 +138,17 @@ export function SearchPanel({
                 {result.capabilities.addRegion && (
                   <button type="button" onClick={() => onAddRegion(result)}>
                     Add Region
+                  </button>
+                )}
+                {routeAction && (
+                  <button type="button" onClick={() => onRoutePoint(result)}>
+                    {routeAction === 'start' || routeAction === 'source'
+                      ? 'Set as Source'
+                      : routeAction === 'destination'
+                        ? 'Set as Destination'
+                        : routeAction === 'stop'
+                          ? 'Add Stop'
+                          : 'Add Route Point'}
                   </button>
                 )}
               </div>

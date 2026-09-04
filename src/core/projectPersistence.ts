@@ -54,6 +54,13 @@ const optionalStrings = [
   'textLanguage',
   'textDirection',
   'numberStyle',
+  'fontFamily',
+  'fontStyle',
+  'textAlign',
+  'shapeKind',
+  'shapeFillColor',
+  'shapeStrokeColor',
+  'shapeStrokeStyle',
   'geoEffectType',
   'assetId',
   'pinStyle',
@@ -88,6 +95,24 @@ const optionalNumbers = [
   'width',
   'height',
   'fontSize',
+  'fontWeight',
+  'lineHeight',
+  'shapeFillOpacity',
+  'shapeStrokeOpacity',
+  'shapeStrokeWidth',
+  'shapeRoundness',
+  'shapeRotation',
+  'shapeArrowBodyWidth',
+  'shapeArrowHeadWidth',
+  'shapeArrowHeadLength',
+  'shapeArrowBend',
+  'shapeArrowHeadSize',
+  'shapeArrowHeadAngle',
+  'shapeArrowStartAngle',
+  'shapeWidthKm',
+  'shapeHeightKm',
+  'shapeRadiusKm',
+  'shapeRegularSides',
   'effectSize',
   'effectDuration',
   'pinSize',
@@ -121,6 +146,7 @@ const optionalBooleans = [
   'regionGeometryEditable',
   'regionAnimationEnabled',
   'regionStrokeExists',
+  'shapeArrowheadEnabled',
 ] as const;
 
 const validateRegionCoordinates = (value: unknown, path: string): void => {
@@ -129,6 +155,115 @@ const validateRegionCoordinates = (value: unknown, path: string): void => {
   for (const entry of value) {
     if (Array.isArray(entry) && entry.length >= 2 && entry.every(isFiniteNumber)) continue;
     validateRegionCoordinates(entry, path);
+  }
+};
+
+const validateRouteCoordinates = (value: unknown, path: string): void => {
+  if (
+    !Array.isArray(value) ||
+    value.length < 2 ||
+    !value.every(
+      (point) =>
+        Array.isArray(point) && point.length === 2 && point.every(isFiniteNumber) && Math.abs(point[1]) <= 90,
+    )
+  )
+    throw new Error(`${path} must contain at least two finite longitude/latitude pairs.`);
+};
+
+const validateRouteLayer = (value: Record<string, unknown>, path: string): void => {
+  if (value.type !== 'route' || value.routePoints === undefined) return;
+  // routeKind is deprecated but tolerated in legacy projects.
+  if (!Array.isArray(value.routePoints) || !Array.isArray(value.routeSegments))
+    throw new Error(`${path} must contain Route waypoints and segments.`);
+  const waypointIds = new Set<string>();
+  for (const [index, waypoint] of value.routePoints.entries()) {
+    const waypointPath = `${path}.routePoints[${index}]`;
+    if (
+      !isRecord(waypoint) ||
+      !isString(waypoint.id) ||
+      !isFiniteNumber(waypoint.longitude) ||
+      !isFiniteNumber(waypoint.latitude) ||
+      Math.abs(waypoint.latitude) > 90
+    )
+      throw new Error(`${waypointPath} is malformed.`);
+    if (waypointIds.has(waypoint.id)) throw new Error(`${waypointPath}.id must be unique.`);
+    waypointIds.add(waypoint.id);
+  }
+  const segmentIds = new Set<string>();
+  for (const [index, segment] of value.routeSegments.entries()) {
+    const segmentPath = `${path}.routeSegments[${index}]`;
+    if (
+      !isRecord(segment) ||
+      !isString(segment.id) ||
+      !isString(segment.startPointId) ||
+      !isString(segment.endPointId) ||
+      !(isString(segment.pathType) || isString(segment.mode)) ||
+      !oneOf(segment.geometryMode, ['straight', 'curved', 'great-circle', 'custom', 'provider'] as const) ||
+      !oneOf(segment.geometrySource, ['generated', 'custom', 'provider'] as const)
+    )
+      throw new Error(`${segmentPath} is malformed.`);
+    if (segmentIds.has(segment.id)) throw new Error(`${segmentPath}.id must be unique.`);
+    if (!waypointIds.has(segment.startPointId) || !waypointIds.has(segment.endPointId))
+      throw new Error(`${segmentPath} references an unknown waypoint.`);
+    segmentIds.add(segment.id);
+    validateRouteCoordinates(segment.geometry, `${segmentPath}.geometry`);
+    if (segment.appearance !== undefined) {
+      if (!isRecord(segment.appearance)) throw new Error(`${segmentPath}.appearance must be an object.`);
+      const appearance = segment.appearance;
+      if (appearance.lineColor !== undefined && !isString(appearance.lineColor))
+        throw new Error(`${segmentPath}.appearance.lineColor must be a string.`);
+      if (appearance.lineOpacity !== undefined && !isFiniteNumber(appearance.lineOpacity))
+        throw new Error(`${segmentPath}.appearance.lineOpacity must be finite.`);
+      if (appearance.lineWidth !== undefined && !isFiniteNumber(appearance.lineWidth))
+        throw new Error(`${segmentPath}.appearance.lineWidth must be finite.`);
+      if (
+        appearance.lineStyle !== undefined &&
+        !oneOf(appearance.lineStyle, ['solid', 'dashed', 'dotted', 'railway'] as const)
+      )
+        throw new Error(`${segmentPath}.appearance.lineStyle is unsupported.`);
+      if (appearance.arrow !== undefined && !oneOf(appearance.arrow, ['none', 'end'] as const))
+        throw new Error(`${segmentPath}.appearance.arrow is unsupported.`);
+    }
+  }
+  if (value.routeDefinition !== undefined) {
+    if (!isRecord(value.routeDefinition) || !Array.isArray(value.routeDefinition.sectionDefinitions))
+      throw new Error(`${path}.routeDefinition is malformed.`);
+    for (const [index, definition] of value.routeDefinition.sectionDefinitions.entries()) {
+      const definitionPath = `${path}.routeDefinition.sectionDefinitions[${index}]`;
+      if (
+        !isRecord(definition) ||
+        !isString(definition.id) ||
+        !isString(definition.startPointId) ||
+        !isString(definition.endPointId) ||
+        !oneOf(definition.pathType, ['road', 'maritime', 'air', 'custom'] as const)
+      )
+        throw new Error(`${definitionPath} is malformed.`);
+      if (definition.pathType === 'custom' && definition.generatorSettings !== undefined) {
+        const settings = definition.generatorSettings;
+        if (
+          !isRecord(settings) ||
+          settings.version !== 1 ||
+          !oneOf(settings.pathShape, ['exact', 'smooth'] as const) ||
+          !Array.isArray(settings.controlPoints)
+        )
+          throw new Error(`${definitionPath}.generatorSettings is malformed.`);
+        const controlIds = new Set<string>();
+        for (const [controlIndex, control] of settings.controlPoints.entries()) {
+          if (
+            !isRecord(control) ||
+            !isString(control.id) ||
+            !isFiniteNumber(control.longitude) ||
+            !isFiniteNumber(control.latitude) ||
+            Math.abs(control.latitude) > 90 ||
+            controlIds.has(control.id)
+          )
+            throw new Error(
+              `${definitionPath}.generatorSettings.controlPoints[${controlIndex}] is malformed.`,
+            );
+          controlIds.add(control.id);
+        }
+      }
+    }
   }
 };
 
@@ -219,6 +354,55 @@ const validateLayer = (value: unknown, path: string): Layer => {
     throw new Error(`${path}.textDirection is unsupported.`);
   if (value.numberStyle !== undefined && !oneOf(value.numberStyle, ['persian', 'english'] as const))
     throw new Error(`${path}.numberStyle is unsupported.`);
+  if (value.fontFamily !== undefined && !oneOf(value.fontFamily, ['inter', 'vazirmatn'] as const))
+    throw new Error(`${path}.fontFamily is unsupported.`);
+  if (value.fontWeight !== undefined && ![400, 500, 600, 700].includes(value.fontWeight as number))
+    throw new Error(`${path}.fontWeight is unsupported.`);
+  if (value.fontStyle !== undefined && !oneOf(value.fontStyle, ['normal', 'italic'] as const))
+    throw new Error(`${path}.fontStyle is unsupported.`);
+  if (value.textAlign !== undefined && !oneOf(value.textAlign, ['left', 'center', 'right'] as const))
+    throw new Error(`${path}.textAlign is unsupported.`);
+  if (value.fontSize !== undefined && (value.fontSize as number) <= 0)
+    throw new Error(`${path}.fontSize must be > 0.`);
+  if (value.lineHeight !== undefined && (value.lineHeight as number) <= 0)
+    throw new Error(`${path}.lineHeight must be > 0.`);
+  if (
+    value.shapeKind !== undefined &&
+    !oneOf(value.shapeKind, [
+      'rectangle',
+      'square',
+      'ellipse',
+      'circle',
+      'triangle',
+      'regular-polygon',
+      'polyline',
+      'polygon',
+      'free-draw',
+      'arrow',
+    ] as const)
+  )
+    throw new Error(`${path}.shapeKind is unsupported.`);
+  if (
+    value.shapeStrokeStyle !== undefined &&
+    !oneOf(value.shapeStrokeStyle, ['solid', 'dashed', 'dotted'] as const)
+  )
+    throw new Error(`${path}.shapeStrokeStyle is unsupported.`);
+  if (value.shapePoints !== undefined) {
+    if (!Array.isArray(value.shapePoints) || value.shapePoints.length < 2)
+      throw new Error(`${path}.shapePoints must contain at least two points.`);
+    const ids = new Set<string>();
+    for (const [index, shapePoint] of value.shapePoints.entries()) {
+      if (
+        !isRecord(shapePoint) ||
+        !isString(shapePoint.id) ||
+        ids.has(shapePoint.id) ||
+        !isFiniteNumber(shapePoint.x) ||
+        !isFiniteNumber(shapePoint.y)
+      )
+        throw new Error(`${path}.shapePoints[${index}] is malformed.`);
+      ids.add(shapePoint.id);
+    }
+  }
   if (value.geoEffectType !== undefined && !oneOf(value.geoEffectType, effectTypes))
     throw new Error(`${path}.geoEffectType is unsupported.`);
   if (value.regionGeometry !== undefined) {
@@ -253,6 +437,7 @@ const validateLayer = (value: unknown, path: string): Layer => {
     !oneOf(value.regionEffect, ['fade', 'draw-border', 'pulse'] as const)
   )
     throw new Error(`${path}.regionEffect is unsupported.`);
+  validateRouteLayer(value, path);
   return value as unknown as Layer;
 };
 
@@ -274,10 +459,58 @@ const validateSegmentLayerAnimation = (value: unknown, path: string): SegmentLay
   for (const key of ['appearEnabled', 'wipeEnabled'] as const)
     if (value[key] !== undefined && !isBoolean(value[key]))
       throw new Error(`${path}.${key} must be a boolean.`);
-  if (value.appearType !== undefined && !oneOf(value.appearType, ['fade', 'pop', 'drop'] as const))
+  if (
+    value.appearType !== undefined &&
+    !oneOf(value.appearType, ['fade', 'pop', 'drop', 'draw-shape'] as const)
+  )
     throw new Error(`${path}.appearType is unsupported.`);
   if (value.wipeType !== undefined && !oneOf(value.wipeType, ['fade-out'] as const))
     throw new Error(`${path}.wipeType is unsupported.`);
+  if (value.textScaleWithMapZoom !== undefined && !isBoolean(value.textScaleWithMapZoom))
+    throw new Error(`${path}.textScaleWithMapZoom must be a boolean.`);
+  if (
+    value.textOrientation !== undefined &&
+    !oneOf(value.textOrientation, ['face-camera', 'flat-on-map'] as const)
+  )
+    throw new Error(`${path}.textOrientation is unsupported.`);
+  if (
+    value.shapeOrientation !== undefined &&
+    !oneOf(value.shapeOrientation, ['face-camera', 'flat-on-map'] as const)
+  )
+    throw new Error(`${path}.shapeOrientation is unsupported.`);
+  if (
+    value.textReferenceZoom !== undefined &&
+    (!isFiniteNumber(value.textReferenceZoom) || (value.textReferenceZoom as number) <= 0)
+  )
+    throw new Error(`${path}.textReferenceZoom must be > 0.`);
+  if (value.routeDefaults !== undefined && !isRecord(value.routeDefaults))
+    throw new Error(`${path}.routeDefaults must be an object.`);
+  if (value.routeSegmentAnimations !== undefined) {
+    if (!isRecord(value.routeSegmentAnimations))
+      throw new Error(`${path}.routeSegmentAnimations must be an object.`);
+    for (const [segmentId, timing] of Object.entries(value.routeSegmentAnimations)) {
+      if (!isRecord(timing)) throw new Error(`${path}.routeSegmentAnimations[${segmentId}] is malformed.`);
+      for (const key of [
+        'drawDelay',
+        'drawDuration',
+        'vehicleDelay',
+        'vehicleDuration',
+        'vehicleInterval',
+        'routeWipeDelay',
+        'routeWipeDuration',
+      ] as const)
+        if (timing[key] !== undefined && (!isFiniteNumber(timing[key]) || (timing[key] as number) < 0))
+          throw new Error(`${path}.routeSegmentAnimations[${segmentId}].${key} must be >= 0.`);
+      for (const key of [
+        'vehicleEnabled',
+        'vehicleFollowsDraw',
+        'vehicleFollowDirection',
+        'vehicleRepetitive',
+      ] as const)
+        if (timing[key] !== undefined && !isBoolean(timing[key]))
+          throw new Error(`${path}.routeSegmentAnimations[${segmentId}].${key} must be a boolean.`);
+    }
+  }
   if (value.appearDelay !== undefined && (value.appearDelay as number) < 0)
     throw new Error(`${path}.appearDelay must be >= 0.`);
   if (value.appearDuration !== undefined && (value.appearDuration as number) <= 0)
@@ -430,7 +663,7 @@ const validateTransition = (value: unknown, index: number): Transition => {
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const ASSET_ID_PATTERN = /^asset_[a-f0-9]{64}$/;
-const ASSET_PATH_PATTERN = /^assets\/[a-f0-9]{64}\.(png|jpg)$/;
+const ASSET_PATH_PATTERN = /^assets\/[a-f0-9]{64}\.(png|jpg|webp)$/;
 
 const validateAsset = (value: unknown, index: number): ProjectAsset => {
   const path = `project.assets[${index}]`;
@@ -444,7 +677,7 @@ const validateAsset = (value: unknown, index: number): ProjectAsset => {
     value.filename.includes('\\')
   )
     throw new Error(`${path}.filename is malformed.`);
-  if (!oneOf(value.mediaType, ['image/png', 'image/jpeg'] as const))
+  if (!oneOf(value.mediaType, ['image/png', 'image/jpeg', 'image/webp'] as const))
     throw new Error(`${path}.mediaType is unsupported.`);
   if (!isString(value.sha256) || !SHA256_PATTERN.test(value.sha256) || value.id !== `asset_${value.sha256}`)
     throw new Error(`${path} has inconsistent identity metadata.`);
@@ -462,7 +695,8 @@ const validateAsset = (value: unknown, index: number): ProjectAsset => {
   const extension = value.packagePath.slice(value.packagePath.lastIndexOf('.') + 1);
   if (
     (value.mediaType === 'image/png' && extension !== 'png') ||
-    (value.mediaType === 'image/jpeg' && !['jpg', 'jpeg'].includes(extension))
+    (value.mediaType === 'image/jpeg' && !['jpg', 'jpeg'].includes(extension)) ||
+    (value.mediaType === 'image/webp' && extension !== 'webp')
   )
     throw new Error(`${path}.packagePath does not match its media type.`);
   return value as unknown as ProjectAsset;
@@ -609,8 +843,22 @@ export function validateAndMigrateProject(value: unknown): Project {
       pinLabelAngle: normalizePinLabelAngle(layer.pinLabelAngle ?? legacyAngle),
     };
   };
+  const migrateArrowShape = (layer: Layer): Layer => {
+    if (layer.type !== 'shape' || layer.shapeKind !== 'arrow') return layer;
+    const points = layer.shapePoints ?? [];
+    return {
+      ...layer,
+      shapePoints: points.length > 2 ? [points[0], points[points.length - 1]] : points,
+      shapeArrowStartAngle:
+        layer.shapeArrowStartAngle ?? Math.max(-80, Math.min(80, (layer.shapeArrowBend ?? 0) * 0.8)),
+      shapeArrowheadEnabled: layer.shapeArrowheadEnabled ?? true,
+      shapeArrowHeadSize: layer.shapeArrowHeadSize ?? layer.shapeArrowHeadLength ?? 120,
+      shapeArrowHeadAngle: layer.shapeArrowHeadAngle ?? 44,
+    };
+  };
+  const migrateLayer = (layer: Layer) => migrateArrowShape(migratePinLabelAppearance(layer));
   const registry = structuredClone(value.layers as Layer[]).map((layer) => ({
-    ...migratePinLabelAppearance(layer),
+    ...migrateLayer(layer),
     visible: true,
   }));
   const registryIds = new Set(registry.map((layer) => layer.id));
@@ -618,7 +866,7 @@ export function validateAndMigrateProject(value: unknown): Project {
     for (const layer of [...(view.layers ?? []), ...(view.transitionLayers ?? [])]) {
       if (registryIds.has(layer.id)) continue;
       registryIds.add(layer.id);
-      registry.push({ ...migratePinLabelAppearance(structuredClone(layer)), visible: true });
+      registry.push({ ...migrateLayer(structuredClone(layer)), visible: true });
     }
   }
   const viewsWithUsage = legacyViews.map((view) => {

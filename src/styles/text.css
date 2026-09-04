@@ -1,5 +1,5 @@
 .persian-text {
-  font-family: Vazirmatn, serif;
+  font-family: 'Vazirmatn Variable', serif;
   letter-spacing: 0;
 }
 .layer-inspector textarea,
@@ -17,7 +17,7 @@
 .layer-inspector textarea {
   resize: vertical;
   min-height: 58px;
-  font-family: Inter, Vazirmatn, sans-serif;
+  font-family: 'Inter Variable', 'Vazirmatn Variable', sans-serif;
   line-height: 1.5;
 }
 .style-switch select {
