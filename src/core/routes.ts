@@ -7,6 +7,7 @@ import type {
   RouteSegment,
   RouteSegmentAnimation,
   RouteSegmentAppearance,
+  RouteVehicleRenderInstance,
   RouteVehicleType,
   RoutePoint,
   SegmentLayerAnimation,
@@ -488,8 +489,68 @@ export const evaluateRouteRenderState = (
   layer: Layer,
   animation: SegmentLayerAnimation | undefined,
   segmentLocalTime: number,
-): RouteRenderSegmentState[] =>
-  (layer.routeSegments ?? []).map((segment) => {
+): RouteRenderSegmentState[] => {
+  const routeAppearEnabled = Boolean(animation?.appearEnabled);
+  const routeAppearDelay = Math.max(0, animation?.appearDelay ?? 0);
+  const routeAppearDuration = Math.max(0.05, animation?.appearDuration ?? 0.6);
+  const routeAppearProgress = timedProgress(
+    segmentLocalTime,
+    routeAppearEnabled,
+    routeAppearDelay,
+    routeAppearDuration,
+  );
+  const routeAppearActive =
+    routeAppearEnabled && segmentLocalTime < routeAppearDelay + routeAppearDuration;
+  const routeWipeEnabled = Boolean(animation?.wipeEnabled);
+  const routeWipeStart =
+    routeAppearDelay +
+    (routeAppearEnabled ? routeAppearDuration : 0) +
+    Math.max(0, animation?.layerHoldDuration ?? 0) +
+    Math.max(0, animation?.wipeDelay ?? 0);
+  const routeWipeDuration = Math.max(0, animation?.wipeDuration ?? 0.5);
+  const routeWipeProgress = routeWipeEnabled
+    ? timedProgress(segmentLocalTime, true, routeWipeStart, routeWipeDuration)
+    : 0;
+  const routeWipeActive = routeWipeEnabled && segmentLocalTime >= routeWipeStart;
+  const routeLevelActive = routeAppearActive || routeWipeActive;
+  const segments = layer.routeSegments ?? [];
+  const included = segments.map((segment) => {
+    const timing = {
+      ...(animation?.routeDefaults ?? {}),
+      ...(animation?.routeSegmentAnimations?.[segment.id] ?? {}),
+    };
+    return timing.included ?? true;
+  });
+  const lengths = segments.map((segment, index) =>
+    included[index] ? routePathMetrics(segment.geometry).total : 0,
+  );
+  const totalLength = lengths.reduce((sum, length) => sum + length, 0);
+  const routeDrawProgress = routeAppearProgress;
+  const routeVehicle = animation?.routeVehicle;
+  const routeVehicleEnabled = Boolean(routeVehicle?.vehicleEnabled);
+  const routeVehicleInstances = routeVehicleEnabled
+    ? evaluateRouteVehicleInstances(layer.id, routeVehicle!, segmentLocalTime)
+    : [];
+  const routeVehiclesBySection = new Map<string, RouteVehicleRenderInstance[]>();
+  for (const instance of routeVehicleInstances) {
+    const target = clamp(instance.progress) * totalLength;
+    let before = 0;
+    for (let index = 0; index < segments.length; index += 1) {
+      const length = lengths[index];
+      if (length <= 0) continue;
+      if (target <= before + length || index === segments.length - 1) {
+        routeVehiclesBySection.set(segments[index].id, [
+          ...(routeVehiclesBySection.get(segments[index].id) ?? []),
+          { ...instance, progress: clamp((target - before) / length) },
+        ]);
+        break;
+      }
+      before += length;
+    }
+  }
+  let distanceBefore = 0;
+
+  return segments.map((segment, segmentIndex) => {
     const timing: RouteSegmentAnimation = {
       ...(animation?.routeDefaults ?? {}),
       ...(animation?.routeSegmentAnimations?.[segment.id] ?? {}),
@@ -503,9 +564,9 @@ export const evaluateRouteRenderState = (
       timing.appearDelay ?? timing.drawDelay,
       timing.appearDuration ?? timing.drawDuration,
     );
-    const drawProgress =
+    let drawProgress =
       exists && appearEnabled && appearType === 'draw-route' ? appearProgress : exists ? 1 : 0;
-    const opacityMultiplier =
+    let opacityMultiplier =
       exists && (!appearEnabled || appearType === 'draw-route') ? 1 : exists ? appearProgress : 0;
     const hasVehicleTiming = Boolean(timing.vehicleEnabled || timing.drawEnabled);
     const vehicleProgress = !hasVehicleTiming
@@ -519,9 +580,29 @@ export const evaluateRouteRenderState = (
       timing.wipeDelay ?? timing.routeWipeDelay,
       timing.wipeDuration ?? timing.routeWipeDuration,
     );
-    const wipe = timing.wipeEnabled || timing.routeWipeEnabled ? wipeProgress : 0;
-    const vehicleInstances =
-      exists && wipe < 1 ? evaluateRouteVehicleInstances(segment.id, timing, segmentLocalTime) : [];
+    let wipe = timing.wipeEnabled || timing.routeWipeEnabled ? wipeProgress : 0;
+
+    if (routeLevelActive) {
+      const length = lengths[segmentIndex];
+      const effectiveDrawProgress = animation?.appearType === 'draw-route' ? routeDrawProgress : 1;
+      const drawnDistance = effectiveDrawProgress * totalLength;
+      drawProgress = exists && length > 0 ? clamp((drawnDistance - distanceBefore) / length) : 0;
+      opacityMultiplier = exists ? 1 : 0;
+      if (routeWipeActive && exists && length > 0) {
+        const visibleDistance = (1 - routeWipeProgress) * totalLength;
+        const visibleSectionProgress = clamp((visibleDistance - distanceBefore) / length);
+        wipe = drawProgress > 0 ? 1 - visibleSectionProgress / drawProgress : 1;
+      } else {
+        wipe = 0;
+      }
+    }
+    distanceBefore += lengths[segmentIndex];
+    const vehicleInstances = routeVehicleEnabled
+      ? (routeVehiclesBySection.get(segment.id) ?? [])
+      : exists && wipe < 1
+        ? evaluateRouteVehicleInstances(segment.id, timing, segmentLocalTime)
+        : [];
+    const vehicleTiming = routeVehicleEnabled ? routeVehicle! : timing;
     return {
       segmentId: segment.id,
       exists,
@@ -533,17 +614,18 @@ export const evaluateRouteRenderState = (
       // View/Transition, including most inspected and exported frames.
       vehicleVisible: vehicleInstances.length > 0,
       vehicleProgress: vehicleInstances[0]?.progress ?? vehicleProgress,
-      vehicleType: timing.vehicleType ?? 'directional-capsule',
-      vehicleSize: timing.vehicleSize ?? 22,
-      vehicleOpacity: timing.vehicleOpacity ?? 1,
-      vehicleColor: timing.vehicleColor ?? '#ffffff',
-      vehicleAccentColor: timing.vehicleAccentColor ?? '#64d5ba',
-      vehicleOrientationOffset: timing.vehicleOrientationOffset ?? 0,
-      vehicleFollowDirection: timing.vehicleFollowDirection ?? true,
-      vehicleAssetId: timing.vehicleAssetId,
+      vehicleType: vehicleTiming.vehicleType ?? 'directional-capsule',
+      vehicleSize: vehicleTiming.vehicleSize ?? 22,
+      vehicleOpacity: vehicleTiming.vehicleOpacity ?? 1,
+      vehicleColor: vehicleTiming.vehicleColor ?? '#ffffff',
+      vehicleAccentColor: vehicleTiming.vehicleAccentColor ?? '#64d5ba',
+      vehicleOrientationOffset: vehicleTiming.vehicleOrientationOffset ?? 0,
+      vehicleFollowDirection: vehicleTiming.vehicleFollowDirection ?? true,
+      vehicleAssetId: vehicleTiming.vehicleAssetId,
       vehicleInstances,
     };
   });
+};
 
 export const applyRouteEvaluation = (
   layer: Layer,

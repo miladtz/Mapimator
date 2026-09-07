@@ -13,6 +13,7 @@ writeFileSync(
   [
     `export * from '${join(root, 'src/core/project').replaceAll('\\', '/')}';`,
     `export * from '${join(root, 'src/core/projectPersistence').replaceAll('\\', '/')}';`,
+    `export * from '${join(root, 'src/core/projectFile').replaceAll('\\', '/')}';`,
     `export * from '${join(root, 'src/core/shapes').replaceAll('\\', '/')}';`,
     `export * from '${join(root, 'src/core/openFreeMapAdapter').replaceAll('\\', '/')}';`,
     `export * from '${join(root, 'src/core/onlineProjectOverlays').replaceAll('\\', '/')}';`,
@@ -324,6 +325,72 @@ assert.notDeepEqual(
   'Face Camera and Flat on Map are exclusive render transforms, not duplicate features',
 );
 
+const closeCoordinate = (actual, expected, label) => {
+  assert.ok(Math.abs(actual[0] - expected[0]) < 1e-8, `${label} longitude`);
+  assert.ok(Math.abs(actual[1] - expected[1]) < 1e-8, `${label} latitude`);
+};
+const canonicalArrowEndpoints = timelineArrow.shapePoints.map(({ x, y }) => core.mapMotionWorldToLngLat(x, y));
+const canonicalArrowBeforeOrientationRendering = structuredClone(timelineArrow.shapePoints);
+const cameraMaps = [
+  { zoom: 3, bearing: 0, pitch: 0 },
+  { zoom: 9, bearing: 47, pitch: 0 },
+  { zoom: 13, bearing: -121, pitch: 58 },
+].map(({ zoom, bearing, pitch }) => {
+  const radians = (bearing * Math.PI) / 180;
+  const scale = 2 ** (zoom - 3);
+  const pitchScale = Math.max(0.1, Math.cos((pitch * Math.PI) / 180));
+  return {
+    getZoom: () => zoom,
+    project: ({ lng, lat }) => {
+      const east = lng * scale;
+      const north = -lat * scale * pitchScale;
+      return {
+        x: 800 + east * Math.cos(radians) - north * Math.sin(radians),
+        y: 450 + east * Math.sin(radians) + north * Math.cos(radians),
+      };
+    },
+    unproject: ([x, y]) => {
+      const screenX = x - 800;
+      const screenY = y - 450;
+      const east = screenX * Math.cos(radians) + screenY * Math.sin(radians);
+      const north = -screenX * Math.sin(radians) + screenY * Math.cos(radians);
+      return { lng: east / scale, lat: -north / (scale * pitchScale) };
+    },
+  };
+});
+for (const shapeArrowStartAngle of [-35, 0, 35]) {
+  for (const [cameraIndex, cameraMap] of cameraMaps.entries()) {
+    for (const shapeArrowheadEnabled of [false, true]) {
+      const candidate = {
+        ...timelineArrow,
+        shapeOrientation: 'face-camera',
+        shapeArrowStartAngle,
+        shapeArrowheadEnabled,
+        shapePathProgress: 1,
+      };
+      const collection = core.onlineShapeFeatureCollection([candidate], null, cameraMap);
+      const line = collection.features.find((feature) => feature.id.endsWith('-geometry')).geometry.coordinates;
+      closeCoordinate(line[0], canonicalArrowEndpoints[0], `camera ${cameraIndex}, angle ${shapeArrowStartAngle} start`);
+      closeCoordinate(line.at(-1), canonicalArrowEndpoints[1], `camera ${cameraIndex}, angle ${shapeArrowStartAngle} end`);
+      assert.equal(
+        collection.features.some((feature) => feature.id.endsWith('-arrowhead')),
+        shapeArrowheadEnabled,
+        'Arrowhead enablement remains independent of Face Camera endpoint projection.',
+      );
+    }
+  }
+}
+assert.deepEqual(
+  timelineArrow.shapePoints,
+  canonicalArrowBeforeOrientationRendering,
+  'Flat/Face Camera rendering never mutates canonical Arrow Start/End points.',
+);
+const flatAgain = core.onlineShapeFeatureCollection(
+  [{ ...timelineArrow, shapeOrientation: 'flat-on-map' }],
+  null,
+);
+assert.deepEqual(flatAgain, flatFeatures, 'Switching back to Flat restores the exact original visual geometry.');
+
 for (const latitude of [0, 35, 60]) {
   const center = core.lngLatToMapMotionWorld(20, latitude);
   const centerMeters = core.shapeWorldToMercatorMeters(center.x, center.y);
@@ -381,5 +448,85 @@ const onlineMap = readFileSync(join(root, 'src/components/OnlineOpenFreeMap.tsx'
 assert.match(onlineMap, /shapeDraftKindRef/);
 assert.match(onlineMap, /mapmotion-shape-draft/);
 assert.match(onlineMap, /shapeDraftFeatureCollection\(shapeDraft, shapeKind, pointer\)/);
+
+// Arrow orientation is the sole timeline-global Shape animation choice.
+{
+  const arrowA = core.createShapeLayerAt('arrow', 200, 200);
+  const arrowB = core.createShapeLayerAt('arrow', 500, 300);
+  const project = core.createProject('Arrow orientation propagation');
+  project.layers = [arrowA, arrowB];
+  project.views = Array.from({ length: 4 }, (_, index) => {
+    const view = core.createView(`View ${index + 1}`, [arrowA, arrowB], { x: index, y: 0, zoom: 1 }, [
+      arrowA,
+      arrowB,
+    ]);
+    view.id = `view-${index + 1}`;
+    view.layerConfigs[arrowA.id].animation = {
+      appearEnabled: index % 2 === 0,
+      appearType: 'draw-shape',
+      appearDelay: index,
+      wipeEnabled: index === 3,
+      shapeOrientation: 'flat-on-map',
+    };
+    view.layerConfigs[arrowB.id].animation = { shapeOrientation: index % 2 ? 'face-camera' : 'flat-on-map' };
+    return view;
+  });
+  project.transitions = project.views.slice(0, -1).map((view, index) => {
+    const transition = core.createTransition(view.id, project.views[index + 1].id, project.layers, view);
+    transition.id = `transition-${index + 1}`;
+    transition.layerConfigs[arrowA.id].animation = {
+      appearEnabled: index === 0,
+      appearType: 'drop',
+      appearDuration: index + 2,
+      wipeDelay: index,
+      shapeOrientation: 'flat-on-map',
+    };
+    transition.layerConfigs[arrowB.id].animation = { shapeOrientation: 'face-camera' };
+    return transition;
+  });
+  const beforeA = [
+    ...project.views.map((view) => structuredClone(view.layerConfigs[arrowA.id])),
+    ...project.transitions.map((transition) => structuredClone(transition.layerConfigs[arrowA.id])),
+  ];
+  const beforeB = [
+    ...project.views.map((view) => structuredClone(view.layerConfigs[arrowB.id])),
+    ...project.transitions.map((transition) => structuredClone(transition.layerConfigs[arrowB.id])),
+  ];
+  const faceCamera = core.setArrowOrientationForTimeline(project, arrowA.id, 'face-camera');
+  const faceConfigs = [
+    ...faceCamera.views.map((view) => view.layerConfigs[arrowA.id]),
+    ...faceCamera.transitions.map((transition) => transition.layerConfigs[arrowA.id]),
+  ];
+  assert.equal(faceConfigs.length, 7);
+  assert.ok(faceConfigs.every((config) => config.animation.shapeOrientation === 'face-camera'));
+  assert.deepEqual(
+    [
+      ...faceCamera.views.map((view) => view.layerConfigs[arrowB.id]),
+      ...faceCamera.transitions.map((transition) => transition.layerConfigs[arrowB.id]),
+    ],
+    beforeB,
+    'another Arrow is isolated',
+  );
+  faceConfigs.forEach((config, index) => {
+    const { shapeOrientation: _beforeOrientation, ...beforeAnimation } = beforeA[index].animation;
+    const { shapeOrientation: _afterOrientation, ...afterAnimation } = config.animation;
+    assert.deepEqual(afterAnimation, beforeAnimation, 'only Arrow orientation propagates');
+    assert.equal(config.included, beforeA[index].included, 'membership stays segment-specific');
+  });
+  assert.equal(new Set(faceConfigs.map((config) => config.animation)).size, 7, 'configs are not shared');
+  const flat = core.setArrowOrientationForTimeline(faceCamera, arrowA.id, 'flat-on-map');
+  assert.ok(
+    [...flat.views, ...flat.transitions].every(
+      (entity) => entity.layerConfigs[arrowA.id].animation.shapeOrientation === 'flat-on-map',
+    ),
+  );
+  const roundTrip = core.parseProjectFile(JSON.stringify(flat));
+  assert.ok(
+    [...roundTrip.views, ...roundTrip.transitions].every(
+      (entity) => entity.layerConfigs[arrowA.id].animation.shapeOrientation === 'flat-on-map',
+    ),
+    'synchronized orientation persists',
+  );
+}
 
 console.log('Online Shapes: editable arrows, exact primitives, ordering, persistence, and render parity passed.');

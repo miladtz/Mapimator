@@ -15,12 +15,7 @@ import {
   ONLINE_GEOGRAPHIC_REGION_FILL_LAYER_ID,
 } from './geographicRegionFillLayer';
 import { rasterizeTextLayer, textLayerImageId, waitForTextLayerFonts } from './textLayers';
-import {
-  arrowHeadCoordinates,
-  editableShapePoints,
-  evaluatedShapeCoordinates,
-  shapeWorldToMercatorMeters,
-} from './shapes';
+import { arrowHeadCoordinates, editableShapePoints, evaluatedShapeCoordinates } from './shapes';
 
 export const ONLINE_PROJECT_REGION_SOURCE_ID = 'mapmotion-project-regions';
 export const ONLINE_PROJECT_REGION_FILL_LAYER_ID = 'mapmotion-project-region-fills';
@@ -980,6 +975,87 @@ export const onlineTextFeatureCollections = (layers: readonly Layer[], selectedI
   };
 };
 
+type ScreenPoint = { x: number; y: number };
+
+const faceCameraArrowScreenCoordinates = (layer: Layer, map: MapLibreMap): ScreenPoint[] => {
+  const points = editableShapePoints(layer);
+  if (points.length !== 2) return [];
+  const startLngLat = mapMotionWorldToLngLat(points[0].x, points[0].y);
+  const endLngLat = mapMotionWorldToLngLat(points[1].x, points[1].y);
+  const start = map.project({ lng: startLngLat[0], lat: startLngLat[1] });
+  const end = map.project({ lng: endLngLat[0], lat: endLngLat[1] });
+  const dx = end.x - start.x;
+  const dy = -(end.y - start.y);
+  const chordLength = Math.max(0.001, Math.hypot(dx, dy));
+  const tx = dx / chordLength;
+  const ty = dy / chordLength;
+  const nx = -ty;
+  const ny = tx;
+  const startAngle = Math.max(-80, Math.min(80, layer.shapeArrowStartAngle ?? 0));
+  const slope = Math.tan((startAngle * Math.PI) / 180);
+  const coefficient = -slope / chordLength;
+  const full = Array.from({ length: 65 }, (_, index): ScreenPoint => {
+    const localX = (index / 64) * chordLength;
+    const localY = coefficient * localX * localX + slope * localX;
+    return {
+      x: start.x + tx * localX + nx * localY,
+      y: start.y - (ty * localX + ny * localY),
+    };
+  });
+  const progress = Math.max(0, Math.min(1, layer.shapePathProgress ?? 1));
+  if (progress >= 1) return full;
+  if (progress <= 0) return [];
+  const lengths = full
+    .slice(1)
+    .map((point, index) => Math.hypot(point.x - full[index].x, point.y - full[index].y));
+  const target = lengths.reduce((sum, value) => sum + value, 0) * progress;
+  const result: ScreenPoint[] = [{ ...full[0] }];
+  let traveled = 0;
+  for (let index = 0; index < lengths.length; index += 1) {
+    if (traveled + lengths[index] <= target) {
+      result.push({ ...full[index + 1] });
+      traveled += lengths[index];
+      continue;
+    }
+    const local = lengths[index] === 0 ? 0 : (target - traveled) / lengths[index];
+    result.push({
+      x: full[index].x + (full[index + 1].x - full[index].x) * local,
+      y: full[index].y + (full[index + 1].y - full[index].y) * local,
+    });
+    break;
+  }
+  return result;
+};
+
+const faceCameraArrowHeadScreenCoordinates = (
+  layer: Layer,
+  centerline: readonly ScreenPoint[],
+  map: MapLibreMap,
+): ScreenPoint[] => {
+  if (
+    layer.shapeArrowheadEnabled === false ||
+    (layer.shapePathProgress ?? 1) < 0.999 ||
+    centerline.length < 2
+  )
+    return [];
+  const tip = centerline.at(-1)!;
+  const previous = centerline.at(-2)!;
+  const tangentLength = Math.max(0.001, Math.hypot(tip.x - previous.x, tip.y - previous.y));
+  const tx = (tip.x - previous.x) / tangentLength;
+  const ty = (tip.y - previous.y) / tangentLength;
+  const pixelsPerMeter = (512 * 2 ** map.getZoom()) / (2 * Math.PI * 6_378_137);
+  const headLength =
+    Math.max(1, layer.shapeArrowHeadSize ?? layer.shapeArrowHeadLength ?? 120) * 1000 * pixelsPerMeter;
+  const halfWidth =
+    Math.tan((Math.max(10, Math.min(140, layer.shapeArrowHeadAngle ?? 44)) * Math.PI) / 360) * headLength;
+  const base = { x: tip.x - tx * headLength, y: tip.y - ty * headLength };
+  return [
+    { ...tip },
+    { x: base.x - ty * halfWidth, y: base.y + tx * halfWidth },
+    { x: base.x + ty * halfWidth, y: base.y - tx * halfWidth },
+  ];
+};
+
 export const onlineShapeFeatureCollection = (
   layers: readonly Layer[],
   selectedId: string | null = null,
@@ -990,21 +1066,17 @@ export const onlineShapeFeatureCollection = (
     if (layer.type !== 'shape' || !layer.visible) continue;
     const rendered = evaluatedShapeCoordinates(layer);
     if (rendered.coordinates.length < 2) continue;
-    const faceCamera = layer.shapeKind === 'arrow' && layer.shapeOrientation === 'face-camera' && map;
-    const anchorLngLat = mapMotionWorldToLngLat(layer.x, layer.y);
-    const anchorScreen = faceCamera ? map.project({ lng: anchorLngLat[0], lat: anchorLngLat[1] }) : null;
-    const anchorMetric = shapeWorldToMercatorMeters(layer.x, layer.y);
-    const pixelsPerMeter = faceCamera ? (512 * 2 ** map.getZoom()) / (2 * Math.PI * 6_378_137) : 0;
-    const coordinateToLngLat = ([x, y]: [number, number]): [number, number] => {
-      if (!faceCamera || !anchorScreen) return mapMotionWorldToLngLat(x, y);
-      const metric = shapeWorldToMercatorMeters(x, y);
-      const geographic = map.unproject([
-        anchorScreen.x + (metric[0] - anchorMetric[0]) * pixelsPerMeter,
-        anchorScreen.y - (metric[1] - anchorMetric[1]) * pixelsPerMeter,
-      ]);
-      return [geographic.lng, geographic.lat];
-    };
-    const coordinates = rendered.coordinates.map(coordinateToLngLat);
+    const faceCameraMap =
+      layer.shapeKind === 'arrow' && layer.shapeOrientation === 'face-camera' ? map : undefined;
+    const faceCameraCenterline = faceCameraMap
+      ? faceCameraArrowScreenCoordinates(layer, faceCameraMap)
+      : null;
+    const coordinates = faceCameraCenterline
+      ? faceCameraCenterline.map(({ x, y }) => {
+          const geographic = faceCameraMap!.unproject([x, y]);
+          return [geographic.lng, geographic.lat] as [number, number];
+        })
+      : rendered.coordinates.map(([x, y]) => mapMotionWorldToLngLat(x, y));
     if (rendered.closed) coordinates.push(coordinates[0]);
     const properties = {
       layerId: layer.id,
@@ -1026,7 +1098,14 @@ export const onlineShapeFeatureCollection = (
       properties,
     });
     if (layer.shapeKind === 'arrow') {
-      const head = arrowHeadCoordinates(layer).map(coordinateToLngLat);
+      const head = faceCameraCenterline
+        ? faceCameraArrowHeadScreenCoordinates(layer, faceCameraCenterline, faceCameraMap!).map(
+            ({ x, y }) => {
+              const geographic = faceCameraMap!.unproject([x, y]);
+              return [geographic.lng, geographic.lat] as [number, number];
+            },
+          )
+        : arrowHeadCoordinates(layer).map(([x, y]) => mapMotionWorldToLngLat(x, y));
       if (head.length === 3)
         features.push({
           type: 'Feature',

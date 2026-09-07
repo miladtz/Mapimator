@@ -246,7 +246,7 @@ export interface SegmentLayerAnimation {
    *  that is continuously present never replays appear. */
   appearEnabled?: boolean;
   /** Appear animation type (fade/pop/drop). */
-  appearType?: PinAppearType | 'draw-shape';
+  appearType?: PinAppearType | 'draw-shape' | 'draw-route';
   /** Delay in seconds before the appear animation starts. */
   appearDelay?: number;
   /** Duration in seconds of the appear animation. */
@@ -277,6 +277,8 @@ export interface SegmentLayerAnimation {
   regionFillingDuration?: number;
   routeDefaults?: RouteSegmentAnimation;
   routeSegmentAnimations?: Record<string, RouteSegmentAnimation>;
+  /** Route-wide vehicle channel. Kept separate from Section defaults/usages. */
+  routeVehicle?: RouteSegmentAnimation;
   applyFirstRouteSegmentAnimation?: boolean;
 }
 export type TransitionPreset =
@@ -1062,6 +1064,8 @@ export const normalizeSegmentAnimation = (
     out.layerHoldDuration = out.holdDuration;
     delete out.holdDuration;
   }
+  delete out.routeViewToView;
+  delete out.routeLevelDrawProgress;
   return out as SegmentLayerAnimation;
 };
 /** Animation config for a transition-owned layer (new or legacy model). */
@@ -1133,6 +1137,43 @@ export function setTransitionLayerIncluded(
     },
   };
   return { ...project, transitions };
+}
+
+/**
+ * Synchronize the one project-timeline orientation choice for a canonical
+ * Arrow. Every authored View and Transition keeps an independently stored
+ * usage/animation object; only `shapeOrientation` is copied.
+ */
+export function setArrowOrientationForTimeline(
+  project: Project,
+  layerId: string,
+  orientation: TextOrientation,
+): Project {
+  const layer = getProjectLayer(project, layerId);
+  if (layer?.type !== 'shape' || layer.shapeKind !== 'arrow') return project;
+
+  const patchConfig = <T extends ViewLayerConfig | TransitionLayerConfig>(config: T | undefined): T => {
+    const current = config ?? ({ included: false } as T);
+    return {
+      ...current,
+      animation: { ...(current.animation ?? {}), shapeOrientation: orientation },
+    } as T;
+  };
+
+  return {
+    ...project,
+    views: project.views.map((view) => ({
+      ...view,
+      layerConfigs: { ...view.layerConfigs, [layerId]: patchConfig(view.layerConfigs[layerId]) },
+    })),
+    transitions: project.transitions.map((transition) => ({
+      ...transition,
+      layerConfigs: {
+        ...transition.layerConfigs,
+        [layerId]: patchConfig(transition.layerConfigs[layerId]),
+      },
+    })),
+  };
 }
 
 /** Reconciles stable Section usage after Edit Route changes Route adjacency. */
@@ -1257,7 +1298,8 @@ export const deleteProjectLayer = (project: Project, layerId: string): Project =
         Object.entries(view.layerConfigs).some(
           ([configuredLayerId, config]) =>
             configuredLayerId !== layerId &&
-            (config.animation?.routeDefaults?.vehicleAssetId === asset.id ||
+            (config.animation?.routeVehicle?.vehicleAssetId === asset.id ||
+              config.animation?.routeDefaults?.vehicleAssetId === asset.id ||
               Object.values(config.animation?.routeSegmentAnimations ?? {}).some(
                 (timing) => timing.vehicleAssetId === asset.id,
               )),
@@ -1267,7 +1309,8 @@ export const deleteProjectLayer = (project: Project, layerId: string): Project =
         Object.entries(transition.layerConfigs).some(
           ([configuredLayerId, config]) =>
             configuredLayerId !== layerId &&
-            (config.animation?.routeDefaults?.vehicleAssetId === asset.id ||
+            (config.animation?.routeVehicle?.vehicleAssetId === asset.id ||
+              config.animation?.routeDefaults?.vehicleAssetId === asset.id ||
               Object.values(config.animation?.routeSegmentAnimations ?? {}).some(
                 (timing) => timing.vehicleAssetId === asset.id,
               )),

@@ -46,6 +46,7 @@ import {
   createView,
   deleteProjectLayer,
   layerLabel,
+  setArrowOrientationForTimeline,
   setTransitionLayerIncluded,
   reconcileRouteSectionTimelineUsage,
   setViewLayerIncluded,
@@ -790,26 +791,35 @@ export function App() {
     patch: Partial<import('../core/project').SegmentLayerAnimation>,
   ) => {
     if (!selectedTransitionId) return;
-    updateProject((p) => ({
-      ...p,
-      transitions: p.transitions.map((transition) =>
-        transition.id === selectedTransitionId
-          ? {
-              ...transition,
-              layerConfigs: {
-                ...transition.layerConfigs,
-                [layerId]: {
-                  ...(transition.layerConfigs[layerId] ?? { included: false }),
-                  animation: {
-                    ...(transition.layerConfigs[layerId]?.animation ?? {}),
-                    ...patch,
-                  },
-                },
-              },
-            }
-          : transition,
-      ),
-    }));
+    updateProject((p) => {
+      const { shapeOrientation, ...localPatch } = patch;
+      const locallyPatched =
+        Object.keys(localPatch).length === 0
+          ? p
+          : {
+              ...p,
+              transitions: p.transitions.map((transition) =>
+                transition.id === selectedTransitionId
+                  ? {
+                      ...transition,
+                      layerConfigs: {
+                        ...transition.layerConfigs,
+                        [layerId]: {
+                          ...(transition.layerConfigs[layerId] ?? { included: false }),
+                          animation: {
+                            ...(transition.layerConfigs[layerId]?.animation ?? {}),
+                            ...localPatch,
+                          },
+                        },
+                      },
+                    }
+                  : transition,
+              ),
+            };
+      return shapeOrientation
+        ? setArrowOrientationForTimeline(locallyPatched, layerId, shapeOrientation)
+        : locallyPatched;
+    });
   };
   /** Patch the active View's per-layer animation config (View-hold lifecycle). */
   const patchViewAnim = (
@@ -817,26 +827,35 @@ export function App() {
     patch: Partial<import('../core/project').SegmentLayerAnimation>,
   ) => {
     if (!activeViewId) return;
-    updateProject((p) => ({
-      ...p,
-      views: p.views.map((v) =>
-        v.id === activeViewId
-          ? {
-              ...v,
-              layerConfigs: {
-                ...viewLayerConfigsOf(v),
-                [layerId]: {
-                  included: viewLayerConfigsOf(v)[layerId]?.included ?? false,
-                  animation: {
-                    ...(viewLayerConfigsOf(v)[layerId]?.animation ?? {}),
-                    ...patch,
-                  },
-                },
-              },
-            }
-          : v,
-      ),
-    }));
+    updateProject((p) => {
+      const { shapeOrientation, ...localPatch } = patch;
+      const locallyPatched =
+        Object.keys(localPatch).length === 0
+          ? p
+          : {
+              ...p,
+              views: p.views.map((v) =>
+                v.id === activeViewId
+                  ? {
+                      ...v,
+                      layerConfigs: {
+                        ...viewLayerConfigsOf(v),
+                        [layerId]: {
+                          included: viewLayerConfigsOf(v)[layerId]?.included ?? false,
+                          animation: {
+                            ...(viewLayerConfigsOf(v)[layerId]?.animation ?? {}),
+                            ...localPatch,
+                          },
+                        },
+                      },
+                    }
+                  : v,
+              ),
+            };
+      return shapeOrientation
+        ? setArrowOrientationForTimeline(locallyPatched, layerId, shapeOrientation)
+        : locallyPatched;
+    });
   };
   const segmentAllChecked =
     project.layers.length > 0 && (projectMode || project.layers.every((l) => segmentVisibleIds.has(l.id)));
@@ -4638,6 +4657,7 @@ function RouteSettings({
   const defaults = { ...ROUTE_DEFAULTS, ...(layer.routeDefaults ?? {}) };
   const timelineContext = transitionContext ?? viewContext;
   const canAnimate = Boolean(transitionContext || (viewContext?.holdDuration ?? 0) > 0);
+  const routeVehicle = timelineContext?.anim?.routeVehicle ?? {};
   const patchLayer = (next: Layer) =>
     onChange({
       routePoints: next.routePoints,
@@ -4663,6 +4683,12 @@ function RouteSettings({
         ),
       );
     }
+  };
+  const patchRouteVehicle = (patch: Partial<RouteSegmentAnimation>) => {
+    if (!timelineContext) return;
+    timelineContext.onPatchAnim({
+      routeVehicle: { ...(timelineContext.anim?.routeVehicle ?? {}), ...patch },
+    });
   };
   const chooseCustomVehicleImage = async (segmentId: string) => {
     try {
@@ -4717,6 +4743,51 @@ function RouteSettings({
       patchSegmentTiming(segmentId, { vehicleType: 'custom', vehicleAssetId: asset.id });
     } catch (error) {
       console.error('Add My Vehicle failed:', error);
+    }
+  };
+  const chooseRouteVehicleImage = async () => {
+    try {
+      const sourcePath = await openFile({
+        title: 'Choose Custom Route Vehicle Image',
+        multiple: false,
+        directory: false,
+        filters: [{ name: 'PNG, WebP, or JPEG image', extensions: ['png', 'webp', 'jpg', 'jpeg'] }],
+      });
+      if (typeof sourcePath !== 'string') return;
+      const asset = await ingestProjectImage(sourcePath);
+      onAddAsset?.(asset);
+      patchRouteVehicle({ vehicleType: 'custom', vehicleAssetId: asset.id });
+    } catch (error) {
+      console.error('Choose custom Route vehicle image failed:', error);
+    }
+  };
+  const useRouteVehicleStyle = async (entry: VehicleStyleEntry) => {
+    try {
+      const asset = await projectAssetFromVehicleStyle(entry);
+      patchRouteVehicle({ vehicleType: 'custom', vehicleAssetId: asset.id });
+    } catch (error) {
+      console.error('Apply My Vehicle to Route failed:', error);
+    }
+  };
+  const addRouteVehicleStyle = async () => {
+    try {
+      const sourcePath = await openFile({
+        title: 'Add Route Vehicle to My Vehicles',
+        multiple: false,
+        directory: false,
+        filters: [{ name: 'PNG, WebP, or JPEG image', extensions: ['png', 'webp', 'jpg', 'jpeg'] }],
+      });
+      if (typeof sourcePath !== 'string') return;
+      const asset = await ingestProjectImage(sourcePath);
+      onAddAsset?.(asset);
+      const imageDataUrl = await resolveProjectAssetDataUrl(asset);
+      const name = window.prompt('Vehicle name', asset.filename.replace(/\.[^.]+$/, '') || 'My Vehicle')?.trim();
+      if (!name) return;
+      saveVehicleStyle(name, imageDataUrl, asset.filename);
+      setMyVehicles(getVehicleStyles());
+      patchRouteVehicle({ vehicleType: 'custom', vehicleAssetId: asset.id });
+    } catch (error) {
+      console.error('Add Route My Vehicle failed:', error);
     }
   };
   return (
@@ -4821,7 +4892,7 @@ function RouteSettings({
       )}
       {timelineContext && (
         <div className="pin-section route-section">
-          <span className="pin-section-title">Route Section Usage · Actual Seconds</span>
+          <span className="pin-section-title">Route · Actual Seconds</span>
           <label className="toggle">
             <span>Layer exists in this {transitionContext ? 'Transition' : 'View'}</span>
             <input
@@ -4834,6 +4905,291 @@ function RouteSettings({
               onChange={(event) => timelineContext.onSetMembership(event.target.checked)}
             />
           </label>
+          <label>
+            Appear
+            <select
+              disabled={!canAnimate}
+              value={!timelineContext.anim?.appearEnabled ? 'none' : (timelineContext.anim.appearType ?? 'fade')}
+              onChange={(event) => {
+                const value = event.target.value as 'none' | 'fade' | 'pop' | 'drop' | 'draw-route';
+                timelineContext.onPatchAnim({
+                  appearEnabled: value !== 'none',
+                  appearType: value === 'none' ? 'fade' : value,
+                });
+              }}
+            >
+              <option value="none">None</option>
+              <option value="fade">Fade</option>
+              <option value="pop">Pop</option>
+              <option value="drop">Drop</option>
+              <option value="draw-route">Draw Route</option>
+            </select>
+          </label>
+          {timelineContext.anim?.appearEnabled && (
+            <div className="two-col">
+              <label>
+                Appear Delay
+                <input
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  disabled={!canAnimate}
+                  value={timelineContext.anim.appearDelay ?? 0}
+                  onWheel={(event) => event.stopPropagation()}
+                  onChange={(event) =>
+                    timelineContext.onPatchAnim({ appearDelay: Math.max(0, Number(event.target.value)) })
+                  }
+                />
+              </label>
+              <label>
+                Appear Duration
+                <input
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  disabled={!canAnimate}
+                  value={timelineContext.anim.appearDuration ?? 1.5}
+                  onWheel={(event) => event.stopPropagation()}
+                  onChange={(event) =>
+                    timelineContext.onPatchAnim({
+                      appearDuration: Math.max(0, Number(event.target.value)),
+                    })
+                  }
+                />
+              </label>
+            </div>
+          )}
+          <label className="toggle">
+            <span>Vehicle Movement</span>
+            <input
+              type="checkbox"
+              disabled={!canAnimate}
+              checked={Boolean(routeVehicle.vehicleEnabled)}
+              onChange={(event) => patchRouteVehicle({ vehicleEnabled: event.target.checked })}
+            />
+          </label>
+          {routeVehicle.vehicleEnabled && (
+            <>
+              <div className="two-col">
+                <label>
+                  Vehicle Type
+                  <select
+                    value={routeVehicle.vehicleType ?? 'directional-capsule'}
+                    onChange={(event) =>
+                      patchRouteVehicle({ vehicleType: event.target.value as RouteVehicleType })
+                    }
+                  >
+                    {ROUTE_VEHICLE_GROUPS.map((group) => (
+                      <optgroup key={group.label} label={group.label}>
+                        {group.vehicles.map((value) => (
+                          <option key={value} value={value}>
+                            {ROUTE_VEHICLE_LABELS[value]}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                    <option value="custom">Custom / Project Image</option>
+                  </select>
+                </label>
+                <label>
+                  Vehicle Size
+                  <input
+                    type="number"
+                    min="8"
+                    max="96"
+                    value={routeVehicle.vehicleSize ?? 22}
+                    onWheel={(event) => event.stopPropagation()}
+                    onChange={(event) =>
+                      patchRouteVehicle({ vehicleSize: Math.max(8, Math.min(96, Number(event.target.value))) })
+                    }
+                  />
+                </label>
+              </div>
+              {routeVehicle.vehicleType === 'custom' && (
+                <div className="custom-icon-preview">
+                  {routeVehicle.vehicleAssetId && assetUrls[routeVehicle.vehicleAssetId] ? (
+                    <img
+                      src={assetUrls[routeVehicle.vehicleAssetId]}
+                      alt="Custom Route vehicle"
+                      draggable={false}
+                      style={{ width: 48, height: 48, objectFit: 'contain' }}
+                    />
+                  ) : (
+                    <small>Missing custom image; Directional Capsule fallback is used.</small>
+                  )}
+                </div>
+              )}
+              <button type="button" className="quiet" onClick={() => void chooseRouteVehicleImage()}>
+                Custom Vehicle Image…
+              </button>
+              <div className="pin-section route-vehicle-library">
+                <span className="pin-section-title">My Vehicles</span>
+                <div className="pin-style-grid">
+                  {myVehicles.map((entry) => (
+                    <div key={entry.id} className="pin-style-tile my-style-tile">
+                      <button
+                        type="button"
+                        className="pin-style-main"
+                        title={`Use ${entry.name}`}
+                        onClick={() => void useRouteVehicleStyle(entry)}
+                      >
+                        <img src={entry.imageDataUrl} alt={entry.name} draggable={false} />
+                        <span>{entry.name}</span>
+                      </button>
+                      <div className="pin-style-tile-actions">
+                        <button
+                          type="button"
+                          className="pin-style-action"
+                          title="Rename vehicle"
+                          onClick={() => {
+                            const name = window.prompt('Rename vehicle', entry.name)?.trim();
+                            if (!name) return;
+                            renameVehicleStyle(entry.id, name);
+                            setMyVehicles(getVehicleStyles());
+                          }}
+                        >
+                          ✎
+                        </button>
+                        <button
+                          type="button"
+                          className="pin-style-action danger"
+                          title="Remove from My Vehicles"
+                          onClick={() => {
+                            if (!window.confirm(`Remove "${entry.name}" from My Vehicles?`)) return;
+                            deleteVehicleStyle(entry.id);
+                            setMyVehicles(getVehicleStyles());
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  <button type="button" className="pin-style-tile add" onClick={() => void addRouteVehicleStyle()}>
+                    <span className="pin-style-add-icon">+</span>
+                    <span>Add Vehicle</span>
+                  </button>
+                </div>
+              </div>
+              <div className="two-col">
+                <label>
+                  Vehicle Delay
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={routeVehicle.vehicleDelay ?? 0}
+                    onWheel={(event) => event.stopPropagation()}
+                    onChange={(event) =>
+                      patchRouteVehicle({ vehicleDelay: Math.max(0, Number(event.target.value)) })
+                    }
+                  />
+                </label>
+                <label>
+                  Vehicle Duration
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={routeVehicle.vehicleDuration ?? 1.5}
+                    onWheel={(event) => event.stopPropagation()}
+                    onChange={(event) =>
+                      patchRouteVehicle({ vehicleDuration: Math.max(0, Number(event.target.value)) })
+                    }
+                  />
+                </label>
+              </div>
+              <div className="two-col">
+                <label className="toggle">
+                  <span>Follow Path Direction</span>
+                  <input
+                    type="checkbox"
+                    checked={routeVehicle.vehicleFollowDirection ?? true}
+                    onChange={(event) =>
+                      patchRouteVehicle({ vehicleFollowDirection: event.target.checked })
+                    }
+                  />
+                </label>
+                <label>
+                  Rotation Offset
+                  <input
+                    type="number"
+                    step="1"
+                    value={routeVehicle.vehicleOrientationOffset ?? 0}
+                    onWheel={(event) => event.stopPropagation()}
+                    onChange={(event) =>
+                      patchRouteVehicle({ vehicleOrientationOffset: Number(event.target.value) || 0 })
+                    }
+                  />
+                </label>
+              </div>
+              <label className="toggle">
+                <span>Repetitive Movement</span>
+                <input
+                  type="checkbox"
+                  checked={Boolean(routeVehicle.vehicleRepetitive)}
+                  onChange={(event) => patchRouteVehicle({ vehicleRepetitive: event.target.checked })}
+                />
+              </label>
+              {routeVehicle.vehicleRepetitive && (
+                <label>
+                  Interval Time
+                  <input
+                    type="number"
+                    min="0.05"
+                    step="0.1"
+                    value={routeVehicle.vehicleInterval ?? 1}
+                    onWheel={(event) => event.stopPropagation()}
+                    onChange={(event) =>
+                      patchRouteVehicle({ vehicleInterval: Math.max(0.05, Number(event.target.value) || 0.05) })
+                    }
+                  />
+                </label>
+              )}
+            </>
+          )}
+          <label className="toggle">
+            <span>Wipe Out</span>
+            <input
+              type="checkbox"
+              disabled={!canAnimate}
+              checked={Boolean(timelineContext.anim?.wipeEnabled)}
+              onChange={(event) => timelineContext.onPatchAnim({ wipeEnabled: event.target.checked })}
+            />
+          </label>
+          {timelineContext.anim?.wipeEnabled && (
+            <div className="two-col">
+              <label>
+                Wipe Delay
+                <input
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  value={timelineContext.anim.wipeDelay ?? 0}
+                  onWheel={(event) => event.stopPropagation()}
+                  onChange={(event) =>
+                    timelineContext.onPatchAnim({ wipeDelay: Math.max(0, Number(event.target.value)) })
+                  }
+                />
+              </label>
+              <label>
+                Wipe Duration
+                <input
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  value={timelineContext.anim.wipeDuration ?? 1.5}
+                  onWheel={(event) => event.stopPropagation()}
+                  onChange={(event) =>
+                    timelineContext.onPatchAnim({
+                      wipeDuration: Math.max(0, Number(event.target.value)),
+                    })
+                  }
+                />
+              </label>
+            </div>
+          )}
+          <span className="pin-section-title">Route Section Usage</span>
           <button
             type="button"
             className="quiet"

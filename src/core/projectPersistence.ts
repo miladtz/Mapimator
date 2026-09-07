@@ -461,7 +461,7 @@ const validateSegmentLayerAnimation = (value: unknown, path: string): SegmentLay
       throw new Error(`${path}.${key} must be a boolean.`);
   if (
     value.appearType !== undefined &&
-    !oneOf(value.appearType, ['fade', 'pop', 'drop', 'draw-shape'] as const)
+    !oneOf(value.appearType, ['fade', 'pop', 'drop', 'draw-shape', 'draw-route'] as const)
   )
     throw new Error(`${path}.appearType is unsupported.`);
   if (value.wipeType !== undefined && !oneOf(value.wipeType, ['fade-out'] as const))
@@ -485,6 +485,8 @@ const validateSegmentLayerAnimation = (value: unknown, path: string): SegmentLay
     throw new Error(`${path}.textReferenceZoom must be > 0.`);
   if (value.routeDefaults !== undefined && !isRecord(value.routeDefaults))
     throw new Error(`${path}.routeDefaults must be an object.`);
+  if (value.routeVehicle !== undefined && !isRecord(value.routeVehicle))
+    throw new Error(`${path}.routeVehicle must be an object.`);
   if (value.routeSegmentAnimations !== undefined) {
     if (!isRecord(value.routeSegmentAnimations))
       throw new Error(`${path}.routeSegmentAnimations must be an object.`);

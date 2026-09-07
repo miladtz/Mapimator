@@ -224,7 +224,9 @@ const layerLifecycle = (
     if (time >= appearEnd) return evalWipe();
     const progress = (time - appearStart) / appearDuration;
     const eased =
-      type === 'fade' || type === 'draw-shape' ? progress : easeCameraProgress(progress, 'ease-out');
+      type === 'fade' || type === 'draw-shape' || type === 'draw-route'
+        ? progress
+        : easeCameraProgress(progress, 'ease-out');
     return {
       opacityMul: eased,
       visible: progress > 0,
@@ -269,7 +271,14 @@ const applyPhaseToLayer = (
     layer.regionEffectProgress = phase.opacityMul;
     layer.regionEffectTime = animation.regionEffect === 'draw-border' ? phase.segmentLocalTime : projectTime;
   }
-  if (layer.type === 'route') applyRouteEvaluation(layer, animation, phase.segmentLocalTime);
+  if (layer.type === 'route') {
+    applyRouteEvaluation(layer, animation, phase.segmentLocalTime);
+    if (
+      (animation?.appearEnabled && animation.appearType === 'draw-route') ||
+      (animation?.wipeEnabled && (phase.wipeOpacityMul ?? 1) < 1)
+    )
+      layer.opacity = authoredOpacity;
+  }
   if (layer.type === 'text') {
     layer.textRenderScale = textMapZoomScale(animation, cameraZoom);
     layer.textAnimationScale = phase.popScale ?? 1;
@@ -294,22 +303,36 @@ const applyPhaseToLayer = (
   else delete layer.pinDropOffsetY;
 };
 
-/**
- * New-model continuation: while a View holds, an appear animation from the
- * immediately previous transition may still be running. It continues ONLY for
- * layers that belong to BOTH the previous transition and the current View
- * (segment membership is authoritative — no phantom layers). The configured
- * appear, hold, and wipe lifecycle may cross the boundary; the destination
- * View's own lifecycle takes over when that continuation completes. Returns
- * the set of layer ids whose
- * continuation is still active (their View-hold lifecycle is deferred).
- */
+/** Membership of a real temporal segment; zero-Hold Views are not compiled. */
 const segmentMemberIds = (segment: CompiledSegment | undefined): Set<string> => {
   if (!segment) return new Set<string>();
   return segment.kind === 'view' ? viewMemberIds(segment.view) : transitionMemberIds(segment.transition);
 };
 
-const applyContinuingTransitionAnimations = (
+const segmentAnimation = (
+  segment: CompiledSegment,
+  layerId: string,
+): SegmentLayerAnimation | undefined =>
+  segment.kind === 'view'
+    ? viewAnimOf(segment.view, layerId)
+    : transitionAnimOf(segment.transition, layerId);
+
+const routeSectionIncluded = (segment: CompiledSegment, layerId: string, sectionId: string): boolean => {
+  if (!segmentMemberIds(segment).has(layerId)) return false;
+  const animation = segmentAnimation(segment, layerId);
+  return (
+    animation?.routeSegmentAnimations?.[sectionId]?.included ??
+    animation?.routeDefaults?.included ??
+    true
+  );
+};
+
+const routeAppearCompleteTime = (timing: NonNullable<SegmentLayerAnimation['routeDefaults']>) =>
+  Math.max(0, timing.appearDelay ?? timing.drawDelay ?? 0) +
+  Math.max(0, timing.appearDuration ?? timing.drawDuration ?? 1.5);
+
+/** Resolve the latest unfinished explicit Appear event from canonical project time. */
+const applyActiveAppearEvents = (
   layers: Layer[],
   segments: CompiledSegment[],
   currentIndex: number,
@@ -317,35 +340,86 @@ const applyContinuingTransitionAnimations = (
   cameraZoom: number,
 ): Set<string> => {
   const continued = new Set<string>();
-  const prevSeg = segments[currentIndex - 1];
-  if (!prevSeg) return continued;
-  if (prevSeg.kind !== 'transition') return continued;
-  const prevTransIds = transitionMemberIds(prevSeg.transition);
-  const curIds = new Set(layers.map((layer) => layer.id));
-  // Entering state comes from the previous ACTIVE temporal segment. A
-  // zero-Hold View is only a camera anchor and is deliberately absent here.
-  const sourceMembers = segmentMemberIds(segments[currentIndex - 2]);
-  const transitionStart = prevSeg.start;
   for (const layer of layers) {
-    if (!prevTransIds.has(layer.id) || !curIds.has(layer.id)) continue;
-    const anim = transitionAnimOf(prevSeg.transition, layer.id);
-    if (!anim || (!anim.appearEnabled && !anim.wipeEnabled)) continue;
-    const entering = !sourceMembers.has(layer.id);
-    const appearDuration = anim.appearEnabled ? wholeAppearanceCompleteTime(anim) : 0;
-    const lifecycleEnd =
-      transitionStart +
-      appearDuration +
-      Math.max(0, anim.layerHoldDuration ?? 0) +
-      (anim.wipeEnabled ? Math.max(0.05, anim.wipeDuration ?? 0.5) : 0);
-    if (time >= lifecycleEnd) continue;
-    applyPhaseToLayer(
-      layer,
-      layerLifecycle(layer, anim, entering, time, transitionStart),
-      time,
-      anim,
-      cameraZoom,
-    );
-    continued.add(layer.id);
+    let eventSegment: CompiledSegment | undefined;
+    let anim: SegmentLayerAnimation | undefined;
+    for (let index = currentIndex; index >= 0; index -= 1) {
+      const candidate = segments[index];
+      const candidateAnimation = segmentAnimation(candidate, layer.id);
+      if (candidateAnimation?.appearEnabled && segmentMemberIds(candidate).has(layer.id)) {
+        eventSegment = candidate;
+        anim = candidateAnimation;
+        break;
+      }
+    }
+    if (eventSegment && anim) {
+      const eventIndex = segments.indexOf(eventSegment);
+      const uninterrupted = segments
+        .slice(eventIndex, currentIndex + 1)
+        .every((candidate) => segmentMemberIds(candidate).has(layer.id));
+      if (uninterrupted && time < eventSegment.start + wholeAppearanceCompleteTime(anim)) {
+        const effectiveAnimation =
+          layer.type === 'route'
+            ? {
+                ...anim,
+                routeDefaults: segmentAnimation(segments[currentIndex], layer.id)?.routeDefaults,
+                routeSegmentAnimations: segmentAnimation(segments[currentIndex], layer.id)
+                  ?.routeSegmentAnimations,
+                routeVehicle: segmentAnimation(segments[currentIndex], layer.id)?.routeVehicle,
+              }
+            : anim;
+        applyPhaseToLayer(
+          layer,
+          layerLifecycle(layer, effectiveAnimation, true, time, eventSegment.start),
+          time,
+          effectiveAnimation,
+          cameraZoom,
+        );
+        continued.add(layer.id);
+      }
+    }
+
+    if (layer.type !== 'route') continue;
+    const currentSegment = segments[currentIndex];
+    const currentAnimation = segmentAnimation(currentSegment, layer.id) ?? {};
+    const routeSegmentAnimations = { ...(currentAnimation.routeSegmentAnimations ?? {}) };
+    let hasActiveRouteEvent = false;
+    for (const section of layer.routeSegments ?? []) {
+      for (let index = currentIndex; index >= 0; index -= 1) {
+        const candidate = segments[index];
+        const candidateAnimation = segmentAnimation(candidate, layer.id);
+        const timing = candidateAnimation?.routeSegmentAnimations?.[section.id];
+        if (!(timing?.appearEnabled ?? timing?.drawEnabled)) continue;
+        const uninterrupted = segments
+          .slice(index, currentIndex + 1)
+          .every((part) => routeSectionIncluded(part, layer.id, section.id));
+        if (!uninterrupted || time >= candidate.start + routeAppearCompleteTime(timing)) break;
+        routeSegmentAnimations[section.id] = {
+          ...timing,
+          included:
+            currentAnimation.routeSegmentAnimations?.[section.id]?.included ??
+            currentAnimation.routeDefaults?.included ??
+            true,
+          appearDelay: candidate.start + Math.max(0, timing.appearDelay ?? timing.drawDelay ?? 0),
+          appearDuration: Math.max(0, timing.appearDuration ?? timing.drawDuration ?? 1.5),
+        };
+        hasActiveRouteEvent = true;
+        break;
+      }
+    }
+    if (hasActiveRouteEvent) {
+      if (!continued.has(layer.id)) {
+        applyPhaseToLayer(
+          layer,
+          layerLifecycle(layer, currentAnimation, true, time, currentSegment.start),
+          time,
+          currentAnimation,
+          cameraZoom,
+        );
+      }
+      applyRouteEvaluation(layer, { ...currentAnimation, routeSegmentAnimations }, time);
+      continued.add(layer.id);
+    }
   }
   return continued;
 };
@@ -385,7 +459,7 @@ export const evaluateProjectAtTime = (project: Project, time: number): RenderedP
   if (segment.kind === 'view') {
     // --- View Hold: project layers included in this View + View lifecycle ---
     const layers = viewLayersOf(project, segment.view);
-    const continued = applyContinuingTransitionAnimations(
+    const continued = applyActiveAppearEvents(
       layers,
       sequence.segments,
       index,
@@ -443,7 +517,7 @@ export const evaluateProjectAtTime = (project: Project, time: number): RenderedP
         ));
   const layers = transitionLayersOf(project, segment.transition);
   const sourceMembers = segmentMemberIds(sequence.segments[index - 1]);
-  const continued = applyContinuingTransitionAnimations(
+  const continued = applyActiveAppearEvents(
     layers,
     sequence.segments,
     index,
