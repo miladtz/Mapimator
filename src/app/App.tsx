@@ -224,6 +224,7 @@ import {
   resolveProjectAssetUrls,
   validateProjectAssetStorage,
 } from '../core/projectAssets';
+import { imageAspectRatioOf, resizeImageLayer } from '../core/imageLayers';
 import {
   deleteVehicleStyle,
   getVehicleStyles,
@@ -1005,14 +1006,17 @@ export function App() {
           title: 'Import Project Image',
           multiple: false,
           directory: false,
-          filters: [{ name: 'PNG or JPEG image', extensions: ['png', 'jpg', 'jpeg'] }],
+          filters: [{ name: 'PNG, JPEG, or WebP image', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
         });
         if (typeof sourcePath !== 'string') return;
         asset = await ingestProjectImage(sourcePath);
         layer.assetId = asset.id;
         layer.name = asset.filename;
         layer.width = 160;
-        layer.height = Math.max(30, Math.min(160, (160 * asset.height) / asset.width));
+        layer.height = (160 * asset.height) / asset.width;
+        layer.imageAspectRatio = asset.width / asset.height;
+        layer.imageAspectLocked = true;
+        layer.imageFitMode = 'contain';
       } catch (error) {
         setNotice(`Import image failed: ${String(error)}`);
         return;
@@ -2518,6 +2522,7 @@ export function App() {
                       ),
                     }));
                   }}
+                  onChangeImage={(layerId, patch) => updateLayer(layerId, patch)}
                   onShapeDrawPoint={
                     placing === 'shape' && shapeKindToPlace === 'free-draw'
                       ? (point) =>
@@ -3613,6 +3618,7 @@ function OnlinePreviewMap({
   onMovePin,
   onMoveShapePoint,
   onMoveShape,
+  onChangeImage,
   onShapeDrawPoint,
   onShapeDrawFinish,
   onMoveRouteWaypoint,
@@ -3646,6 +3652,7 @@ function OnlinePreviewMap({
   onMovePin: (id: string, x: number, y: number) => void;
   onMoveShapePoint?: (layerId: string, pointId: string, x: number, y: number) => void;
   onMoveShape?: (layerId: string, dx: number, dy: number) => void;
+  onChangeImage?: (layerId: string, patch: Partial<Layer>) => void;
   onShapeDrawPoint?: (point: { x: number; y: number }) => void;
   onShapeDrawFinish?: () => void;
   onMoveRouteWaypoint?: (layerId: string, waypointId: string, longitude: number, latitude: number) => void;
@@ -3682,6 +3689,7 @@ function OnlinePreviewMap({
       onMovePin={onMovePin}
       onMoveShapePoint={onMoveShapePoint}
       onMoveShape={onMoveShape}
+      onChangeImage={onChangeImage}
       onShapeDrawPoint={onShapeDrawPoint}
       onShapeDrawFinish={onShapeDrawFinish}
       onMoveRouteWaypoint={onMoveRouteWaypoint}
@@ -4781,7 +4789,9 @@ function RouteSettings({
       const asset = await ingestProjectImage(sourcePath);
       onAddAsset?.(asset);
       const imageDataUrl = await resolveProjectAssetDataUrl(asset);
-      const name = window.prompt('Vehicle name', asset.filename.replace(/\.[^.]+$/, '') || 'My Vehicle')?.trim();
+      const name = window
+        .prompt('Vehicle name', asset.filename.replace(/\.[^.]+$/, '') || 'My Vehicle')
+        ?.trim();
       if (!name) return;
       saveVehicleStyle(name, imageDataUrl, asset.filename);
       setMyVehicles(getVehicleStyles());
@@ -4909,7 +4919,9 @@ function RouteSettings({
             Appear
             <select
               disabled={!canAnimate}
-              value={!timelineContext.anim?.appearEnabled ? 'none' : (timelineContext.anim.appearType ?? 'fade')}
+              value={
+                !timelineContext.anim?.appearEnabled ? 'none' : (timelineContext.anim.appearType ?? 'fade')
+              }
               onChange={(event) => {
                 const value = event.target.value as 'none' | 'fade' | 'pop' | 'drop' | 'draw-route';
                 timelineContext.onPatchAnim({
@@ -5000,7 +5012,9 @@ function RouteSettings({
                     value={routeVehicle.vehicleSize ?? 22}
                     onWheel={(event) => event.stopPropagation()}
                     onChange={(event) =>
-                      patchRouteVehicle({ vehicleSize: Math.max(8, Math.min(96, Number(event.target.value))) })
+                      patchRouteVehicle({
+                        vehicleSize: Math.max(8, Math.min(96, Number(event.target.value))),
+                      })
                     }
                   />
                 </label>
@@ -5065,7 +5079,11 @@ function RouteSettings({
                       </div>
                     </div>
                   ))}
-                  <button type="button" className="pin-style-tile add" onClick={() => void addRouteVehicleStyle()}>
+                  <button
+                    type="button"
+                    className="pin-style-tile add"
+                    onClick={() => void addRouteVehicleStyle()}
+                  >
                     <span className="pin-style-add-icon">+</span>
                     <span>Add Vehicle</span>
                   </button>
@@ -5105,9 +5123,7 @@ function RouteSettings({
                   <input
                     type="checkbox"
                     checked={routeVehicle.vehicleFollowDirection ?? true}
-                    onChange={(event) =>
-                      patchRouteVehicle({ vehicleFollowDirection: event.target.checked })
-                    }
+                    onChange={(event) => patchRouteVehicle({ vehicleFollowDirection: event.target.checked })}
                   />
                 </label>
                 <label>
@@ -5141,7 +5157,9 @@ function RouteSettings({
                     value={routeVehicle.vehicleInterval ?? 1}
                     onWheel={(event) => event.stopPropagation()}
                     onChange={(event) =>
-                      patchRouteVehicle({ vehicleInterval: Math.max(0.05, Number(event.target.value) || 0.05) })
+                      patchRouteVehicle({
+                        vehicleInterval: Math.max(0.05, Number(event.target.value) || 0.05),
+                      })
                     }
                   />
                 </label>
@@ -6096,6 +6114,7 @@ function Inspector({
   viewContext?: ViewLayerContext;
 }) {
   const isText = layer.type === 'text';
+  const isImage = layer.type === 'image';
   const appearOptions = getAppearOptionsForLayer(layer);
   const appearTypeForLayer = (animation: import('../core/project').SegmentLayerAnimation | undefined) =>
     appearOptions.some((option) => option.value === animation?.appearType) ? animation!.appearType! : 'fade';
@@ -6141,6 +6160,30 @@ function Inspector({
       onChange({ regionFillMode: 'image', regionImageAssetId: asset.id });
     } catch (error) {
       console.error('Choose Region image failed:', error);
+    }
+  };
+  const chooseImageLayerAsset = async () => {
+    if (layer.type !== 'image') return;
+    try {
+      const sourcePath = await openFile({
+        title: 'Choose Image',
+        multiple: false,
+        directory: false,
+        filters: [{ name: 'PNG, JPEG, or WebP image', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+      });
+      if (typeof sourcePath !== 'string') return;
+      const asset = await ingestProjectImage(sourcePath);
+      onAddAsset?.(asset);
+      const ratio = asset.width / Math.max(1, asset.height);
+      const width = layer.width ?? 160;
+      onChange({
+        assetId: asset.id,
+        name: layer.assetId ? layer.name : asset.filename,
+        imageAspectRatio: ratio,
+        height: layer.imageAspectLocked === false ? (layer.height ?? width / ratio) : width / ratio,
+      });
+    } catch (error) {
+      console.error('Choose Image failed:', error);
     }
   };
   /** Copy a reusable style's image into the project-owned asset store, then apply it. */
@@ -6209,6 +6252,99 @@ function Inspector({
         Name
         <input value={layer.name} onChange={(e) => onChange({ name: e.target.value })} />
       </label>
+      {layer.type === 'image' && (
+        <div className="pin-section image-properties">
+          <span className="pin-section-title">Image</span>
+          {layer.assetId && assetUrls[layer.assetId] ? (
+            <img
+              className="image-layer-preview"
+              src={assetUrls[layer.assetId]}
+              alt={layer.name}
+              draggable={false}
+            />
+          ) : (
+            <small>Image asset unavailable.</small>
+          )}
+          <button type="button" className="quiet" onClick={() => void chooseImageLayerAsset()}>
+            Replace Image…
+          </button>
+          <div className="two-col">
+            <label>
+              Width
+              <input
+                type="number"
+                min="4"
+                step="1"
+                value={Math.round((layer.width ?? 160) * 100) / 100}
+                onChange={(event) =>
+                  onChange(resizeImageLayer(layer, Number(event.target.value), layer.height ?? 90))
+                }
+              />
+            </label>
+            <label>
+              Height
+              <input
+                type="number"
+                min="4"
+                step="1"
+                disabled={layer.imageAspectLocked !== false}
+                value={Math.round((layer.height ?? 90) * 100) / 100}
+                onChange={(event) =>
+                  onChange(resizeImageLayer(layer, layer.width ?? 160, Number(event.target.value)))
+                }
+              />
+            </label>
+          </div>
+          <label className="toggle">
+            <span>Lock aspect ratio</span>
+            <input
+              type="checkbox"
+              checked={layer.imageAspectLocked !== false}
+              onChange={(event) =>
+                onChange({
+                  imageAspectLocked: event.target.checked,
+                  imageAspectRatio: imageAspectRatioOf(layer),
+                })
+              }
+            />
+          </label>
+          <label>
+            Rotation
+            <input
+              type="number"
+              min="-360"
+              max="360"
+              step="0.1"
+              value={layer.imageRotation ?? 0}
+              onChange={(event) => onChange({ imageRotation: Number(event.target.value) || 0 })}
+            />
+          </label>
+          <label>
+            Fit
+            <select
+              value={layer.imageFitMode ?? 'contain'}
+              onChange={(event) => onChange({ imageFitMode: event.target.value as Layer['imageFitMode'] })}
+            >
+              <option value="contain">Fit / Contain</option>
+              <option value="cover">Fill / Crop</option>
+            </select>
+          </label>
+          <label>
+            Opacity
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              value={layer.opacity}
+              onChange={(event) => onChange({ opacity: Number(event.target.value) })}
+            />
+          </label>
+          <small className="global-layer-note">
+            Drag the image, corner handles, or orange rotation handle on the map.
+          </small>
+        </div>
+      )}
       {layer.type === 'shape' && (
         <div className="pin-section shape-properties">
           <span className="pin-section-title">Shape Geometry</span>
@@ -6939,6 +7075,37 @@ function Inspector({
             <p className="transition-hint">Enable this layer for the transition to configure animation.</p>
           ) : (
             <>
+              {isImage && (
+                <>
+                  <label>
+                    Orientation
+                    <select
+                      value={transitionContext.anim?.imageOrientation ?? 'flat-on-map'}
+                      onChange={(event) =>
+                        transitionContext.onPatchAnim({
+                          imageOrientation: event.target.value as import('../core/project').TextOrientation,
+                        })
+                      }
+                    >
+                      <option value="face-camera">Face Camera</option>
+                      <option value="flat-on-map">Flat on Map</option>
+                    </select>
+                  </label>
+                  <label className="toggle">
+                    <span>Scale with Map Zoom</span>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(transitionContext.anim?.imageScaleWithMapZoom)}
+                      onChange={(event) =>
+                        transitionContext.onPatchAnim({
+                          imageScaleWithMapZoom: event.target.checked,
+                          imageReferenceZoom: transitionContext.cameraZoom,
+                        })
+                      }
+                    />
+                  </label>
+                </>
+              )}
               {isText && (
                 <label className="toggle">
                   <span>Scale with Map Zoom</span>
@@ -7107,6 +7274,37 @@ function Inspector({
             <p className="transition-hint">Enable this layer for the View to configure animation.</p>
           ) : (
             <>
+              {isImage && (
+                <>
+                  <label>
+                    Orientation
+                    <select
+                      value={viewContext.anim?.imageOrientation ?? 'flat-on-map'}
+                      onChange={(event) =>
+                        viewContext.onPatchAnim({
+                          imageOrientation: event.target.value as import('../core/project').TextOrientation,
+                        })
+                      }
+                    >
+                      <option value="face-camera">Face Camera</option>
+                      <option value="flat-on-map">Flat on Map</option>
+                    </select>
+                  </label>
+                  <label className="toggle">
+                    <span>Scale with Map Zoom</span>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(viewContext.anim?.imageScaleWithMapZoom)}
+                      onChange={(event) =>
+                        viewContext.onPatchAnim({
+                          imageScaleWithMapZoom: event.target.checked,
+                          imageReferenceZoom: viewContext.cameraZoom,
+                        })
+                      }
+                    />
+                  </label>
+                </>
+              )}
               {isText && (
                 <label className="toggle">
                   <span>Scale with Map Zoom</span>
@@ -7551,7 +7749,8 @@ function Inspector({
       {layer.type !== 'pin' &&
         layer.type !== 'region' &&
         layer.type !== 'route' &&
-        layer.type !== 'shape' && (
+        layer.type !== 'shape' &&
+        layer.type !== 'image' && (
           <div className="two-col">
             <label>
               Color

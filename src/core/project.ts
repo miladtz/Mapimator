@@ -266,6 +266,11 @@ export interface SegmentLayerAnimation {
   textReferenceZoom?: number;
   /** Text-only timeline choice. Defaults to a viewer-facing billboard for compatibility. */
   textOrientation?: TextOrientation;
+  /** Image-only timeline scale relative to the selected segment's reference Zoom. */
+  imageScaleWithMapZoom?: boolean;
+  imageReferenceZoom?: number;
+  /** Image-only timeline orientation; deliberately not globally propagated. */
+  imageOrientation?: TextOrientation;
   /** Arrow-only timeline orientation. Other Shapes always remain map-flat. */
   shapeOrientation?: TextOrientation;
   regionEffect?: 'fade' | 'draw-border' | 'pulse';
@@ -300,6 +305,7 @@ export interface ProjectImageAsset {
   packagePath: string;
 }
 export type ProjectAsset = ProjectImageAsset;
+export type ImageFitMode = 'contain' | 'cover';
 export type CanvasLayoutId = 'landscape' | 'portrait' | 'square' | 'portrait-4-5' | 'classic-4-3' | 'custom';
 export interface CanvasLayout {
   id: CanvasLayoutId;
@@ -445,6 +451,18 @@ export interface Layer {
   effectDuration?: number;
   effectRepeat?: boolean;
   assetId?: string;
+  /** Image-layer geographic placement uses the legacy-compatible top-left x/y anchor. */
+  imageRotation?: number;
+  imageAspectLocked?: boolean;
+  imageAspectRatio?: number;
+  imageFitMode?: ImageFitMode;
+  /** Evaluator-owned Image timeline state; never authored on the Project Layer. */
+  imageRenderScale?: number;
+  imageAnimationScale?: number;
+  imageDropOffsetY?: number;
+  imageWipeProgress?: number;
+  imageOrientation?: TextOrientation;
+  imageScaleWithMapZoom?: boolean;
   // Pin-specific appearance. Older projects omit these and inherit deterministic defaults.
   pinStyle?: PinStyle;
   pinSize?: number;
@@ -859,7 +877,16 @@ export const createLayer = (type: LayerType, offset = 0): Layer => {
       shapeRotation: 0,
     },
     arrow: { name: 'Advance arrow', color: '#ef694f', x: 560, y: 300, x2: 700, y2: 270 },
-    image: { name: 'Image placeholder', color: '#7d9bbb', width: 118, height: 72 },
+    image: {
+      name: 'Image',
+      color: '#7d9bbb',
+      width: 160,
+      height: 90,
+      imageRotation: 0,
+      imageAspectLocked: true,
+      imageAspectRatio: 16 / 9,
+      imageFitMode: 'contain',
+    },
     route: {
       name: 'Flow',
       color: '#64d5ba',

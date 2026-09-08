@@ -26,6 +26,7 @@ import {
 } from '../core/camera';
 import { resolveTextLayerStyle } from '../core/textLayers';
 import { arrowHeadCoordinates, evaluatedShapeCoordinates } from '../core/shapes';
+import { evaluatedImageLayer } from '../core/imageLayers';
 import {
   PIN_DEFAULTS,
   pinLabelOffsetOf,
@@ -1626,21 +1627,40 @@ function LayerGraphic({
     );
   }
   if (layer.type === 'image' && assetUrl)
-    return (
-      <g
-        {...common}
-        transform={flatCamera ? mapPlaneLocalTransform(flatCamera, layer.x, layer.y) : undefined}
-      >
-        <image
-          href={assetUrl}
-          x={flatCamera ? layer.x : point.x}
-          y={flatCamera ? layer.y : point.y}
-          width={(layer.width ?? 0) * (globe?.symbolScale ?? 1)}
-          height={(layer.height ?? 0) * (globe?.symbolScale ?? 1)}
-          preserveAspectRatio="xMidYMid meet"
-        />
-      </g>
-    );
+    return (() => {
+      const rendered = evaluatedImageLayer(layer);
+      const renderedPoint = projectLayerPoint(rendered.x, rendered.y, globe, flatCamera) ?? point;
+      const faceCamera = layer.imageOrientation === 'face-camera';
+      const width = (rendered.width ?? 0) * (globe?.symbolScale ?? 1);
+      const height = (rendered.height ?? 0) * (globe?.symbolScale ?? 1);
+      const x = flatCamera ? rendered.x : renderedPoint.x;
+      const y = flatCamera ? rendered.y : renderedPoint.y;
+      const centerX = x + width / 2;
+      const centerY = y + height / 2;
+      const wipe = Math.max(0, Math.min(1, layer.imageWipeProgress ?? 1));
+      const clipId = `image-clip-${layer.id}`;
+      const transform = faceCamera
+        ? `translate(${centerX} ${centerY}) rotate(${layer.imageRotation ?? 0}) scale(${screenScale}) translate(${-centerX} ${-centerY})`
+        : `${flatCamera ? mapPlaneLocalTransform(flatCamera, rendered.x, rendered.y) : ''} rotate(${layer.imageRotation ?? 0} ${centerX} ${centerY})`;
+      return (
+        <g {...common} transform={transform}>
+          <defs>
+            <clipPath id={clipId}>
+              <rect x={x} y={y} width={width * wipe} height={height} />
+            </clipPath>
+          </defs>
+          <image
+            href={assetUrl}
+            x={x}
+            y={y}
+            width={width}
+            height={height}
+            preserveAspectRatio={layer.imageFitMode === 'cover' ? 'xMidYMid slice' : 'xMidYMid meet'}
+            clipPath={`url(#${clipId})`}
+          />
+        </g>
+      );
+    })();
   if (layer.type === 'shape') {
     const rendered = evaluatedShapeCoordinates(layer);
     const projected = rendered.coordinates

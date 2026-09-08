@@ -63,6 +63,7 @@ const optionalStrings = [
   'shapeStrokeStyle',
   'geoEffectType',
   'assetId',
+  'imageFitMode',
   'pinStyle',
   'pinBorderColor',
   'pinLabelColor',
@@ -94,6 +95,8 @@ const optionalNumbers = [
   'y2',
   'width',
   'height',
+  'imageRotation',
+  'imageAspectRatio',
   'fontSize',
   'fontWeight',
   'lineHeight',
@@ -147,6 +150,7 @@ const optionalBooleans = [
   'regionAnimationEnabled',
   'regionStrokeExists',
   'shapeArrowheadEnabled',
+  'imageAspectLocked',
 ] as const;
 
 const validateRegionCoordinates = (value: unknown, path: string): void => {
@@ -405,6 +409,8 @@ const validateLayer = (value: unknown, path: string): Layer => {
   }
   if (value.geoEffectType !== undefined && !oneOf(value.geoEffectType, effectTypes))
     throw new Error(`${path}.geoEffectType is unsupported.`);
+  if (value.imageFitMode !== undefined && !oneOf(value.imageFitMode, ['contain', 'cover'] as const))
+    throw new Error(`${path}.imageFitMode is unsupported.`);
   if (value.regionGeometry !== undefined) {
     if (
       !isRecord(value.regionGeometry) ||
@@ -468,11 +474,18 @@ const validateSegmentLayerAnimation = (value: unknown, path: string): SegmentLay
     throw new Error(`${path}.wipeType is unsupported.`);
   if (value.textScaleWithMapZoom !== undefined && !isBoolean(value.textScaleWithMapZoom))
     throw new Error(`${path}.textScaleWithMapZoom must be a boolean.`);
+  if (value.imageScaleWithMapZoom !== undefined && !isBoolean(value.imageScaleWithMapZoom))
+    throw new Error(`${path}.imageScaleWithMapZoom must be a boolean.`);
   if (
     value.textOrientation !== undefined &&
     !oneOf(value.textOrientation, ['face-camera', 'flat-on-map'] as const)
   )
     throw new Error(`${path}.textOrientation is unsupported.`);
+  if (
+    value.imageOrientation !== undefined &&
+    !oneOf(value.imageOrientation, ['face-camera', 'flat-on-map'] as const)
+  )
+    throw new Error(`${path}.imageOrientation is unsupported.`);
   if (
     value.shapeOrientation !== undefined &&
     !oneOf(value.shapeOrientation, ['face-camera', 'flat-on-map'] as const)
@@ -483,6 +496,11 @@ const validateSegmentLayerAnimation = (value: unknown, path: string): SegmentLay
     (!isFiniteNumber(value.textReferenceZoom) || (value.textReferenceZoom as number) <= 0)
   )
     throw new Error(`${path}.textReferenceZoom must be > 0.`);
+  if (
+    value.imageReferenceZoom !== undefined &&
+    (!isFiniteNumber(value.imageReferenceZoom) || (value.imageReferenceZoom as number) <= 0)
+  )
+    throw new Error(`${path}.imageReferenceZoom must be > 0.`);
   if (value.routeDefaults !== undefined && !isRecord(value.routeDefaults))
     throw new Error(`${path}.routeDefaults must be an object.`);
   if (value.routeVehicle !== undefined && !isRecord(value.routeVehicle))

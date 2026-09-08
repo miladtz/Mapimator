@@ -8,6 +8,7 @@ import {
   mapLibreMinimumZoom,
   mapLibreMaximumZoom,
   mapMotionToMapLibreCamera,
+  mapMotionWorldToLngLat,
   lngLatToMapMotionWorld,
   isRecoverableOpenFreeMapResourceError,
   OPENFREEMAP_STYLES,
@@ -25,6 +26,7 @@ import {
   ONLINE_PROJECT_SHAPE_DASHED_LAYER_ID,
   ONLINE_PROJECT_SHAPE_DOTTED_LAYER_ID,
   ONLINE_PROJECT_SHAPE_HANDLE_LAYER_ID,
+  ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID,
   ONLINE_PROJECT_ROUTE_DASHED_LAYER_ID,
   ONLINE_PROJECT_ROUTE_DOTTED_LAYER_ID,
   ONLINE_PROJECT_ROUTE_RAILWAY_RAILS_LAYER_ID,
@@ -34,6 +36,12 @@ import {
   ONLINE_PROJECT_ROUTE_WAYPOINT_LAYER_ID,
   updateOnlineProjectOverlays,
 } from '../core/onlineProjectOverlays';
+import {
+  imageWorldCorners,
+  resizeImageFromHandle,
+  rotateImageToward,
+  type ImageHandleKind,
+} from '../core/imageLayers';
 import { fitProjectViewport, type LogicalViewport } from '../core/projectRenderViewport';
 import type {
   CameraState,
@@ -163,6 +171,7 @@ interface Props {
   onMovePin: (id: string, x: number, y: number) => void;
   onMoveShapePoint?: (layerId: string, pointId: string, x: number, y: number) => void;
   onMoveShape?: (layerId: string, dx: number, dy: number) => void;
+  onChangeImage?: (layerId: string, patch: Partial<Layer>) => void;
   onShapeDrawPoint?: (point: { x: number; y: number }) => void;
   onShapeDrawFinish?: () => void;
   onMoveRouteWaypoint?: (layerId: string, waypointId: string, longitude: number, latitude: number) => void;
@@ -197,6 +206,7 @@ export function OnlineOpenFreeMap({
   onMovePin,
   onMoveShapePoint,
   onMoveShape,
+  onChangeImage,
   onShapeDrawPoint,
   onShapeDrawFinish,
   onMoveRouteWaypoint,
@@ -234,6 +244,7 @@ export function OnlineOpenFreeMap({
   const onMoveShapeRef = useRef(onMoveShape);
   const onShapeDrawPointRef = useRef(onShapeDrawPoint);
   const onShapeDrawFinishRef = useRef(onShapeDrawFinish);
+  const onChangeImageRef = useRef(onChangeImage);
   const onMoveRouteWaypointRef = useRef(onMoveRouteWaypoint);
   const onBackgroundClickRef = useRef(onBackgroundClick);
   const onRegionPointRef = useRef(onRegionPoint);
@@ -267,6 +278,7 @@ export function OnlineOpenFreeMap({
   onMoveShapeRef.current = onMoveShape;
   onShapeDrawPointRef.current = onShapeDrawPoint;
   onShapeDrawFinishRef.current = onShapeDrawFinish;
+  onChangeImageRef.current = onChangeImage;
   onMoveRouteWaypointRef.current = onMoveRouteWaypoint;
   onBackgroundClickRef.current = onBackgroundClick;
   onRegionPointRef.current = onRegionPoint;
@@ -289,6 +301,7 @@ export function OnlineOpenFreeMap({
               (layer.type === 'region' &&
                 (layer.regionFillMode === 'flag' || layer.regionFillMode === 'image')) ||
               (layer.type === 'pin' && layer.pinStyle === 'custom') ||
+              layer.type === 'image' ||
               layer.type === 'text' ||
               (layer.type === 'route' &&
                 layer.routeRenderState?.some(
@@ -308,6 +321,7 @@ export function OnlineOpenFreeMap({
             layer.pinBorderColor,
             layer.pinTintEnabled,
             layer.pinTintColor,
+            layer.assetId,
             layer.text,
             layer.textLanguage,
             layer.textDirection,
@@ -478,11 +492,13 @@ export function OnlineOpenFreeMap({
     let movingPinId: string | null = null;
     let movingShapePoint: { layerId: string; pointId: string } | null = null;
     let movingShape: { layerId: string; x: number; y: number } | null = null;
+    let movingImage: { layerId: string; x: number; y: number; handle?: ImageHandleKind } | null = null;
     let drawingShape = false;
     let shapeDrawFinished = false;
     let movingRouteWaypoint: { layerId: string; waypointId: string } | null = null;
     let movingCustomControlId: string | null = null;
     let pinMoved = false;
+    let imageInteractionFinished = false;
     map.on('mousedown', ONLINE_PROJECT_PIN_LAYER_ID, (event) => {
       if (!interactionEnabledRef.current || !event.features?.[0]) return;
       const id = String(event.features[0].properties?.layerId ?? '');
@@ -515,6 +531,47 @@ export function OnlineOpenFreeMap({
       event.preventDefault();
       movingShapePoint = { layerId, pointId };
       onSelectRef.current(layerId);
+      map!.dragPan.disable();
+      map!.getCanvas().style.cursor = 'grabbing';
+    });
+    map.on('mousedown', ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID, (event) => {
+      if (!interactionEnabledRef.current || !event.features?.[0]) return;
+      const layerId = String(event.features[0].properties?.layerId ?? '');
+      const handle = String(event.features[0].properties?.handle ?? '') as ImageHandleKind;
+      if (!layerId || !handle) return;
+      event.preventDefault();
+      const world = lngLatToMapMotionWorld(event.lngLat.lng, event.lngLat.lat);
+      movingImage = { layerId, x: world.x, y: world.y, handle };
+      imageInteractionFinished = false;
+      onSelectRef.current(layerId);
+      map!.dragPan.disable();
+      map!.getCanvas().style.cursor = handle === 'rotate' ? 'grabbing' : 'nwse-resize';
+    });
+    map.on('mousedown', (event) => {
+      if (!interactionEnabledRef.current || movingImage || onShapeDrawPointRef.current) return;
+      const candidates = [...layersRef.current]
+        .reverse()
+        .filter((layer) => layer.type === 'image' && layer.visible && !layer.locked);
+      const hit = candidates.find((layer) => {
+        const polygon = imageWorldCorners(layer).map(([x, y]) => map!.project(mapMotionWorldToLngLat(x, y)));
+        let inside = false;
+        for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+          const a = polygon[i];
+          const b = polygon[j];
+          if (
+            a.y > event.point.y !== b.y > event.point.y &&
+            event.point.x < ((b.x - a.x) * (event.point.y - a.y)) / (b.y - a.y) + a.x
+          )
+            inside = !inside;
+        }
+        return inside;
+      });
+      if (!hit) return;
+      event.preventDefault();
+      const world = lngLatToMapMotionWorld(event.lngLat.lng, event.lngLat.lat);
+      movingImage = { layerId: hit.id, x: world.x, y: world.y };
+      imageInteractionFinished = false;
+      onSelectRef.current(hit.id);
       map!.dragPan.disable();
       map!.getCanvas().style.cursor = 'grabbing';
     });
@@ -586,6 +643,26 @@ export function OnlineOpenFreeMap({
         movingShape = { ...movingShape, x: world.x, y: world.y };
         return;
       }
+      if (movingImage) {
+        const world = lngLatToMapMotionWorld(event.lngLat.lng, event.lngLat.lat);
+        const layer = layersRef.current.find((candidate) => candidate.id === movingImage!.layerId);
+        if (!layer) return;
+        if (movingImage.handle === 'rotate')
+          onChangeImageRef.current?.(layer.id, rotateImageToward(layer, world));
+        else if (movingImage.handle)
+          onChangeImageRef.current?.(
+            layer.id,
+            resizeImageFromHandle(layer, movingImage.handle as Exclude<ImageHandleKind, 'rotate'>, world),
+          );
+        else {
+          onChangeImageRef.current?.(layer.id, {
+            x: layer.x + world.x - movingImage.x,
+            y: layer.y + world.y - movingImage.y,
+          });
+          movingImage = { ...movingImage, x: world.x, y: world.y };
+        }
+        return;
+      }
       if (movingCustomControlId) {
         onMoveCustomRouteControlPointRef.current?.(movingCustomControlId, [
           event.lngLat.lng,
@@ -637,11 +714,20 @@ export function OnlineOpenFreeMap({
         map!.getCanvas().style.cursor = '';
         return;
       }
-      if (!movingPinId && !movingShapePoint && !movingShape && !movingRouteWaypoint && !movingCustomControlId)
+      if (
+        !movingPinId &&
+        !movingShapePoint &&
+        !movingShape &&
+        !movingImage &&
+        !movingRouteWaypoint &&
+        !movingCustomControlId
+      )
         return;
+      if (movingImage) imageInteractionFinished = true;
       movingPinId = null;
       movingShapePoint = null;
       movingShape = null;
+      movingImage = null;
       movingRouteWaypoint = null;
       movingCustomControlId = null;
       map!.dragPan.enable();
@@ -650,6 +736,10 @@ export function OnlineOpenFreeMap({
     map.on('mouseup', finishPinMove);
     map.on('click', (event) => {
       if (!interactionEnabledRef.current) return;
+      if (imageInteractionFinished) {
+        imageInteractionFinished = false;
+        return;
+      }
       if (shapeDrawFinished) {
         shapeDrawFinished = false;
         return;

@@ -136,6 +136,7 @@ export async function cleanupProjectAssets(project: Project): Promise<ProjectAss
     assets: liveAssets,
     referencedIds,
   });
+  for (const assetId of dataUrlCache.keys()) if (!referenced.has(assetId)) dataUrlCache.delete(assetId);
   for (const id of result.removed) dataUrlCache.delete(id);
   return { ...result, project: { ...project, assets: liveAssets } };
 }

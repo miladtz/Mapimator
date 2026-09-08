@@ -16,6 +16,8 @@ import {
 } from './geographicRegionFillLayer';
 import { rasterizeTextLayer, textLayerImageId, waitForTextLayerFonts } from './textLayers';
 import { arrowHeadCoordinates, editableShapePoints, evaluatedShapeCoordinates } from './shapes';
+import { imageWorldCorners } from './imageLayers';
+import { ensureOnlineImageLayer, prepareOnlineImageLayer } from './onlineImageLayer';
 
 export const ONLINE_PROJECT_REGION_SOURCE_ID = 'mapmotion-project-regions';
 export const ONLINE_PROJECT_REGION_FILL_LAYER_ID = 'mapmotion-project-region-fills';
@@ -40,6 +42,7 @@ export const ONLINE_PROJECT_SHAPE_SOLID_LAYER_ID = 'mapmotion-project-shape-soli
 export const ONLINE_PROJECT_SHAPE_DASHED_LAYER_ID = 'mapmotion-project-shape-dashed';
 export const ONLINE_PROJECT_SHAPE_DOTTED_LAYER_ID = 'mapmotion-project-shape-dotted';
 export const ONLINE_PROJECT_SHAPE_HANDLE_LAYER_ID = 'mapmotion-project-shape-handles';
+export const ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID = 'mapmotion-project-image-handles';
 export const ONLINE_PROJECT_ROUTE_SOURCE_ID = 'mapmotion-project-routes';
 export const ONLINE_PROJECT_ROUTE_SOLID_LAYER_ID = 'mapmotion-project-route-solid';
 export const ONLINE_PROJECT_ROUTE_DASHED_LAYER_ID = 'mapmotion-project-route-dashed';
@@ -54,6 +57,70 @@ const BASE_ICON_SIZE = 48;
 const geographicRegionLayers = new WeakMap<MapLibreMap, GeographicRegionFillLayer>();
 const routeVehicleImageIds = new WeakMap<MapLibreMap, Set<string>>();
 const shapeRenderLayerIdsByMap = new WeakMap<MapLibreMap, Set<string>>();
+
+export const onlineImageHandleFeatureCollection = (layers: readonly Layer[], selectedId: string | null) => ({
+  type: 'FeatureCollection' as const,
+  features: layers
+    .filter((layer) => layer.type === 'image' && layer.visible && layer.id === selectedId && !layer.locked)
+    .flatMap((layer) => {
+      const corners = imageWorldCorners(layer);
+      const top = [(corners[0][0] + corners[1][0]) / 2, (corners[0][1] + corners[1][1]) / 2] as [
+        number,
+        number,
+      ];
+      const centerX = layer.x + (layer.width ?? 160) / 2;
+      const centerY = layer.y + (layer.height ?? 90) / 2;
+      const vx = top[0] - centerX;
+      const vy = top[1] - centerY;
+      const length = Math.hypot(vx, vy) || 1;
+      const rotate: [number, number] = [top[0] + (vx / length) * 28, top[1] + (vy / length) * 28];
+      const kinds = ['north-west', 'north-east', 'south-east', 'south-west'] as const;
+      return [
+        ...corners.map((point, index) => ({
+          type: 'Feature' as const,
+          geometry: { type: 'Point' as const, coordinates: mapMotionWorldToLngLat(point[0], point[1]) },
+          properties: { layerId: layer.id, handle: kinds[index] },
+        })),
+        {
+          type: 'Feature' as const,
+          geometry: { type: 'Point' as const, coordinates: mapMotionWorldToLngLat(rotate[0], rotate[1]) },
+          properties: { layerId: layer.id, handle: 'rotate' as const },
+        },
+      ];
+    }),
+});
+
+const ensureImageOverlays = (
+  map: MapLibreMap,
+  layers: readonly Layer[],
+  selectedId: string | null,
+  assetUrls: Readonly<Record<string, string>>,
+) => {
+  ensureOnlineImageLayer(map, layers, assetUrls);
+
+  const handleData = onlineImageHandleFeatureCollection(layers, selectedId);
+  const handleSourceId = `${ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID}-source`;
+  const handleSource = map.getSource(handleSourceId) as GeoJSONSource | undefined;
+  if (handleSource) handleSource.setData(handleData as never);
+  else map.addSource(handleSourceId, { type: 'geojson', data: handleData as never });
+  if (!map.getLayer(ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID))
+    map.addLayer({
+      id: ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID,
+      type: 'circle',
+      source: handleSourceId,
+      metadata: { 'mapmotion:editor-only': true },
+      paint: {
+        'circle-radius': ['case', ['==', ['get', 'handle'], 'rotate'], 6, 5],
+        'circle-color': ['case', ['==', ['get', 'handle'], 'rotate'], '#ffb35c', '#ffffff'],
+        'circle-stroke-color': '#2889d8',
+        'circle-stroke-width': 2,
+        'circle-pitch-alignment': 'map',
+        'circle-pitch-scale': 'viewport',
+      },
+    });
+  if (map.getLayer(ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID) && typeof map.moveLayer === 'function')
+    map.moveLayer(ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID);
+};
 const pendingOverlayUpdates = new WeakMap<
   MapLibreMap,
   {
@@ -1281,6 +1348,7 @@ export const loadOnlineProjectOverlayAssets = async (
   assetUrls: Readonly<Record<string, string>>,
 ) => {
   let loaded = 0;
+  await prepareOnlineImageLayer(map, layers, assetUrls);
   if (layers.some((layer) => layer.type === 'text' && layer.visible)) {
     await waitForTextLayerFonts();
     for (const layer of layers) {
@@ -1372,6 +1440,7 @@ export const ensureOnlineProjectOverlays = (
   selectedId: string | null = null,
   assetUrls: Readonly<Record<string, string>> = {},
 ) => {
+  ensureImageOverlays(map, layers, selectedId, assetUrls);
   const regionCount = ensureRegionOverlays(map, layers, selectedId, assetUrls);
   const routeCount = ensureRouteOverlays(map, layers, selectedId, assetUrls);
   const shapeData = onlineShapeFeatureCollection(layers, selectedId, map);

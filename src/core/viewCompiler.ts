@@ -23,6 +23,7 @@ import type { CameraTransitionType } from './camera';
 import { interpolateGlobeCamera } from './globeMath';
 import { interpolateCameraChainTransition } from './cameraContinuity';
 import { textMapZoomScale } from './textLayers';
+import { imageMapZoomScale, imageWipeVisibility } from './imageLayers';
 import { supportsDrawShape } from './shapes';
 
 export type CompiledSegment =
@@ -208,7 +209,8 @@ const layerLifecycle = (
   const wipeDuration = wipeEnabled ? Math.max(0, anim.wipeDuration ?? (regionDraw ? 1.5 : 0.5)) : 0;
   const wipeEnd = wipeStart + wipeDuration;
   const type = anim.appearType ?? 'fade';
-  const isAnimatedSymbol = layer.type === 'pin' || layer.type === 'text' || layer.type === 'shape';
+  const isAnimatedSymbol =
+    layer.type === 'pin' || layer.type === 'text' || layer.type === 'shape' || layer.type === 'image';
 
   const evalWipe = (): LayerLifecyclePhase => {
     if (!wipeEnabled) return { opacityMul: 1, visible: true, segmentLocalTime, wipeOpacityMul: 1 };
@@ -297,6 +299,25 @@ const applyPhaseToLayer = (
       layer.shapeKind === 'arrow' ? (animation?.shapeOrientation ?? 'flat-on-map') : 'flat-on-map';
     if (drawing || (pathWipe && animation?.wipeEnabled)) layer.opacity = authoredOpacity;
   }
+  if (layer.type === 'image') {
+    layer.imageRenderScale = imageMapZoomScale(animation, cameraZoom);
+    layer.imageAnimationScale = phase.popScale ?? 1;
+    layer.imageDropOffsetY = phase.dropY ?? 0;
+    layer.imageWipeProgress = imageWipeVisibility(animation, phase.segmentLocalTime);
+    layer.imageOrientation = animation?.imageOrientation ?? 'flat-on-map';
+    layer.imageScaleWithMapZoom = Boolean(animation?.imageScaleWithMapZoom);
+    if (animation?.wipeEnabled) {
+      const appearPhase = layerLifecycle(
+        layer,
+        { ...animation, wipeEnabled: false },
+        true,
+        phase.segmentLocalTime,
+        0,
+      );
+      layer.opacity = authoredOpacity * appearPhase.opacityMul;
+      layer.visible = appearPhase.visible && layer.imageWipeProgress > 0;
+    }
+  }
   if (phase.popScale !== undefined) layer.pinPopScale = phase.popScale;
   else delete layer.pinPopScale;
   if (phase.dropY !== undefined) layer.pinDropOffsetY = phase.dropY;
@@ -309,21 +330,14 @@ const segmentMemberIds = (segment: CompiledSegment | undefined): Set<string> => 
   return segment.kind === 'view' ? viewMemberIds(segment.view) : transitionMemberIds(segment.transition);
 };
 
-const segmentAnimation = (
-  segment: CompiledSegment,
-  layerId: string,
-): SegmentLayerAnimation | undefined =>
-  segment.kind === 'view'
-    ? viewAnimOf(segment.view, layerId)
-    : transitionAnimOf(segment.transition, layerId);
+const segmentAnimation = (segment: CompiledSegment, layerId: string): SegmentLayerAnimation | undefined =>
+  segment.kind === 'view' ? viewAnimOf(segment.view, layerId) : transitionAnimOf(segment.transition, layerId);
 
 const routeSectionIncluded = (segment: CompiledSegment, layerId: string, sectionId: string): boolean => {
   if (!segmentMemberIds(segment).has(layerId)) return false;
   const animation = segmentAnimation(segment, layerId);
   return (
-    animation?.routeSegmentAnimations?.[sectionId]?.included ??
-    animation?.routeDefaults?.included ??
-    true
+    animation?.routeSegmentAnimations?.[sectionId]?.included ?? animation?.routeDefaults?.included ?? true
   );
 };
 
@@ -517,13 +531,7 @@ export const evaluateProjectAtTime = (project: Project, time: number): RenderedP
         ));
   const layers = transitionLayersOf(project, segment.transition);
   const sourceMembers = segmentMemberIds(sequence.segments[index - 1]);
-  const continued = applyActiveAppearEvents(
-    layers,
-    sequence.segments,
-    index,
-    timelineTime,
-    camera.zoom,
-  );
+  const continued = applyActiveAppearEvents(layers, sequence.segments, index, timelineTime, camera.zoom);
   const configs = transitionLayerConfigsOf(segment.transition);
   for (const layer of layers) {
     if (continued.has(layer.id)) continue;
