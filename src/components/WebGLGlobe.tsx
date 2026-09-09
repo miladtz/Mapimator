@@ -463,7 +463,7 @@ export function GlobeOverlay({
           );
         })}
       {layers
-        .filter((layer) => layer.visible && ['pin', 'text', 'geo-effect'].includes(layer.type))
+        .filter((layer) => layer.visible && ['pin', 'text'].includes(layer.type))
         .map((layer) => {
           const point = projectPoint([layer.x, layer.y]);
           if (!point) return null;

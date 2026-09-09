@@ -1,6 +1,6 @@
 import type { GeoJSON } from 'geojson';
 import type { ExpressionSpecification, GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl';
-import { mapMotionWorldToLngLat } from './openFreeMapAdapter';
+import { lngLatToMapMotionWorld, mapMotionWorldToLngLat } from './openFreeMapAdapter';
 import { PIN_DEFAULTS, pinLabelOffsetOf, pinSizeOf, pinStyleOf, type Layer } from './project';
 import { regionPresentation, resolveFlagCode, revealRegionGeometry } from './regions';
 import {
@@ -16,8 +16,18 @@ import {
 } from './geographicRegionFillLayer';
 import { rasterizeTextLayer, textLayerImageId, waitForTextLayerFonts } from './textLayers';
 import { arrowHeadCoordinates, editableShapePoints, evaluatedShapeCoordinates } from './shapes';
-import { imageWorldCorners } from './imageLayers';
-import { ensureOnlineImageLayer, prepareOnlineImageLayer } from './onlineImageLayer';
+import { imageGeographicCorners, imageWorldCorners } from './imageLayers';
+import { animatedMediaScreenOffsets } from './animatedMedia';
+import {
+  ensureOnlineImageLayer,
+  ONLINE_PROJECT_IMAGE_RENDER_LAYER_ID,
+  prepareOnlineImageLayer,
+} from './onlineImageLayer';
+import {
+  ensureOnlineAnimatedMediaLayer,
+  orderOnlineAnimatedMediaLayers,
+  prepareOnlineAnimatedMediaLayer,
+} from './onlineAnimatedMediaLayer';
 
 export const ONLINE_PROJECT_REGION_SOURCE_ID = 'mapmotion-project-regions';
 export const ONLINE_PROJECT_REGION_FILL_LAYER_ID = 'mapmotion-project-region-fills';
@@ -43,6 +53,7 @@ export const ONLINE_PROJECT_SHAPE_DASHED_LAYER_ID = 'mapmotion-project-shape-das
 export const ONLINE_PROJECT_SHAPE_DOTTED_LAYER_ID = 'mapmotion-project-shape-dotted';
 export const ONLINE_PROJECT_SHAPE_HANDLE_LAYER_ID = 'mapmotion-project-shape-handles';
 export const ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID = 'mapmotion-project-image-handles';
+export const ONLINE_PROJECT_IMAGE_SELECTION_LAYER_ID = 'mapmotion-project-image-selection';
 export const ONLINE_PROJECT_ROUTE_SOURCE_ID = 'mapmotion-project-routes';
 export const ONLINE_PROJECT_ROUTE_SOLID_LAYER_ID = 'mapmotion-project-route-solid';
 export const ONLINE_PROJECT_ROUTE_DASHED_LAYER_ID = 'mapmotion-project-route-dashed';
@@ -58,29 +69,69 @@ const geographicRegionLayers = new WeakMap<MapLibreMap, GeographicRegionFillLaye
 const routeVehicleImageIds = new WeakMap<MapLibreMap, Set<string>>();
 const shapeRenderLayerIdsByMap = new WeakMap<MapLibreMap, Set<string>>();
 
-export const onlineImageHandleFeatureCollection = (layers: readonly Layer[], selectedId: string | null) => ({
+export const onlineImageHandleFeatureCollection = (
+  layers: readonly Layer[],
+  selectedId: string | null,
+  map?: MapLibreMap,
+) => ({
   type: 'FeatureCollection' as const,
   features: layers
-    .filter((layer) => layer.type === 'image' && layer.visible && layer.id === selectedId && !layer.locked)
+    .filter(
+      (layer) =>
+        (layer.type === 'image' || layer.type === 'animated-media') &&
+        layer.visible &&
+        layer.id === selectedId &&
+        !layer.locked,
+    )
     .flatMap((layer) => {
-      const corners = imageWorldCorners(layer);
-      const top = [(corners[0][0] + corners[1][0]) / 2, (corners[0][1] + corners[1][1]) / 2] as [
-        number,
-        number,
-      ];
-      const centerX = layer.x + (layer.width ?? 160) / 2;
-      const centerY = layer.y + (layer.height ?? 90) / 2;
-      const vx = top[0] - centerX;
-      const vy = top[1] - centerY;
-      const length = Math.hypot(vx, vy) || 1;
-      const rotate: [number, number] = [top[0] + (vx / length) * 28, top[1] + (vy / length) * 28];
-      const kinds = ['north-west', 'north-east', 'south-east', 'south-west'] as const;
+      let corners: [number, number][];
+      let rotate: [number, number];
+      if (layer.type === 'animated-media' && map) {
+        const anchor = map.project(
+          mapMotionWorldToLngLat(layer.x + (layer.width ?? 160) / 2, layer.y + (layer.height ?? 90) / 2),
+        );
+        const offsets = animatedMediaScreenOffsets(layer);
+        const screenCorners = offsets.map(([x, y]) => [anchor.x + x, anchor.y + y] as [number, number]);
+        const toWorld = ([x, y]: [number, number]) => {
+          const coordinate = map.unproject([x, y]);
+          const world = lngLatToMapMotionWorld(coordinate.lng, coordinate.lat);
+          return [world.x, world.y] as [number, number];
+        };
+        corners = screenCorners.map(toWorld);
+        const top: [number, number] = [
+          (screenCorners[0][0] + screenCorners[1][0]) / 2,
+          (screenCorners[0][1] + screenCorners[1][1]) / 2,
+        ];
+        const vx = top[0] - anchor.x;
+        const vy = top[1] - anchor.y;
+        const length = Math.hypot(vx, vy) || 1;
+        rotate = toWorld([top[0] + (vx / length) * 28, top[1] + (vy / length) * 28]);
+      } else {
+        const geographicCorners = imageGeographicCorners(layer);
+        corners = geographicCorners.map(([longitude, latitude]) => {
+          const world = lngLatToMapMotionWorld(longitude, latitude);
+          return [world.x, world.y];
+        });
+        const top = [(corners[0][0] + corners[1][0]) / 2, (corners[0][1] + corners[1][1]) / 2] as [
+          number,
+          number,
+        ];
+        const centerX = layer.x + (layer.width ?? 160) / 2;
+        const centerY = layer.y + (layer.height ?? 90) / 2;
+        const vx = top[0] - centerX;
+        const vy = top[1] - centerY;
+        const length = Math.hypot(vx, vy) || 1;
+        rotate = [top[0] + (vx / length) * 28, top[1] + (vy / length) * 28];
+      }
       return [
-        ...corners.map((point, index) => ({
+        {
           type: 'Feature' as const,
-          geometry: { type: 'Point' as const, coordinates: mapMotionWorldToLngLat(point[0], point[1]) },
-          properties: { layerId: layer.id, handle: kinds[index] },
-        })),
+          geometry: {
+            type: 'Polygon' as const,
+            coordinates: [[...corners, corners[0]].map(([x, y]) => mapMotionWorldToLngLat(x, y))],
+          },
+          properties: { layerId: layer.id, handle: 'bounds' as const },
+        },
         {
           type: 'Feature' as const,
           geometry: { type: 'Point' as const, coordinates: mapMotionWorldToLngLat(rotate[0], rotate[1]) },
@@ -98,7 +149,7 @@ const ensureImageOverlays = (
 ) => {
   ensureOnlineImageLayer(map, layers, assetUrls);
 
-  const handleData = onlineImageHandleFeatureCollection(layers, selectedId);
+  const handleData = onlineImageHandleFeatureCollection(layers, selectedId, map);
   const handleSourceId = `${ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID}-source`;
   const handleSource = map.getSource(handleSourceId) as GeoJSONSource | undefined;
   if (handleSource) handleSource.setData(handleData as never);
@@ -109,6 +160,7 @@ const ensureImageOverlays = (
       type: 'circle',
       source: handleSourceId,
       metadata: { 'mapmotion:editor-only': true },
+      filter: ['==', ['get', 'handle'], 'rotate'],
       paint: {
         'circle-radius': ['case', ['==', ['get', 'handle'], 'rotate'], 6, 5],
         'circle-color': ['case', ['==', ['get', 'handle'], 'rotate'], '#ffb35c', '#ffffff'],
@@ -118,8 +170,19 @@ const ensureImageOverlays = (
         'circle-pitch-scale': 'viewport',
       },
     });
+  if (!map.getLayer(ONLINE_PROJECT_IMAGE_SELECTION_LAYER_ID))
+    map.addLayer({
+      id: ONLINE_PROJECT_IMAGE_SELECTION_LAYER_ID,
+      type: 'line',
+      source: handleSourceId,
+      metadata: { 'mapmotion:editor-only': true },
+      filter: ['==', ['geometry-type'], 'Polygon'],
+      paint: { 'line-color': '#2889d8', 'line-width': 1.5, 'line-dasharray': [4, 2] },
+    });
   if (map.getLayer(ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID) && typeof map.moveLayer === 'function')
     map.moveLayer(ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID);
+  if (map.getLayer(ONLINE_PROJECT_IMAGE_SELECTION_LAYER_ID))
+    map.moveLayer(ONLINE_PROJECT_IMAGE_SELECTION_LAYER_ID, ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID);
 };
 const pendingOverlayUpdates = new WeakMap<
   MapLibreMap,
@@ -1349,6 +1412,7 @@ export const loadOnlineProjectOverlayAssets = async (
 ) => {
   let loaded = 0;
   await prepareOnlineImageLayer(map, layers, assetUrls);
+  await prepareOnlineAnimatedMediaLayer(map, layers, assetUrls);
   if (layers.some((layer) => layer.type === 'text' && layer.visible)) {
     await waitForTextLayerFonts();
     for (const layer of layers) {
@@ -1441,6 +1505,7 @@ export const ensureOnlineProjectOverlays = (
   assetUrls: Readonly<Record<string, string>> = {},
 ) => {
   ensureImageOverlays(map, layers, selectedId, assetUrls);
+  ensureOnlineAnimatedMediaLayer(map, layers, assetUrls);
   const regionCount = ensureRegionOverlays(map, layers, selectedId, assetUrls);
   const routeCount = ensureRouteOverlays(map, layers, selectedId, assetUrls);
   const shapeData = onlineShapeFeatureCollection(layers, selectedId, map);
@@ -1653,6 +1718,19 @@ export const ensureOnlineProjectOverlays = (
     'text-offset',
     labelOffsetExpression(layers, assetUrls),
   );
+  orderOnlineAnimatedMediaLayers(map, layers, (layer) => {
+    if (!layer.visible) return undefined;
+    if (layer.type === 'animated-media') return `mapmotion-project-animated-media-${layer.id}`;
+    if (layer.type === 'image') return ONLINE_PROJECT_IMAGE_RENDER_LAYER_ID;
+    if (layer.type === 'region') return ONLINE_PROJECT_REGION_FILL_LAYER_ID;
+    if (layer.type === 'route') return ONLINE_PROJECT_ROUTE_SOLID_LAYER_ID;
+    if (layer.type === 'shape') return shapeRenderLayerIds(layer.id).fill;
+    if (layer.type === 'pin') return ONLINE_PROJECT_PIN_LAYER_ID;
+    if (layer.type === 'text') return ONLINE_PROJECT_TEXT_LAYER_ID;
+    return undefined;
+  });
+  if (map.getLayer(ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID)) map.moveLayer(ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID);
+  if (map.getLayer(ONLINE_PROJECT_SHAPE_HANDLE_LAYER_ID)) map.moveLayer(ONLINE_PROJECT_SHAPE_HANDLE_LAYER_ID);
   return (
     regionCount +
     routeCount +

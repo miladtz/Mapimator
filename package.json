@@ -54,6 +54,8 @@
     "test:online-text-orientation": "node scripts/verify-online-text-orientation.mjs",
     "test:online-shapes": "node scripts/verify-online-shapes.mjs",
     "test:online-images": "node scripts/verify-online-images.mjs",
+    "test:animated-media": "node scripts/verify-animated-media.mjs",
+    "test:animated-media-save": "node scripts/verify-animated-media-save.mjs",
     "test:online-image-timeline": "node scripts/verify-online-image-timeline.mjs",
     "test:online-regions": "node scripts/verify-online-regions.mjs",
     "test:region-layer-parity": "node scripts/verify-region-layer-parity.mjs",

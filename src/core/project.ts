@@ -3,7 +3,8 @@ export type MapStyleId = 'documentary-dark' | 'documentary-light' | 'modern' | '
 export type BasemapRenderer = 'legacy' | 'online';
 export type MapLabelLanguageMode = 'en' | 'fa' | 'both' | 'none';
 export type OnlineBasemapStyleId = '3d' | 'liberty' | 'dark' | 'bright';
-export type LayerType = 'region' | 'pin' | 'text' | 'shape' | 'arrow' | 'image' | 'route' | 'geo-effect';
+export type LayerType =
+  'region' | 'pin' | 'text' | 'shape' | 'arrow' | 'image' | 'animated-media' | 'route' | 'geo-effect';
 export type GeoEffectType =
   | 'impact-pulse'
   | 'strike-marker'
@@ -271,6 +272,13 @@ export interface SegmentLayerAnimation {
   imageReferenceZoom?: number;
   /** Image-only timeline orientation; deliberately not globally propagated. */
   imageOrientation?: TextOrientation;
+  /** Animated Media-only deterministic active window and source-cycle policy. */
+  animatedMediaStartDelay?: number;
+  animatedMediaDuration?: number;
+  /** @deprecated Experimental 11.4 value; tolerated on load but ignored. */
+  animatedMediaPlayback?: 'loop' | 'once';
+  animatedMediaRepeatCountEnabled?: boolean;
+  animatedMediaRepeatCount?: number;
   /** Arrow-only timeline orientation. Other Shapes always remain map-flat. */
   shapeOrientation?: TextOrientation;
   regionEffect?: 'fade' | 'draw-border' | 'pulse';
@@ -463,6 +471,19 @@ export interface Layer {
   imageWipeProgress?: number;
   imageOrientation?: TextOrientation;
   imageScaleWithMapZoom?: boolean;
+  /** Animated Media has an independent retained renderer; these fields are never used by Image. */
+  animatedMediaRotation?: number;
+  animatedMediaAspectLocked?: boolean;
+  animatedMediaAspectRatio?: number;
+  /** Immutable decoded source metadata used by synchronous timeline evaluation. */
+  animatedMediaCycleDurationMs?: number;
+  /** Evaluator-owned local source time in milliseconds. */
+  animatedMediaTimeMs?: number;
+  /** @deprecated Evaluator compatibility field; ignored by the renderer. */
+  animatedMediaPlayback?: 'loop' | 'once';
+  /** Evaluator-owned timing mode state. */
+  animatedMediaRepeatCountEnabled?: boolean;
+  animatedMediaRepeatCount?: number;
   // Pin-specific appearance. Older projects omit these and inherit deterministic defaults.
   pinStyle?: PinStyle;
   pinSize?: number;
@@ -785,6 +806,7 @@ export const layerLabel: Record<LayerType, string> = {
   shape: 'Shape',
   arrow: 'Arrow',
   image: 'Image',
+  'animated-media': 'Animated Media',
   route: 'Route',
   'geo-effect': 'Geo Effect',
 };
@@ -886,6 +908,15 @@ export const createLayer = (type: LayerType, offset = 0): Layer => {
       imageAspectLocked: true,
       imageAspectRatio: 16 / 9,
       imageFitMode: 'contain',
+    },
+    'animated-media': {
+      name: 'Animated Media',
+      color: '#7d9bbb',
+      width: 160,
+      height: 90,
+      animatedMediaRotation: 0,
+      animatedMediaAspectLocked: true,
+      animatedMediaAspectRatio: 16 / 9,
     },
     route: {
       name: 'Flow',

@@ -36,12 +36,8 @@ import {
   ONLINE_PROJECT_ROUTE_WAYPOINT_LAYER_ID,
   updateOnlineProjectOverlays,
 } from '../core/onlineProjectOverlays';
-import {
-  imageWorldCorners,
-  resizeImageFromHandle,
-  rotateImageToward,
-  type ImageHandleKind,
-} from '../core/imageLayers';
+import { imageGeographicCorners, rotateImageToward } from '../core/imageLayers';
+import { pointInAnimatedMediaScreenQuad, rotateAnimatedMediaToward } from '../core/animatedMedia';
 import { fitProjectViewport, type LogicalViewport } from '../core/projectRenderViewport';
 import type {
   CameraState,
@@ -176,6 +172,7 @@ interface Props {
   onShapeDrawFinish?: () => void;
   onMoveRouteWaypoint?: (layerId: string, waypointId: string, longitude: number, latitude: number) => void;
   onBackgroundClick?: (point: { x: number; y: number }) => void;
+  captureBackgroundClick?: boolean;
   onRegionPoint?: (point: [number, number]) => void;
   onRegionFinish?: () => void;
   regionDraft?: [number, number][];
@@ -211,6 +208,7 @@ export function OnlineOpenFreeMap({
   onShapeDrawFinish,
   onMoveRouteWaypoint,
   onBackgroundClick,
+  captureBackgroundClick = false,
   onRegionPoint,
   onRegionFinish,
   regionDraft = [],
@@ -247,6 +245,7 @@ export function OnlineOpenFreeMap({
   const onChangeImageRef = useRef(onChangeImage);
   const onMoveRouteWaypointRef = useRef(onMoveRouteWaypoint);
   const onBackgroundClickRef = useRef(onBackgroundClick);
+  const captureBackgroundClickRef = useRef(captureBackgroundClick);
   const onRegionPointRef = useRef(onRegionPoint);
   const onRegionFinishRef = useRef(onRegionFinish);
   const regionDraftRef = useRef(regionDraft);
@@ -281,6 +280,7 @@ export function OnlineOpenFreeMap({
   onChangeImageRef.current = onChangeImage;
   onMoveRouteWaypointRef.current = onMoveRouteWaypoint;
   onBackgroundClickRef.current = onBackgroundClick;
+  captureBackgroundClickRef.current = captureBackgroundClick;
   onRegionPointRef.current = onRegionPoint;
   onRegionFinishRef.current = onRegionFinish;
   regionDraftRef.current = regionDraft;
@@ -302,6 +302,7 @@ export function OnlineOpenFreeMap({
                 (layer.regionFillMode === 'flag' || layer.regionFillMode === 'image')) ||
               (layer.type === 'pin' && layer.pinStyle === 'custom') ||
               layer.type === 'image' ||
+              layer.type === 'animated-media' ||
               layer.type === 'text' ||
               (layer.type === 'route' &&
                 layer.routeRenderState?.some(
@@ -492,7 +493,12 @@ export function OnlineOpenFreeMap({
     let movingPinId: string | null = null;
     let movingShapePoint: { layerId: string; pointId: string } | null = null;
     let movingShape: { layerId: string; x: number; y: number } | null = null;
-    let movingImage: { layerId: string; x: number; y: number; handle?: ImageHandleKind } | null = null;
+    let movingImage: {
+      layerId: string;
+      x: number;
+      y: number;
+      handle?: 'rotate';
+    } | null = null;
     let drawingShape = false;
     let shapeDrawFinished = false;
     let movingRouteWaypoint: { layerId: string; waypointId: string } | null = null;
@@ -537,23 +543,33 @@ export function OnlineOpenFreeMap({
     map.on('mousedown', ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID, (event) => {
       if (!interactionEnabledRef.current || !event.features?.[0]) return;
       const layerId = String(event.features[0].properties?.layerId ?? '');
-      const handle = String(event.features[0].properties?.handle ?? '') as ImageHandleKind;
-      if (!layerId || !handle) return;
+      const handle = String(event.features[0].properties?.handle ?? '');
+      if (!layerId || handle !== 'rotate') return;
       event.preventDefault();
       const world = lngLatToMapMotionWorld(event.lngLat.lng, event.lngLat.lat);
+      const layer = layersRef.current.find((candidate) => candidate.id === layerId);
       movingImage = { layerId, x: world.x, y: world.y, handle };
       imageInteractionFinished = false;
       onSelectRef.current(layerId);
       map!.dragPan.disable();
-      map!.getCanvas().style.cursor = handle === 'rotate' ? 'grabbing' : 'nwse-resize';
+      map!.getCanvas().style.cursor = 'grabbing';
     });
     map.on('mousedown', (event) => {
       if (!interactionEnabledRef.current || movingImage || onShapeDrawPointRef.current) return;
       const candidates = [...layersRef.current]
         .reverse()
-        .filter((layer) => layer.type === 'image' && layer.visible && !layer.locked);
+        .filter(
+          (layer) =>
+            (layer.type === 'image' || layer.type === 'animated-media') && layer.visible && !layer.locked,
+        );
       const hit = candidates.find((layer) => {
-        const polygon = imageWorldCorners(layer).map(([x, y]) => map!.project(mapMotionWorldToLngLat(x, y)));
+        if (layer.type === 'animated-media') {
+          const center = map!.project(
+            mapMotionWorldToLngLat(layer.x + (layer.width ?? 160) / 2, layer.y + (layer.height ?? 90) / 2),
+          );
+          return pointInAnimatedMediaScreenQuad(layer, center, event.point);
+        }
+        const polygon = imageGeographicCorners(layer).map((point) => map!.project(point));
         let inside = false;
         for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
           const a = polygon[i];
@@ -648,11 +664,11 @@ export function OnlineOpenFreeMap({
         const layer = layersRef.current.find((candidate) => candidate.id === movingImage!.layerId);
         if (!layer) return;
         if (movingImage.handle === 'rotate')
-          onChangeImageRef.current?.(layer.id, rotateImageToward(layer, world));
-        else if (movingImage.handle)
           onChangeImageRef.current?.(
             layer.id,
-            resizeImageFromHandle(layer, movingImage.handle as Exclude<ImageHandleKind, 'rotate'>, world),
+            layer.type === 'animated-media'
+              ? rotateAnimatedMediaToward(layer, world)
+              : rotateImageToward(layer, world),
           );
         else {
           onChangeImageRef.current?.(layer.id, {
@@ -742,6 +758,11 @@ export function OnlineOpenFreeMap({
       }
       if (shapeDrawFinished) {
         shapeDrawFinished = false;
+        return;
+      }
+      if (captureBackgroundClickRef.current && onBackgroundClickRef.current) {
+        const point = lngLatToMapMotionWorld(event.lngLat.lng, event.lngLat.lat);
+        onBackgroundClickRef.current(point);
         return;
       }
       const draftHit = map!.getLayer('mapmotion-route-draft-points')
@@ -1019,7 +1040,11 @@ export function OnlineOpenFreeMap({
     // echo is telemetry, not an external command, so never bounce it back via jumpTo.
     const signature = cameraSignature(camera);
     if (nativeCameraSignaturesRef.current.delete(signature)) {
-      if (layersRef.current.some((layer) => layer.shapeOrientation === 'face-camera'))
+      if (
+        layersRef.current.some(
+          (layer) => layer.shapeOrientation === 'face-camera' || layer.id === selectedIdRef.current,
+        )
+      )
         updateOnlineProjectOverlays(map, layersRef.current, selectedIdRef.current, assetUrlsRef.current);
       return;
     }
@@ -1037,7 +1062,11 @@ export function OnlineOpenFreeMap({
     if (import.meta.env.DEV && map.isMoving())
       console.debug('[OpenFreeMap Interactive] external camera applied while map is moving');
     map.jumpTo(next);
-    if (layersRef.current.some((layer) => layer.shapeOrientation === 'face-camera'))
+    if (
+      layersRef.current.some(
+        (layer) => layer.shapeOrientation === 'face-camera' || layer.id === selectedIdRef.current,
+      )
+    )
       updateOnlineProjectOverlays(map, layersRef.current, selectedIdRef.current, assetUrlsRef.current);
     if (import.meta.env.DEV) {
       const appliedCenter = map.getCenter();

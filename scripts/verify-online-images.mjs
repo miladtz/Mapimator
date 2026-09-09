@@ -15,6 +15,7 @@ writeFileSync(
     `export * from '${join(root, 'src/core/project').replaceAll('\\', '/')}';`,
     `export * from '${join(root, 'src/core/projectPersistence').replaceAll('\\', '/')}';`,
     `export * from '${join(root, 'src/core/imageLayers').replaceAll('\\', '/')}';`,
+    `export * from '${join(root, 'src/core/openFreeMapAdapter').replaceAll('\\', '/')}';`,
     `export * from '${join(root, 'src/core/onlineProjectOverlays').replaceAll('\\', '/')}';`,
     `export * from '${join(root, 'src/core/onlineImageLayer').replaceAll('\\', '/')}';`,
   ].join('\n'),
@@ -74,7 +75,48 @@ assert.deepEqual(core.resizeImageLayer({ ...image, imageAspectLocked: false }, 3
 assert.equal(core.imageWorldCorners(image).length, 4);
 assert.equal(core.imageGeographicCorners(image).length, 4);
 assert.deepEqual(core.imageWorldCorners(image), core.imageWorldCorners(image), 'geometry is deterministic');
-assert.equal(core.onlineImageHandleFeatureCollection([image], image.id).features.length, 5);
+const rotations = [0, 15, 45, 90, 135, 270];
+const latitudes = [0, 35, 60, 75];
+for (const latitude of latitudes) {
+  const anchor = core.lngLatToMapMotionWorld(20, latitude);
+  for (const rotation of rotations) {
+    const candidate = {
+      ...image,
+      x: anchor.x - 80,
+      y: anchor.y - 50,
+      width: 160,
+      height: 100,
+      imageRotation: rotation,
+    };
+    const corners = core.imageMercatorCorners(candidate);
+    const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+    assert.ok(Math.abs(distance(corners[0], corners[1]) - 160 / 1000) < 1e-12);
+    assert.ok(Math.abs(distance(corners[1], corners[2]) - 100 / 1000) < 1e-12);
+    assert.ok(Math.abs(distance(corners[2], corners[3]) - 160 / 1000) < 1e-12);
+    assert.ok(Math.abs(distance(corners[3], corners[0]) - 100 / 1000) < 1e-12);
+    assert.ok(Math.abs(distance(corners[0], corners[2]) - Math.hypot(160, 100) / 1000) < 1e-12);
+    const center = corners.reduce((sum, corner) => ({ x: sum.x + corner.x / 4, y: sum.y + corner.y / 4 }), {
+      x: 0,
+      y: 0,
+    });
+    const expectedCenter = core.imageMercatorCoordinates([anchor.x, anchor.y], [[0, 0]])[0];
+    assert.ok(Math.abs(center.x - expectedCenter.x) < 1e-12);
+    assert.ok(Math.abs(center.y - expectedCenter.y) < 1e-12);
+  }
+}
+const placed = core.placeImportedMediaLayer({ ...image, width: 160, height: 100 }, { x: 321, y: 234 });
+assert.deepEqual(
+  { x: placed.x, y: placed.y },
+  { x: 241, y: 184 },
+  'the imported media rectangle is centered on the exact authoritative map click',
+);
+const imageEditorFeatures = core.onlineImageHandleFeatureCollection([image], image.id).features;
+assert.equal(imageEditorFeatures.length, 2, 'Image exposes exact bounds plus rotation only.');
+assert.deepEqual(
+  imageEditorFeatures.map((feature) => feature.properties.handle),
+  ['bounds', 'rotate'],
+  'Image must not expose direct resize handles.',
+);
 assert.equal(
   core.onlineImageHandleFeatureCollection([image], null).features.length,
   0,
@@ -104,11 +146,32 @@ const app = source('src/app/App.tsx');
 const online = source('src/core/onlineProjectOverlays.ts');
 const frame = source('src/core/onlineMapFrameRenderer.ts');
 assert.match(app, /extensions: \['png', 'jpg', 'jpeg', 'webp'\]/, 'creation accepts PNG/JPEG/WebP');
+assert.match(app, /setPendingMediaPlacement\(\{ layer, asset \}\)/, 'imports remain drafts until placement');
+assert.match(
+  app,
+  /placeImportedMediaLayer\(pendingMediaPlacement\.layer, point\)/,
+  'placement uses exact click',
+);
+assert.match(app, /setPendingMediaPlacement\(null\)/, 'placement and cancellation clear the draft');
+assert.match(app, /captureBackgroundClick=\{placing === 'image' \|\| placing === 'animated-media'\}/);
 assert.match(app, /imageAspectLocked/);
 assert.match(app, /Fit \/ Contain/);
 assert.match(app, /Fill \/ Crop/);
 assert.match(online, /ensureOnlineImageLayer/, 'MapLibre uses the retained Image custom layer');
 assert.match(online, /'mapmotion:editor-only': true/, 'handles are editor-only');
 assert.match(frame, /loadOnlineProjectOverlayAssets/, 'export uses the shared overlay asset preparation');
+assert.match(imageRenderer, /imageMercatorCoordinates\(parameters\.anchor, parameters\.offsets\)/);
+
+const animatedRenderer = source('src/core/onlineAnimatedMediaLayer.ts');
+assert.match(
+  animatedRenderer,
+  /animatedMediaScreenOffsets/,
+  'Animated Media keeps its accepted rotation path',
+);
+assert.doesNotMatch(
+  animatedRenderer,
+  /imageMercatorCoordinates/,
+  'static Image rotation does not alter Animated Media',
+);
 
 console.log('Online Image layer regression checks passed.');

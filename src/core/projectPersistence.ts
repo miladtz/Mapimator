@@ -33,7 +33,17 @@ const isBoolean = (value: unknown): value is boolean => typeof value === 'boolea
 const oneOf = <T extends string>(value: unknown, values: readonly T[]): value is T =>
   typeof value === 'string' && values.includes(value as T);
 
-const layerTypes = ['region', 'pin', 'text', 'shape', 'arrow', 'image', 'route', 'geo-effect'] as const;
+const layerTypes = [
+  'region',
+  'pin',
+  'text',
+  'shape',
+  'arrow',
+  'image',
+  'animated-media',
+  'route',
+  'geo-effect',
+] as const;
 const effectTypes = [
   'impact-pulse',
   'strike-marker',
@@ -64,6 +74,7 @@ const optionalStrings = [
   'geoEffectType',
   'assetId',
   'imageFitMode',
+  'animatedMediaPlayback',
   'pinStyle',
   'pinBorderColor',
   'pinLabelColor',
@@ -97,6 +108,10 @@ const optionalNumbers = [
   'height',
   'imageRotation',
   'imageAspectRatio',
+  'animatedMediaRotation',
+  'animatedMediaAspectRatio',
+  'animatedMediaCycleDurationMs',
+  'animatedMediaRepeatCount',
   'fontSize',
   'fontWeight',
   'lineHeight',
@@ -150,6 +165,8 @@ const optionalBooleans = [
   'regionAnimationEnabled',
   'regionStrokeExists',
   'shapeArrowheadEnabled',
+  'animatedMediaAspectLocked',
+  'animatedMediaRepeatCountEnabled',
   'imageAspectLocked',
 ] as const;
 
@@ -306,7 +323,7 @@ const validateLayer = (value: unknown, path: string): Layer => {
     throw new Error(`${path} has invalid name, visibility, or lock state.`);
   if (
     !isFiniteNumber(value.opacity) ||
-    !isString(value.color) ||
+    (value.type !== 'animated-media' && !isString(value.color)) ||
     !isFiniteNumber(value.x) ||
     !isFiniteNumber(value.y)
   )
@@ -459,12 +476,20 @@ const validateSegmentLayerAnimation = (value: unknown, path: string): SegmentLay
     'regionDrawingDuration',
     'regionFillingDelay',
     'regionFillingDuration',
+    'animatedMediaStartDelay',
+    'animatedMediaDuration',
+    'animatedMediaRepeatCount',
   ] as const)
     if (value[key] !== undefined && !isFiniteNumber(value[key]))
       throw new Error(`${path}.${key} must be a finite number.`);
-  for (const key of ['appearEnabled', 'wipeEnabled'] as const)
+  for (const key of ['appearEnabled', 'wipeEnabled', 'animatedMediaRepeatCountEnabled'] as const)
     if (value[key] !== undefined && !isBoolean(value[key]))
       throw new Error(`${path}.${key} must be a boolean.`);
+  if (
+    value.animatedMediaRepeatCount !== undefined &&
+    (!isFiniteNumber(value.animatedMediaRepeatCount) || value.animatedMediaRepeatCount <= 0)
+  )
+    throw new Error(`${path}.animatedMediaRepeatCount must be positive.`);
   if (
     value.appearType !== undefined &&
     !oneOf(value.appearType, ['fade', 'pop', 'drop', 'draw-shape', 'draw-route'] as const)
@@ -476,6 +501,11 @@ const validateSegmentLayerAnimation = (value: unknown, path: string): SegmentLay
     throw new Error(`${path}.textScaleWithMapZoom must be a boolean.`);
   if (value.imageScaleWithMapZoom !== undefined && !isBoolean(value.imageScaleWithMapZoom))
     throw new Error(`${path}.imageScaleWithMapZoom must be a boolean.`);
+  if (
+    value.animatedMediaPlayback !== undefined &&
+    !oneOf(value.animatedMediaPlayback, ['loop', 'once'] as const)
+  )
+    throw new Error(`${path}.animatedMediaPlayback is unsupported.`);
   if (
     value.textOrientation !== undefined &&
     !oneOf(value.textOrientation, ['face-camera', 'flat-on-map'] as const)
@@ -816,7 +846,8 @@ export function validateAndMigrateProject(value: unknown): Project {
   const validateReferences = (layers: Layer[], path: string) =>
     layers.forEach((layer, index) => {
       if (layer.assetId !== undefined) {
-        if (layer.type !== 'image') throw new Error(`${path}[${index}] uses an asset on a non-image layer.`);
+        if (layer.type !== 'image' && layer.type !== 'animated-media')
+          throw new Error(`${path}[${index}] uses an asset on a non-image layer.`);
         if (!assetIds.has(layer.assetId))
           throw new Error(`${path}[${index}] references nonexistent asset ID: ${layer.assetId}.`);
       }

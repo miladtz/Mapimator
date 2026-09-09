@@ -61,11 +61,11 @@ import {
   type AppLanguage,
   type BasemapRenderer,
   type CameraState,
-  type GeoEffectType,
   type Layer,
   type LayerType,
   type OnlineBasemapStyleId,
   type Project,
+  type ProjectImageAsset,
   type SegmentRef,
   type Transition,
   type View,
@@ -224,7 +224,9 @@ import {
   resolveProjectAssetUrls,
   validateProjectAssetStorage,
 } from '../core/projectAssets';
-import { imageAspectRatioOf, resizeImageLayer } from '../core/imageLayers';
+import { animatedWebPBytesFromDataUrl, resizeAnimatedMedia } from '../core/animatedMedia';
+import { decodeAnimatedWebP } from '../core/onlineAnimatedMediaLayer';
+import { imageAspectRatioOf, placeImportedMediaLayer, resizeImageLayer } from '../core/imageLayers';
 import {
   deleteVehicleStyle,
   getVehicleStyles,
@@ -308,7 +310,7 @@ function PinStyleGlyph({ id, color }: { id: NonNullable<Layer['pinStyle']>; colo
   }
 }
 
-const layerTypes: LayerType[] = ['pin', 'route', 'text', 'image', 'shape', 'region', 'geo-effect'];
+const layerTypes: LayerType[] = ['pin', 'route', 'text', 'image', 'animated-media', 'shape', 'region'];
 const icons: Record<LayerType, string> = {
   region: '▰',
   pin: '●',
@@ -316,23 +318,10 @@ const icons: Record<LayerType, string> = {
   shape: '◇',
   arrow: '➜',
   image: '▧',
+  'animated-media': '▶',
   route: '⌁',
   'geo-effect': '✦',
 };
-const geoEffectCycle: { type: GeoEffectType; name: string }[] = [
-  { type: 'impact-pulse', name: 'Impact pulse' },
-  { type: 'strike-marker', name: 'Strike marker' },
-  { type: 'smoke-plume', name: 'Smoke plume' },
-  { type: 'missile-arc', name: 'Missile arc' },
-  { type: 'front-line', name: 'Front line' },
-  { type: 'territory-expansion', name: 'Territory expansion' },
-  { type: 'hotspot', name: 'Hotspot' },
-  { type: 'control-zone', name: 'Control zone' },
-  { type: 'refugee-flow', name: 'Refugee flow' },
-  { type: 'blockade-line', name: 'Blockade line' },
-  { type: 'disputed-border', name: 'Disputed border' },
-  { type: 'influence-zone', name: 'Influence zone' },
-];
 type PlaybackState = 'stopped' | 'playing' | 'paused';
 
 export function App() {
@@ -349,6 +338,10 @@ export function App() {
   const [playbackState, setPlaybackState] = useState<PlaybackState>('stopped');
   const [layersPanelOpen, setLayersPanelOpen] = useState(true);
   const [placing, setPlacing] = useState<LayerType | null>(null);
+  const [pendingMediaPlacement, setPendingMediaPlacement] = useState<{
+    layer: Layer;
+    asset: ProjectImageAsset;
+  } | null>(null);
   const [shapeToolOpen, setShapeToolOpen] = useState(false);
   const [shapeKindToPlace, setShapeKindToPlace] = useState<ShapeKind>('rectangle');
   const [shapeDraft, setShapeDraft] = useState<ShapePoint[]>([]);
@@ -406,7 +399,7 @@ export function App() {
     void loadRoutingServiceSettings().then(setRoutingSettings);
   }, []);
   const style = MAP_STYLES.find((item) => item.id === project.mapSettings.styleId)!;
-  const selected = project.layers.find((l) => l.id === selectedId) ?? null;
+  const selected = project.layers.find((l) => l.id === selectedId && l.type !== 'geo-effect') ?? null;
   const projectMode = timelineSelection === null;
   const selectedTransitionId = timelineSelection?.kind === 'transition' ? timelineSelection.id : null;
   const activeViewId = timelineSelection?.kind === 'view' ? timelineSelection.id : null;
@@ -415,7 +408,10 @@ export function App() {
     : null;
   const activeView = project.views.find((view) => view.id === activeViewId) ?? null;
   const visibleLayers = useMemo(
-    () => project.layers.filter((l) => l.name.toLowerCase().includes(search.toLowerCase())),
+    () =>
+      project.layers.filter(
+        (l) => l.type !== 'geo-effect' && l.name.toLowerCase().includes(search.toLowerCase()),
+      ),
     [project.layers, search],
   );
   const sequence = useMemo(() => compileTimeline(project), [project]);
@@ -490,6 +486,7 @@ export function App() {
           return;
         }
         setPlacing(null);
+        setPendingMediaPlacement(null);
         setShapeDraft([]);
         setShapeToolOpen(false);
         setRegionDraft([]);
@@ -916,6 +913,26 @@ export function App() {
     }
   };
   const placeLayerAt = (type: LayerType, point: { x: number; y: number }) => {
+    if ((type === 'image' || type === 'animated-media') && pendingMediaPlacement?.layer.type === type) {
+      const layer = placeImportedMediaLayer(pendingMediaPlacement.layer, point);
+      const asset = pendingMediaPlacement.asset;
+      updateProject((current) =>
+        addProjectLayer(
+          {
+            ...current,
+            assets: current.assets.some((candidate) => candidate.id === asset.id)
+              ? current.assets
+              : [...current.assets, asset],
+          },
+          layer,
+        ),
+      );
+      selectLayer(layer.id);
+      setPendingMediaPlacement(null);
+      setPlacing(null);
+      setNotice(`${layer.name} placed`);
+      return;
+    }
     if (type === 'route') {
       const [longitude, latitude] = mapMotionWorldToLngLat(point.x, point.y);
       setRouteDraft((current) => [
@@ -973,6 +990,7 @@ export function App() {
   };
   const addLayer = async (type: LayerType) => {
     setPlacing(null);
+    setPendingMediaPlacement(null);
     if (type === 'pin' || type === 'text') {
       setPlacing(type);
       setNotice(`Click the map to place the ${layerLabel[type]} — Esc to cancel`);
@@ -999,47 +1017,53 @@ export function App() {
       return;
     }
     const layer = createLayer(type, project.layers.length);
-    let asset = null;
-    if (type === 'image') {
+    if (type === 'image' || type === 'animated-media') {
+      let asset: ProjectImageAsset;
       try {
         const sourcePath = await openFile({
-          title: 'Import Project Image',
+          title: type === 'animated-media' ? 'Import Animated WebP' : 'Import Project Image',
           multiple: false,
           directory: false,
-          filters: [{ name: 'PNG, JPEG, or WebP image', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+          filters:
+            type === 'animated-media'
+              ? [{ name: 'Animated WebP', extensions: ['webp'] }]
+              : [{ name: 'PNG, JPEG, or WebP image', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
         });
         if (typeof sourcePath !== 'string') return;
         asset = await ingestProjectImage(sourcePath);
+        let animatedCanvas: { width: number; height: number } | undefined;
+        if (type === 'animated-media') {
+          const dataUrl = await resolveProjectAssetDataUrl(asset);
+          animatedWebPBytesFromDataUrl(dataUrl);
+          const decoded = await decodeAnimatedWebP(dataUrl);
+          layer.animatedMediaCycleDurationMs = decoded.info.cycleDurationMs;
+          animatedCanvas = { width: decoded.info.canvasWidth, height: decoded.info.canvasHeight };
+        }
         layer.assetId = asset.id;
         layer.name = asset.filename;
         layer.width = 160;
         layer.height = (160 * asset.height) / asset.width;
-        layer.imageAspectRatio = asset.width / asset.height;
-        layer.imageAspectLocked = true;
-        layer.imageFitMode = 'contain';
+        if (type === 'image') {
+          layer.imageAspectRatio = asset.width / asset.height;
+          layer.imageAspectLocked = true;
+          layer.imageFitMode = 'contain';
+        } else {
+          const canvasWidth = animatedCanvas?.width ?? asset.width;
+          const canvasHeight = animatedCanvas?.height ?? asset.height;
+          layer.height = (160 * canvasHeight) / canvasWidth;
+          layer.animatedMediaAspectRatio = canvasWidth / canvasHeight;
+          layer.animatedMediaAspectLocked = true;
+        }
       } catch (error) {
         setNotice(`Import image failed: ${String(error)}`);
         return;
       }
+      setPendingMediaPlacement({ layer, asset });
+      setPlacing(type);
+      setNotice(`Click the map to place the ${layerLabel[type]} — Esc to cancel`);
+      return;
     }
-    if (type === 'geo-effect') {
-      const effect =
-        geoEffectCycle[project.layers.filter((l) => l.type === 'geo-effect').length % geoEffectCycle.length];
-      layer.geoEffectType = effect.type;
-      layer.name = effect.name;
-    }
-    updateProject((p) =>
-      addProjectLayer(
-        {
-          ...p,
-          assets:
-            asset && !p.assets.some((candidate) => candidate.id === asset.id)
-              ? [...p.assets, asset]
-              : p.assets,
-        },
-        layer,
-      ),
-    );
+    updateProject((p) => addProjectLayer(p, layer));
     selectLayer(layer.id);
     setNotice(`${layer.name} added`);
   };
@@ -2150,7 +2174,9 @@ export function App() {
             </div>
             <div className="panel-heading layers-heading">
               <span>{segmentContextLabel}</span>
-              <span className="layer-count">{project.layers.length}</span>
+              <span className="layer-count">
+                {project.layers.filter((layer) => layer.type !== 'geo-effect').length}
+              </span>
             </div>
             <div className="segment-toolbar">
               <button
@@ -2558,10 +2584,17 @@ export function App() {
                         }
                   }
                   onBackgroundClick={(point) => {
-                    if (placing === 'pin' || placing === 'text' || placing === 'shape')
+                    if (
+                      placing === 'pin' ||
+                      placing === 'text' ||
+                      placing === 'shape' ||
+                      placing === 'image' ||
+                      placing === 'animated-media'
+                    )
                       placeLayerAt(placing, point);
                     else clearSelection();
                   }}
+                  captureBackgroundClick={placing === 'image' || placing === 'animated-media'}
                   onRegionPoint={
                     placing === 'region' ? (point) => setRegionDraft((draft) => [...draft, point]) : undefined
                   }
@@ -2727,6 +2760,7 @@ export function App() {
                       if (placing && point) placeLayerAt(placing, point);
                       else clearSelection();
                     },
+                    captureBackgroundClick: placing === 'image' || placing === 'animated-media',
                     safeArea: project.canvas.safeArea,
                     showSafeArea: project.canvas.showSafeArea,
                     assetUrls,
@@ -3623,6 +3657,7 @@ function OnlinePreviewMap({
   onShapeDrawFinish,
   onMoveRouteWaypoint,
   onBackgroundClick,
+  captureBackgroundClick,
   onRegionPoint,
   onRegionFinish,
   regionDraft,
@@ -3657,6 +3692,7 @@ function OnlinePreviewMap({
   onShapeDrawFinish?: () => void;
   onMoveRouteWaypoint?: (layerId: string, waypointId: string, longitude: number, latitude: number) => void;
   onBackgroundClick: (point: { x: number; y: number }) => void;
+  captureBackgroundClick?: boolean;
   onRegionPoint?: (point: [number, number]) => void;
   onRegionFinish?: () => void;
   regionDraft?: [number, number][];
@@ -3694,6 +3730,7 @@ function OnlinePreviewMap({
       onShapeDrawFinish={onShapeDrawFinish}
       onMoveRouteWaypoint={onMoveRouteWaypoint}
       onBackgroundClick={onBackgroundClick}
+      captureBackgroundClick={captureBackgroundClick}
       onRegionPoint={onRegionPoint}
       onRegionFinish={onRegionFinish}
       regionDraft={regionDraft}
@@ -4605,10 +4642,14 @@ function RegionTimingField({
   label,
   value,
   onChange,
+  disabled = false,
+  minimum = 0,
 }: {
   label: string;
   value: number;
   onChange: (value: number) => void;
+  disabled?: boolean;
+  minimum?: number;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState(String(value));
@@ -4617,7 +4658,7 @@ function RegionTimingField({
   }, [value]);
   const commit = (raw: string) => {
     const parsed = Number(raw);
-    const next = Number.isFinite(parsed) ? Math.max(0, Math.min(30, parsed)) : value;
+    const next = Number.isFinite(parsed) ? Math.max(minimum, Math.min(30, parsed)) : value;
     setDraft(String(next));
     onChange(next);
   };
@@ -4627,19 +4668,89 @@ function RegionTimingField({
       <input
         ref={inputRef}
         type="number"
-        min="0"
+        min={minimum}
         max="30"
         step="0.1"
         value={draft}
+        disabled={disabled}
         onWheel={(event) => event.stopPropagation()}
         onChange={(event) => {
           const raw = event.target.value;
           setDraft(raw);
-          if (raw !== '' && Number.isFinite(Number(raw))) onChange(Math.max(0, Math.min(30, Number(raw))));
+          if (raw !== '' && Number.isFinite(Number(raw)))
+            onChange(Math.max(minimum, Math.min(30, Number(raw))));
         }}
         onBlur={(event) => commit(event.target.value)}
       />
     </label>
+  );
+}
+
+function AnimatedMediaTimingControls({
+  layer,
+  animation,
+  onPatch,
+  timingAvailable = true,
+}: {
+  layer: Layer;
+  animation: import('../core/project').SegmentLayerAnimation | undefined;
+  onPatch: (patch: Partial<import('../core/project').SegmentLayerAnimation>) => void;
+  timingAvailable?: boolean;
+}) {
+  const repeatCountEnabled = Boolean(animation?.animatedMediaRepeatCountEnabled);
+  const repeatCount = Math.max(0.001, animation?.animatedMediaRepeatCount ?? 1);
+  const cycleSeconds = Math.max(0.001, (layer.animatedMediaCycleDurationMs ?? 1000) / 1000);
+  const duration = repeatCountEnabled
+    ? repeatCount * cycleSeconds
+    : Math.max(0.001, animation?.animatedMediaDuration ?? cycleSeconds);
+  return (
+    <>
+      <RegionTimingField
+        label="Start Delay"
+        value={animation?.animatedMediaStartDelay ?? 0}
+        onChange={(value) => onPatch({ animatedMediaStartDelay: value })}
+        disabled={!timingAvailable || !repeatCountEnabled}
+      />
+      <label className="toggle">
+        <span>Count and Duration</span>
+        <input
+          type="checkbox"
+          checked={repeatCountEnabled}
+          disabled={!timingAvailable}
+          onChange={(event) => onPatch({ animatedMediaRepeatCountEnabled: event.target.checked })}
+        />
+      </label>
+      <div className="two-col">
+        <RegionTimingField
+          label="Duration"
+          value={duration}
+          minimum={0.001}
+          disabled={!timingAvailable || !repeatCountEnabled}
+          onChange={(value) =>
+            onPatch({ animatedMediaDuration: value, animatedMediaRepeatCount: value / cycleSeconds })
+          }
+        />
+        <label>
+          Count
+          <input
+            type="number"
+            min="0.001"
+            step="0.01"
+            value={repeatCount}
+            disabled={!timingAvailable || !repeatCountEnabled}
+            onWheel={(event) => event.stopPropagation()}
+            onChange={(event) => {
+              const parsed = Number(event.target.value);
+              if (!Number.isFinite(parsed) || parsed <= 0) return;
+              onPatch({
+                animatedMediaRepeatCount: parsed,
+                animatedMediaDuration: parsed * cycleSeconds,
+              });
+            }}
+          />
+        </label>
+      </div>
+    </>
   );
 }
 
@@ -6115,6 +6226,7 @@ function Inspector({
 }) {
   const isText = layer.type === 'text';
   const isImage = layer.type === 'image';
+  const isAnimatedMedia = layer.type === 'animated-media';
   const appearOptions = getAppearOptionsForLayer(layer);
   const appearTypeForLayer = (animation: import('../core/project').SegmentLayerAnimation | undefined) =>
     appearOptions.some((option) => option.value === animation?.appearType) ? animation!.appearType! : 'fade';
@@ -6276,9 +6388,11 @@ function Inspector({
                 min="4"
                 step="1"
                 value={Math.round((layer.width ?? 160) * 100) / 100}
-                onChange={(event) =>
-                  onChange(resizeImageLayer(layer, Number(event.target.value), layer.height ?? 90))
-                }
+                onChange={(event) => {
+                  const parsed = Number(event.target.value);
+                  if (Number.isFinite(parsed))
+                    onChange(resizeImageLayer(layer, Math.max(4, parsed), layer.height ?? 90));
+                }}
               />
             </label>
             <label>
@@ -6287,11 +6401,17 @@ function Inspector({
                 type="number"
                 min="4"
                 step="1"
-                disabled={layer.imageAspectLocked !== false}
                 value={Math.round((layer.height ?? 90) * 100) / 100}
-                onChange={(event) =>
-                  onChange(resizeImageLayer(layer, layer.width ?? 160, Number(event.target.value)))
-                }
+                onChange={(event) => {
+                  const parsed = Number(event.target.value);
+                  if (!Number.isFinite(parsed)) return;
+                  const height = Math.max(4, parsed);
+                  const width =
+                    layer.imageAspectLocked !== false
+                      ? height * imageAspectRatioOf(layer)
+                      : (layer.width ?? 160);
+                  onChange(resizeImageLayer(layer, width, height));
+                }}
               />
             </label>
           </div>
@@ -6341,7 +6461,83 @@ function Inspector({
             />
           </label>
           <small className="global-layer-note">
-            Drag the image, corner handles, or orange rotation handle on the map.
+            Drag the image or orange rotation handle on the map. Resize with Width and Height.
+          </small>
+        </div>
+      )}
+      {isAnimatedMedia && (
+        <div className="pin-section image-properties">
+          <span className="pin-section-title">Animated Media</span>
+          <small>Animated WebP · deterministic project-time playback · Face Camera</small>
+          <div className="two-col">
+            <label>
+              Width
+              <input
+                type="number"
+                min="4"
+                value={layer.width ?? 160}
+                onChange={(event) => {
+                  const parsed = Number(event.target.value);
+                  if (Number.isFinite(parsed))
+                    onChange(resizeAnimatedMedia(layer, Math.max(4, parsed), layer.height ?? 90));
+                }}
+              />
+            </label>
+            <label>
+              Height
+              <input
+                type="number"
+                min="4"
+                value={layer.height ?? 90}
+                onChange={(event) => {
+                  const parsed = Number(event.target.value);
+                  if (!Number.isFinite(parsed)) return;
+                  const height = Math.max(4, parsed);
+                  const ratio = layer.animatedMediaAspectRatio ?? (layer.width ?? 160) / (layer.height ?? 90);
+                  const width =
+                    layer.animatedMediaAspectLocked !== false ? height * ratio : (layer.width ?? 160);
+                  onChange(resizeAnimatedMedia(layer, width, height));
+                }}
+              />
+            </label>
+          </div>
+          <label className="toggle">
+            <span>Lock aspect ratio</span>
+            <input
+              type="checkbox"
+              checked={layer.animatedMediaAspectLocked !== false}
+              onChange={(event) =>
+                onChange({
+                  animatedMediaAspectLocked: event.target.checked,
+                  animatedMediaAspectRatio: (layer.width ?? 160) / Math.max(1, layer.height ?? 90),
+                })
+              }
+            />
+          </label>
+          <label>
+            Rotation
+            <input
+              type="number"
+              min="-360"
+              max="360"
+              step="0.1"
+              value={layer.animatedMediaRotation ?? 0}
+              onChange={(event) => onChange({ animatedMediaRotation: Number(event.target.value) || 0 })}
+            />
+          </label>
+          <label>
+            Opacity
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              value={layer.opacity}
+              onChange={(event) => onChange({ opacity: Number(event.target.value) })}
+            />
+          </label>
+          <small className="global-layer-note">
+            Drag the media or orange rotation handle on the map. Resize with Width and Height.
           </small>
         </div>
       )}
@@ -7075,6 +7271,13 @@ function Inspector({
             <p className="transition-hint">Enable this layer for the transition to configure animation.</p>
           ) : (
             <>
+              {isAnimatedMedia && (
+                <AnimatedMediaTimingControls
+                  layer={layer}
+                  animation={transitionContext.anim}
+                  onPatch={transitionContext.onPatchAnim}
+                />
+              )}
               {isImage && (
                 <>
                   <label>
@@ -7274,6 +7477,14 @@ function Inspector({
             <p className="transition-hint">Enable this layer for the View to configure animation.</p>
           ) : (
             <>
+              {isAnimatedMedia && (
+                <AnimatedMediaTimingControls
+                  layer={layer}
+                  animation={viewContext.anim}
+                  onPatch={viewContext.onPatchAnim}
+                  timingAvailable={viewContext.holdDuration > 0}
+                />
+              )}
               {isImage && (
                 <>
                   <label>
@@ -7750,7 +7961,8 @@ function Inspector({
         layer.type !== 'region' &&
         layer.type !== 'route' &&
         layer.type !== 'shape' &&
-        layer.type !== 'image' && (
+        layer.type !== 'image' &&
+        layer.type !== 'animated-media' && (
           <div className="two-col">
             <label>
               Color

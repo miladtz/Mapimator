@@ -4,7 +4,7 @@ import {
   type CustomRenderMethodInput,
   type Map as MapLibreMap,
 } from 'maplibre-gl';
-import { imageFitModeOf, imageRenderSurfaceState } from './imageLayers';
+import { imageFitModeOf, imageMercatorCoordinates, imageRenderSurfaceState } from './imageLayers';
 import { mapMotionWorldToLngLat } from './openFreeMapAdapter';
 import type { Layer } from './project';
 
@@ -265,11 +265,10 @@ export class OnlineImageLayer implements CustomLayerInterface {
       if (geometryChanged) {
         const anchorLngLat = mapMotionWorldToLngLat(parameters.anchor[0], parameters.anchor[1]);
         const anchor = MercatorCoordinate.fromLngLat(anchorLngLat);
+        const mercatorCorners = face ? [] : imageMercatorCoordinates(parameters.anchor, parameters.offsets);
         const vertices: number[] = [];
         for (const index of indices) {
-          const coordinate = face
-            ? anchor
-            : MercatorCoordinate.fromLngLat(mapMotionWorldToLngLat(...parameters.worldCorners[index]));
+          const coordinate = face ? anchor : mercatorCorners[index];
           const offset = face ? parameters.offsets[index] : [0, 0];
           vertices.push(coordinate.x, coordinate.y, offset[0], offset[1], ...parameters.uvs[index]);
         }

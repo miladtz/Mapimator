@@ -79,7 +79,8 @@ export function findReferencedAssets(project: Project): Set<string> {
   const referenced = new Set<string>();
   const collect = (layers: Project['layers']) => {
     for (const layer of layers) {
-      if (layer.type === 'image' && layer.assetId) referenced.add(layer.assetId);
+      if ((layer.type === 'image' || layer.type === 'animated-media') && layer.assetId)
+        referenced.add(layer.assetId);
       if (layer.type === 'pin' && layer.pinCustomAssetId) referenced.add(layer.pinCustomAssetId);
     }
   };

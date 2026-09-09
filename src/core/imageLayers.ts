@@ -1,8 +1,8 @@
 import type { Layer, ProjectImageAsset, SegmentLayerAnimation } from './project';
+import { CAMERA_VIEWPORT } from './camera';
 import { mapMotionWorldToLngLat } from './openFreeMapAdapter';
 
 export type ImageFitMode = 'contain' | 'cover';
-export type ImageHandleKind = 'north-west' | 'north-east' | 'south-east' | 'south-west' | 'rotate';
 
 export const imageRotationOf = (layer: Layer) => layer.imageRotation ?? 0;
 export const imageFitModeOf = (layer: Layer): ImageFitMode => layer.imageFitMode ?? 'contain';
@@ -77,7 +77,69 @@ export const imageWorldCorners = (layer: Layer): [number, number][] => {
 };
 
 export const imageGeographicCorners = (layer: Layer): [number, number][] =>
-  imageWorldCorners(layer).map(([x, y]) => mapMotionWorldToLngLat(x, y));
+  imageMercatorCorners(layer).map((coordinate) => {
+    const longitude = coordinate.x * 360 - 180;
+    const latitude = (Math.atan(Math.sinh(Math.PI * (1 - 2 * coordinate.y))) * 180) / Math.PI;
+    return [longitude, latitude];
+  });
+
+export interface ImageMercatorCoordinate {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export const imageMercatorCoordinates = (
+  anchor: readonly [number, number],
+  offsets: readonly (readonly [number, number])[],
+): ImageMercatorCoordinate[] => {
+  const [longitude, latitude] = mapMotionWorldToLngLat(anchor[0], anchor[1]);
+  const latitudeRadians = (latitude * Math.PI) / 180;
+  const center = {
+    x: (longitude + 180) / 360,
+    y: (1 - Math.log(Math.tan(latitudeRadians) + 1 / Math.cos(latitudeRadians)) / Math.PI) / 2,
+    z: 0,
+  };
+  const logicalToMercator = 1 / CAMERA_VIEWPORT.width;
+  return offsets.map(([x, y]) => ({
+    x: center.x + x * logicalToMercator,
+    y: center.y + y * logicalToMercator,
+    z: center.z,
+  }));
+};
+
+/**
+ * Static Images are authored in a local square logical space. Keep that space
+ * square after projection by rotating offsets around the anchor in Mercator
+ * coordinates. Converting independently rotated lon/lat corners through
+ * Mercator makes the vertical scale vary with latitude and distorts the quad.
+ */
+export const imageMercatorCorners = (layer: Layer): ImageMercatorCoordinate[] => {
+  const rendered = evaluatedImageLayer(layer);
+  const width = Math.max(1, rendered.width ?? 160);
+  const height = Math.max(1, rendered.height ?? 90);
+  const radians = (imageRotationOf(layer) * Math.PI) / 180;
+  const cosine = Math.cos(radians);
+  const sine = Math.sin(radians);
+  const offsets = [
+    [-width / 2, -height / 2],
+    [width / 2, -height / 2],
+    [width / 2, height / 2],
+    [-width / 2, height / 2],
+  ].map(([x, y]) => {
+    const rotatedX = x * cosine - y * sine;
+    const rotatedY = x * sine + y * cosine;
+    return [rotatedX, rotatedY] as const;
+  });
+  return imageMercatorCoordinates([rendered.x + width / 2, rendered.y + height / 2], offsets);
+};
+
+/** A media import becomes canonical only after its one authoritative map click. */
+export const placeImportedMediaLayer = (layer: Layer, point: { x: number; y: number }): Layer => ({
+  ...layer,
+  x: point.x - (layer.width ?? 160) / 2,
+  y: point.y - (layer.height ?? 90) / 2,
+});
 
 export const resizeImageLayer = (
   layer: Layer,
@@ -91,28 +153,6 @@ export const resizeImageLayer = (
   return imageAspectLocked(layer)
     ? { width: safeWidth, height: safeWidth / Math.max(0.0001, ratio), imageAspectRatio: ratio }
     : { width: safeWidth, height: safeHeight, imageAspectRatio: safeWidth / safeHeight };
-};
-
-export const resizeImageFromHandle = (
-  layer: Layer,
-  handle: Exclude<ImageHandleKind, 'rotate'>,
-  point: { x: number; y: number },
-  asset?: ProjectImageAsset,
-): Partial<Layer> => {
-  const radians = (-imageRotationOf(layer) * Math.PI) / 180;
-  const centerX = layer.x + (layer.width ?? 160) / 2;
-  const centerY = layer.y + (layer.height ?? 90) / 2;
-  const dx = point.x - centerX;
-  const dy = point.y - centerY;
-  const localX = dx * Math.cos(radians) - dy * Math.sin(radians);
-  const localY = dx * Math.sin(radians) + dy * Math.cos(radians);
-  const width = Math.max(4, Math.abs(localX) * 2);
-  const height = Math.max(4, Math.abs(localY) * 2);
-  const resized = resizeImageLayer(layer, width, height, asset);
-  // Keeping the geographic anchor fixed makes repeated drags drift-free. The
-  // handle name remains useful for editor hit testing and future edge resizing.
-  void handle;
-  return resized;
 };
 
 export const rotateImageToward = (layer: Layer, point: { x: number; y: number }): Partial<Layer> => ({

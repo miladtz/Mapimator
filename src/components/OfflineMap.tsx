@@ -77,6 +77,7 @@ interface Props {
   onMoveLayer: (id: string, x: number, y: number) => void;
   onDeleteSelected?: () => void;
   onBackgroundClick?: (point: { x: number; y: number }) => void;
+  captureBackgroundClick?: boolean;
   safeArea: number;
   showSafeArea: boolean;
   assetUrls?: Readonly<Record<string, string>>;
@@ -124,6 +125,7 @@ export function OfflineMap({
   onMoveLayer,
   onDeleteSelected,
   onBackgroundClick,
+  captureBackgroundClick = false,
   safeArea,
   showSafeArea,
   assetUrls,
@@ -519,6 +521,7 @@ export function OfflineMap({
   };
   const beginLayerMove = (event: PointerEvent<SVGGElement>, layer: Layer) => {
     if (!interactionEnabled) return;
+    if (captureBackgroundClick) return;
     if (layer.locked) return;
     if (spacePan.current) return;
     event.stopPropagation();
@@ -1503,6 +1506,8 @@ function LayerGraphic({
   screenRotation?: number;
   editorMode?: boolean;
 }) {
+  // Legacy effects remain loadable but are intentionally retired from active rendering.
+  if (layer.type === 'geo-effect' || layer.type === 'animated-media') return null;
   const common = {
     opacity: layer.opacity,
     onPointerDown,
@@ -1731,7 +1736,7 @@ function LayerGraphic({
         </text>
       </g>
     );
-  if (layer.type === 'geo-effect')
+  if ((layer.type as string) === 'geo-effect')
     return <GeoEffect layer={projectedLayer(layer, point, point2, globe)} common={common} />;
   const dash = layer.type === 'route' ? '8 6' : undefined;
   if (!point2) return null;

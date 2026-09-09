@@ -18,6 +18,11 @@ import {
   viewMemberIds,
 } from './project';
 import { applyRouteEvaluation } from './routes';
+import {
+  animatedMediaIntervalsForRun,
+  evaluateAnimatedMediaTime,
+  type AnimatedMediaActiveInterval,
+} from './animatedMedia';
 import { easeCameraProgress, interpolateCamera } from './camera';
 import type { CameraTransitionType } from './camera';
 import { interpolateGlobeCamera } from './globeMath';
@@ -318,6 +323,7 @@ const applyPhaseToLayer = (
       layer.visible = appearPhase.visible && layer.imageWipeProgress > 0;
     }
   }
+  if (layer.type === 'animated-media') evaluateAnimatedMediaTime(layer, animation, phase.segmentLocalTime);
   if (phase.popScale !== undefined) layer.pinPopScale = phase.popScale;
   else delete layer.pinPopScale;
   if (phase.dropY !== undefined) layer.pinDropOffsetY = phase.dropY;
@@ -344,6 +350,64 @@ const routeSectionIncluded = (segment: CompiledSegment, layerId: string, section
 const routeAppearCompleteTime = (timing: NonNullable<SegmentLayerAnimation['routeDefaults']>) =>
   Math.max(0, timing.appearDelay ?? timing.drawDelay ?? 0) +
   Math.max(0, timing.appearDuration ?? timing.drawDuration ?? 1.5);
+
+/** Derive playback windows from stable segment membership and authored project-time events. */
+export const animatedMediaActiveIntervals = (
+  segments: readonly CompiledSegment[],
+  layerId: string,
+  intrinsicCycleDurationMs: number,
+): AnimatedMediaActiveInterval[] => {
+  const result: AnimatedMediaActiveInterval[] = [];
+  for (let index = 0; index < segments.length;) {
+    if (!segmentMemberIds(segments[index]).has(layerId)) {
+      index += 1;
+      continue;
+    }
+    const first = index;
+    let last = index;
+    while (
+      last + 1 < segments.length &&
+      segmentMemberIds(segments[last + 1]).has(layerId) &&
+      segments[last + 1].start <= segments[last].end + 1e-9
+    )
+      last += 1;
+    const runStart = segments[first].start;
+    const runEnd = segments[last].end;
+    result.push(
+      ...animatedMediaIntervalsForRun(
+        segments.slice(first, last + 1).map((segment) => ({
+          start: segment.start,
+          end: segment.end,
+          animation: segmentAnimation(segment, layerId),
+        })),
+        runStart,
+        runEnd,
+        intrinsicCycleDurationMs,
+      ),
+    );
+    index = last + 1;
+  }
+  return result;
+};
+
+/** Animated media owns a deterministic clock for each merged active project-time interval. */
+const applyAnimatedMediaContinuity = (
+  layers: Layer[],
+  segments: CompiledSegment[],
+  _currentIndex: number,
+  time: number,
+) => {
+  for (const layer of layers) {
+    if (layer.type !== 'animated-media') continue;
+    const interval = animatedMediaActiveIntervals(
+      segments,
+      layer.id,
+      Math.max(1, layer.animatedMediaCycleDurationMs ?? 1000),
+    ).find((candidate) => time >= candidate.start && time < candidate.end);
+    layer.visible = Boolean(interval);
+    layer.animatedMediaTimeMs = interval ? Math.max(0, (time - interval.start) * 1000) : 0;
+  }
+};
 
 /** Resolve the latest unfinished explicit Appear event from canonical project time. */
 const applyActiveAppearEvents = (
@@ -495,6 +559,7 @@ export const evaluateProjectAtTime = (project: Project, time: number): RenderedP
         segment.view.camera.zoom,
       );
     }
+    applyAnimatedMediaContinuity(layers, sequence.segments, index, timelineTime);
     return {
       camera: segment.view.camera,
       mapMode: segment.view.mapMode,
@@ -546,6 +611,7 @@ export const evaluateProjectAtTime = (project: Project, time: number): RenderedP
       camera.zoom,
     );
   }
+  applyAnimatedMediaContinuity(layers, sequence.segments, index, timelineTime);
   return {
     camera,
     mapMode: segment.from.mapMode,
