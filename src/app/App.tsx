@@ -23,11 +23,13 @@ import {
   projectSceneViewBox,
   type LogicalViewport,
 } from '../core/projectRenderViewport';
+import { mapMotionWorldToLngLat } from '../core/openFreeMapAdapter';
+import { BASEMAPS, basemapAvailability, basemapById, type MapServiceCredentials } from '../core/basemaps';
 import {
-  OPENFREEMAP_3D_CAMERA,
-  OPENFREEMAP_STYLES,
-  mapMotionWorldToLngLat,
-} from '../core/openFreeMapAdapter';
+  EMPTY_MAP_SERVICE_SETTINGS,
+  loadMapServiceSettings,
+  saveMapServiceSettings,
+} from '../core/mapServiceSettings';
 import {
   getPinStyles,
   savePinStyle,
@@ -51,6 +53,7 @@ import {
   reconcileRouteSectionTimelineUsage,
   setViewLayerIncluded,
   sequenceMapMode,
+  setProjectBasemap,
   transitionAnimOf,
   transitionLayerConfigsOf,
   transitionMemberIds,
@@ -361,6 +364,8 @@ export function App() {
   const routeRequestRef = useRef<AbortController | null>(null);
   const [routingSettings, setRoutingSettings] = useState<RoutingServiceSettings>(EMPTY_ROUTING_SETTINGS);
   const [routingSettingsOpen, setRoutingSettingsOpen] = useState(false);
+  const [mapServiceSettings, setMapServiceSettings] = useState<MapServiceCredentials | null>(null);
+  const [mapServiceSettingsOpen, setMapServiceSettingsOpen] = useState(false);
   const [regionToolOpen, setRegionToolOpen] = useState(false);
   const [regionSearch, setRegionSearch] = useState('');
   const [locationSearchOpen, setLocationSearchOpen] = useState(false);
@@ -397,8 +402,10 @@ export function App() {
   const words = t(language);
   useEffect(() => {
     void loadRoutingServiceSettings().then(setRoutingSettings);
+    void loadMapServiceSettings().then(setMapServiceSettings);
   }, []);
   const style = MAP_STYLES.find((item) => item.id === project.mapSettings.styleId)!;
+  const selectedBasemap = basemapById(project.mapSettings.onlineStyleId);
   const selected = project.layers.find((l) => l.id === selectedId && l.type !== 'geo-effect') ?? null;
   const projectMode = timelineSelection === null;
   const selectedTransitionId = timelineSelection?.kind === 'transition' ? timelineSelection.id : null;
@@ -2336,22 +2343,35 @@ export function App() {
                   value={project.mapSettings.onlineStyleId}
                   onChange={(event) => {
                     const onlineStyle = event.target.value as OnlineBasemapStyleId;
-                    updateProject((current) => ({
-                      ...current,
-                      mapSettings: { ...current.mapSettings, onlineStyleId: onlineStyle },
-                    }));
-                    if (onlineStyle === '3d') setCamera(OPENFREEMAP_3D_CAMERA);
+                    updateProject((current) => setProjectBasemap(current, onlineStyle));
                   }}
                 >
-                  {OPENFREEMAP_STYLES.map((onlineStyle) => (
+                  {BASEMAPS.map((onlineStyle) => (
                     <option key={onlineStyle.id} value={onlineStyle.id}>
-                      {onlineStyle.label}
+                      {onlineStyle.displayName}
+                      {basemapAvailability(onlineStyle, mapServiceSettings ?? EMPTY_MAP_SERVICE_SETTINGS)
+                        .status === 'missing-credential'
+                        ? ' — MapTiler key required'
+                        : ''}
                     </option>
                   ))}
                 </select>
               )}
+              {project.mapSettings.basemapRenderer === 'online' && (
+                <button type="button" onClick={() => setMapServiceSettingsOpen((open) => !open)}>
+                  Map Services
+                </button>
+              )}
               <select
                 aria-label="Map label language"
+                disabled={
+                  project.mapSettings.basemapRenderer === 'online' && !selectedBasemap.capabilities.labels
+                }
+                title={
+                  project.mapSettings.basemapRenderer === 'online' && !selectedBasemap.capabilities.labels
+                    ? `${selectedBasemap.displayName} is imagery-only and does not provide basemap labels.`
+                    : undefined
+                }
                 value={project.mapSettings.labelLanguage}
                 onChange={(e) =>
                   updateProject((p) => ({
@@ -2526,6 +2546,7 @@ export function App() {
                   onCameraChange={handleCameraChange}
                   styleId={project.mapSettings.onlineStyleId}
                   labelLanguage={project.mapSettings.labelLanguage}
+                  mapServiceSettings={mapServiceSettings ?? EMPTY_MAP_SERVICE_SETTINGS}
                   selectedId={selectedId}
                   onSelect={selectLayer}
                   onMovePin={(id, x, y) => updateLayer(id, { x, y })}
@@ -2938,6 +2959,17 @@ export function App() {
           </div>
           {playbackState !== 'stopped' && (
             <p className="preview-edit-lock">Stop Preview to edit View or Transition settings.</p>
+          )}
+          {mapServiceSettingsOpen && (
+            <MapServicesPanel
+              settings={mapServiceSettings ?? EMPTY_MAP_SERVICE_SETTINGS}
+              onSave={async (settings) => {
+                await saveMapServiceSettings(settings);
+                setMapServiceSettings(settings);
+                setMapServiceSettingsOpen(false);
+              }}
+              onClose={() => setMapServiceSettingsOpen(false)}
+            />
           )}
           <CameraInspector
             camera={camera}
@@ -3647,6 +3679,7 @@ function OnlinePreviewMap({
   onCameraChange,
   styleId,
   labelLanguage,
+  mapServiceSettings,
   selectedId,
   onSelect,
   onMovePin,
@@ -3682,6 +3715,7 @@ function OnlinePreviewMap({
   onCameraChange: (camera: CameraState) => void;
   styleId: OnlineBasemapStyleId;
   labelLanguage: Project['mapSettings']['labelLanguage'];
+  mapServiceSettings: MapServiceCredentials;
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onMovePin: (id: string, x: number, y: number) => void;
@@ -3717,6 +3751,7 @@ function OnlinePreviewMap({
       onCameraChange={onCameraChange}
       styleId={styleId}
       labelLanguage={labelLanguage}
+      mapServiceSettings={mapServiceSettings}
       interactionEnabled={playbackState === 'stopped'}
       viewport={projectRenderViewport(project)}
       layers={previewState?.layers ?? editingLayers}
@@ -6190,6 +6225,69 @@ function RoutingServicesPanel({
       <div className="route-planner-actions">
         <button type="button" onClick={() => void onSave(draft)}>
           Save
+        </button>
+        <button type="button" onClick={onClose}>
+          Back
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function MapServicesPanel({
+  settings,
+  onSave,
+  onClose,
+}: {
+  settings: MapServiceCredentials;
+  onSave: (settings: MapServiceCredentials) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState(settings);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState<string>();
+  return (
+    <section className="route-planner" aria-label="Map Services">
+      <h3>Map Services</h3>
+      <div className="route-planner-field">
+        <strong>Satellite</strong>
+        <span>MapTiler</span>
+        <label>
+          API Key
+          <input
+            type="password"
+            autoComplete="off"
+            value={draft.maptilerApiKey}
+            placeholder="Enter MapTiler API key"
+            onChange={(event) => setDraft((current) => ({ ...current, maptilerApiKey: event.target.value }))}
+          />
+        </label>
+        <small>{draft.maptilerApiKey.trim() ? 'Key configured' : 'API key required for Satellite'}</small>
+      </div>
+      <p className="route-service-privacy">
+        The key is stored only in this device's application-data directory and is never included in projects
+        or exports.
+      </p>
+      {status && <small>{status}</small>}
+      <div className="route-planner-actions">
+        <button
+          type="button"
+          disabled={saving}
+          onClick={async () => {
+            setSaving(true);
+            setStatus(undefined);
+            try {
+              await onSave({ maptilerApiKey: draft.maptilerApiKey.trim() });
+            } catch (error) {
+              setStatus(error instanceof Error ? error.message : 'Unable to save Map Services settings.');
+              setSaving(false);
+            }
+          }}
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        <button type="button" onClick={() => setDraft(EMPTY_MAP_SERVICE_SETTINGS)}>
+          Remove
         </button>
         <button type="button" onClick={onClose}>
           Back

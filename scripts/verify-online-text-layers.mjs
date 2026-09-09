@@ -81,7 +81,7 @@ assert.match(overlay, /icon-pitch-alignment': 'viewport'/);
 assert.match(overlay, /style\.load|ensureOnlineProjectOverlays/);
 const app = source('src/app/App.tsx');
 assert.match(app, /type === 'pin' \|\| type === 'text'/);
-assert.match(app, /placing === 'pin' \|\| placing === 'text'/);
+assert.match(app, /placing === 'pin'[\s\S]*placing === 'text'[\s\S]*placeLayerAt\(placing, point\)/);
 assert.match(app, /Vazirmatn/);
 assert.match(app, /Line spacing/);
 

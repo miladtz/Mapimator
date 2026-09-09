@@ -449,6 +449,22 @@ button:disabled {
   border-radius: 4px;
   box-shadow: 0 1px 5px rgb(0 0 0 / 32%);
 }
+.maptiler-attribution-logo {
+  position: absolute;
+  z-index: 5;
+  bottom: 8px;
+  left: 8px;
+  display: block;
+  width: 76px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  background: rgb(255 255 255 / 88%);
+}
+.maptiler-attribution-logo img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
 .online-map-navigation button {
   width: 30px;
   height: 30px;

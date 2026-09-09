@@ -4,11 +4,21 @@ import {
   mapLibreMaximumZoom,
   mapLibreMinimumZoom,
   mapMotionToMapLibreCamera,
-  openFreeMapStyleUrl,
 } from './openFreeMapAdapter';
+import {
+  basemapById,
+  basemapUnavailableMessage,
+  resolveBasemapStyle,
+  sanitizeBasemapError,
+} from './basemaps';
+import { loadMapServiceSettings } from './mapServiceSettings';
 import { projectRenderViewport } from './projectRenderViewport';
 import { registerOnlineMapInstance, type OnlineMapPurpose } from './onlineMapLifecycle';
-import { applyOnlineMapLabelLanguage, ensureMapLibreRtlSupport } from './onlineMapLabels';
+import {
+  applyBasemapBoundaryPolicy,
+  applyBasemapLabelLanguage,
+  ensureMapLibreRtlSupport,
+} from './onlineMapLabels';
 import {
   ensureOnlineProjectOverlays,
   loadOnlineProjectOverlayAssets,
@@ -22,8 +32,7 @@ import type { CameraState, Layer, MapLabelLanguageMode, OnlineBasemapStyleId, Pr
 const ONLINE_MAP_READY_TIMEOUT_MS = 30_000;
 export const ONLINE_EXPORT_PIXEL_RATIO = 1.5;
 export const ONLINE_EXPORT_ANTIALIAS = true;
-export const ONLINE_MAP_ATTRIBUTION =
-  'OpenFreeMap \u00A9 OpenMapTiles \u00B7 Data \u00A9 OpenStreetMap contributors';
+export const ONLINE_MAP_ATTRIBUTION = basemapById('liberty').attribution.text;
 
 export interface OnlineMapFrameDiagnostics {
   logicalWidth: number;
@@ -48,6 +57,7 @@ const abortError = () => new DOMException('Online map rendering was cancelled.',
 const waitForStyleAndApplyLabels = (
   map: MapLibreMap,
   labelLanguage: MapLabelLanguageMode,
+  styleId: OnlineBasemapStyleId,
   layers: readonly Layer[],
   assetUrls: Readonly<Record<string, string>>,
   signal?: AbortSignal,
@@ -57,7 +67,9 @@ const waitForStyleAndApplyLabels = (
     const onStyleLoad = async () => {
       cleanup();
       try {
-        applyOnlineMapLabelLanguage(map, labelLanguage, true);
+        const basemap = basemapById(styleId);
+        applyBasemapBoundaryPolicy(map, basemap);
+        applyBasemapLabelLanguage(map, basemap, labelLanguage, true);
         await loadOnlineProjectOverlayAssets(map, layers, assetUrls);
         ensureOnlineProjectOverlays(map, layers, null, assetUrls);
         resolve();
@@ -68,7 +80,7 @@ const waitForStyleAndApplyLabels = (
     const onError = (event: maplibregl.ErrorEvent) => {
       if (isRecoverableOpenFreeMapResourceError(event.error)) return;
       cleanup();
-      reject(event.error ?? new Error('Online map style failed to load.'));
+      reject(new Error(sanitizeBasemapError(event.error?.message ?? 'Online map style failed to load.')));
     };
     const onAbort = () => {
       cleanup();
@@ -111,7 +123,11 @@ const waitForIdle = (map: MapLibreMap, signal?: AbortSignal) =>
     const onError = (event: maplibregl.ErrorEvent) => {
       if (isRecoverableOpenFreeMapResourceError(event.error)) return;
       cleanup();
-      reject(new Error(`Online map resource failed: ${event.error?.message ?? 'unknown MapLibre error'}`));
+      reject(
+        new Error(
+          `Online map resource failed: ${sanitizeBasemapError(event.error?.message ?? 'unknown MapLibre error')}`,
+        ),
+      );
     };
     const onAbort = () => {
       cleanup();
@@ -157,6 +173,7 @@ export class OnlineMapFrameRenderer {
     private readonly height: number,
     private readonly pixelRatio: number,
     private readonly assetUrls: Readonly<Record<string, string>>,
+    private readonly attribution: string,
     private readonly releaseLifecycle: () => void,
   ) {}
 
@@ -191,10 +208,15 @@ export class OnlineMapFrameRenderer {
     let releaseLifecycle: (() => void) | undefined;
     try {
       const assetUrls = await resolveProjectAssetUrls(project);
+      const basemap = basemapById(styleId);
+      const mapServiceSettings = await loadMapServiceSettings();
+      const resolvedStyle = resolveBasemapStyle(basemap, mapServiceSettings);
+      if (resolvedStyle.status !== 'available')
+        throw new Error(basemapUnavailableMessage(basemap, resolvedStyle));
       if (requiresMapLibreRtl(project.mapSettings.labelLanguage)) await ensureMapLibreRtlSupport();
       map = new maplibregl.Map({
         container: host,
-        style: openFreeMapStyleUrl(styleId),
+        style: resolvedStyle.style,
         center: camera.center,
         zoom: camera.zoom,
         bearing: camera.bearing,
@@ -217,6 +239,7 @@ export class OnlineMapFrameRenderer {
       await waitForStyleAndApplyLabels(
         map,
         project.mapSettings.labelLanguage,
+        styleId,
         evaluateProjectAtTime(project, 0).layers,
         assetUrls,
         signal,
@@ -239,6 +262,7 @@ export class OnlineMapFrameRenderer {
         height,
         pixelRatio,
         assetUrls,
+        basemap.attribution.requiredInExport ? basemap.attribution.text : '',
         releaseLifecycle,
       );
     } catch (error) {
@@ -298,23 +322,25 @@ export class OnlineMapFrameRenderer {
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = 'high';
     context.drawImage(source, 0, 0, source.width, source.height, 0, 0, destination.width, destination.height);
-    const fontSize = Math.max(10, Math.round(destination.height * 0.012));
-    context.save();
-    context.font = `500 ${fontSize}px Inter, sans-serif`;
-    context.textAlign = 'right';
-    context.textBaseline = 'bottom';
-    const padding = Math.max(6, Math.round(fontSize * 0.55));
-    const metrics = context.measureText(ONLINE_MAP_ATTRIBUTION);
-    context.fillStyle = 'rgba(255, 255, 255, 0.82)';
-    context.fillRect(
-      destination.width - metrics.width - padding * 2,
-      destination.height - fontSize - padding * 2,
-      metrics.width + padding * 2,
-      fontSize + padding * 2,
-    );
-    context.fillStyle = '#24303b';
-    context.fillText(ONLINE_MAP_ATTRIBUTION, destination.width - padding, destination.height - padding);
-    context.restore();
+    if (this.attribution) {
+      const fontSize = Math.max(10, Math.round(destination.height * 0.012));
+      context.save();
+      context.font = `500 ${fontSize}px Inter, sans-serif`;
+      context.textAlign = 'right';
+      context.textBaseline = 'bottom';
+      const padding = Math.max(6, Math.round(fontSize * 0.55));
+      const metrics = context.measureText(this.attribution);
+      context.fillStyle = 'rgba(255, 255, 255, 0.82)';
+      context.fillRect(
+        destination.width - metrics.width - padding * 2,
+        destination.height - fontSize - padding * 2,
+        metrics.width + padding * 2,
+        fontSize + padding * 2,
+      );
+      context.fillStyle = '#24303b';
+      context.fillText(this.attribution, destination.width - padding, destination.height - padding);
+      context.restore();
+    }
     const attributes = (source.getContext('webgl2') ?? source.getContext('webgl'))?.getContextAttributes();
     const diagnostics: OnlineMapFrameDiagnostics = {
       logicalWidth: this.logicalWidth,

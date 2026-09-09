@@ -8,21 +8,16 @@ import {
 } from './cameraZoomPolicy';
 import type { CameraState, OnlineBasemapStyleId } from './project';
 import type { LogicalViewport } from './projectRenderViewport';
+import { BASEMAPS, basemapById, basemapStyle } from './basemaps';
 
-export const OPENFREEMAP_STYLES: ReadonlyArray<{
-  id: OnlineBasemapStyleId;
-  label: string;
-  url: string;
-}> = [
-  { id: '3d', label: 'OpenFreeMap 3D', url: 'https://tiles.openfreemap.org/styles/liberty' },
-  { id: 'liberty', label: 'Liberty', url: 'https://tiles.openfreemap.org/styles/liberty' },
-  { id: 'dark', label: 'Dark', url: 'https://tiles.openfreemap.org/styles/dark' },
-  { id: 'bright', label: 'Bright', url: 'https://tiles.openfreemap.org/styles/bright' },
-];
+/** @deprecated Use the provider-neutral BASEMAPS registry. */
+export const OPENFREEMAP_STYLES = BASEMAPS.map((definition) => ({
+  id: definition.id,
+  label: definition.displayName,
+  url: definition.styleSource.kind === 'vector-style-url' ? definition.styleSource.url : '',
+}));
 
-export const openFreeMapStyleUrl = (styleId: OnlineBasemapStyleId) =>
-  OPENFREEMAP_STYLES.find((style) => style.id === styleId)?.url ??
-  OPENFREEMAP_STYLES.find((style) => style.id === 'liberty')!.url;
+export const openFreeMapStyleUrl = (styleId: OnlineBasemapStyleId) => basemapStyle(basemapById(styleId));
 
 export const isRecoverableOpenFreeMapResourceError = (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);

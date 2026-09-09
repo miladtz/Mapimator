@@ -2,7 +2,8 @@ export type AppLanguage = 'en' | 'fa';
 export type MapStyleId = 'documentary-dark' | 'documentary-light' | 'modern' | 'ink' | 'terrain';
 export type BasemapRenderer = 'legacy' | 'online';
 export type MapLabelLanguageMode = 'en' | 'fa' | 'both' | 'none';
-export type OnlineBasemapStyleId = '3d' | 'liberty' | 'dark' | 'bright';
+import type { BasemapId } from './basemaps';
+export type OnlineBasemapStyleId = BasemapId;
 export type LayerType =
   'region' | 'pin' | 'text' | 'shape' | 'arrow' | 'image' | 'animated-media' | 'route' | 'geo-effect';
 export type GeoEffectType =
@@ -1334,6 +1335,12 @@ export const addProjectLayer = (project: Project, layer: Layer): Project => ({
     ...transition,
     layerConfigs: { ...transition.layerConfigs, [layer.id]: { included: false } },
   })),
+});
+
+/** Basemap switching is presentation-only; authored timeline and layers retain identity. */
+export const setProjectBasemap = (project: Project, onlineStyleId: BasemapId): Project => ({
+  ...project,
+  mapSettings: { ...project.mapSettings, onlineStyleId },
 });
 /**
  * Centralized Project-layer deletion.  Removes the layer from the registry

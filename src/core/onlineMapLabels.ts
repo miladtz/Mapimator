@@ -9,6 +9,8 @@ import {
   type OnlineMapStyleLayer,
 } from './onlineMapLabelPolicy';
 import type { MapLabelLanguageMode } from './project';
+import type { BasemapDefinition } from './basemaps';
+import { applyLandOnlyBoundaryPolicy } from './basemapBoundaryPolicy';
 
 type OriginalLayerPresentation = {
   textField?: MapLibreTextField;
@@ -83,3 +85,24 @@ export const applyOnlineMapLabelLanguage = (
     console.warn('[OpenFreeMap Labels] unsafe English expressions', unsafeEnglishLayers);
   return changed;
 };
+
+export const applyBasemapLabelLanguage = (
+  map: MapLibreMap,
+  basemap: BasemapDefinition,
+  mode: MapLabelLanguageMode,
+  styleReloaded = false,
+) => {
+  if (!basemap.capabilities.labels || basemap.labelAdapter === 'none')
+    return { applied: false, changed: 0, reason: 'unsupported' as const };
+  if (basemap.labelAdapter === 'openfreemap')
+    return {
+      applied: true,
+      changed: applyOnlineMapLabelLanguage(map, mode, styleReloaded),
+    } as const;
+  return { applied: false, changed: 0, reason: 'unsupported' as const };
+};
+
+export const applyBasemapBoundaryPolicy = (map: MapLibreMap, basemap: BasemapDefinition) =>
+  basemap.boundaryAdapter === 'openmaptiles-land-only'
+    ? { applied: true, changed: applyLandOnlyBoundaryPolicy(map) }
+    : { applied: false, changed: 0 };

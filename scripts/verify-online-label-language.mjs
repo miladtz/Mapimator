@@ -75,12 +75,8 @@ for (const expression of complexNativeExpressions) {
   assert.deepEqual(core.blockedEnglishNameProperties(hardened), []);
 }
 
-const resolveEnglishFixture = (properties) =>
-  properties['name:en'] || properties['name:latin'] || '';
-assert.equal(
-  resolveEnglishFixture({ 'name:fa': 'تهران', name: 'تهران', name_en: 'تهران' }),
-  '',
-);
+const resolveEnglishFixture = (properties) => properties['name:en'] || properties['name:latin'] || '';
+assert.equal(resolveEnglishFixture({ 'name:fa': 'تهران', name: 'تهران', name_en: 'تهران' }), '');
 assert.equal(resolveEnglishFixture({ 'name:en': 'Tabl', name: 'تبل' }), 'Tabl');
 assert.equal(resolveEnglishFixture({ 'name:latin': 'Salakh', name: 'سلخ' }), 'Salakh');
 const compiledEnglish = createExpression(core.buildEnglishTextExpression());
@@ -233,7 +229,10 @@ assert.match(interactive, /container\.style\.visibility = 'visible'/);
 assert.match(policy, /'visibility'/);
 assert.match(policy, /styleReloaded/);
 assert.match(interactive, /map\.on\('style\.load'/);
-assert.match(interactive, /applyOnlineMapLabelLanguage\(map!, labelLanguageRef\.current, true\)/);
+assert.match(
+  interactive,
+  /applyBasemapLabelLanguage\(map!, activeDefinition, labelLanguageRef\.current, true\)/,
+);
 assert.match(hidden, /await ensureMapLibreRtlSupport\(\)/);
 assert.match(hidden, /project\.mapSettings\.labelLanguage/);
 assert.match(hidden, /await waitForIdle\(map, signal\)/);

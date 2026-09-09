@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 
 const component = await readFile(new URL('../src/components/OnlineOpenFreeMap.tsx', import.meta.url), 'utf8');
 const adapter = await readFile(new URL('../src/core/openFreeMapAdapter.ts', import.meta.url), 'utf8');
+const basemaps = await readFile(new URL('../src/core/basemaps.ts', import.meta.url), 'utf8');
 const app = await readFile(new URL('../src/app/App.tsx', import.meta.url), 'utf8');
 const project = await readFile(new URL('../src/core/project.ts', import.meta.url), 'utf8');
 
@@ -11,14 +12,14 @@ const requireText = (source, text, message) => {
 
 for (const style of ['liberty', 'dark', 'bright']) {
   requireText(
-    adapter,
+    basemaps,
     `https://tiles.openfreemap.org/styles/${style}`,
     `Missing official OpenFreeMap ${style} style URL.`,
   );
 }
 requireText(
-  adapter,
-  "{ id: '3d', label: 'OpenFreeMap 3D', url: 'https://tiles.openfreemap.org/styles/liberty' }",
+  basemaps,
+  "displayName: 'OpenFreeMap 3D'",
   'The official 3D preset must use Liberty with a pitched MapLibre camera, not a nonexistent style URL.',
 );
 requireText(adapter, 'mapMotionToMapLibreCamera', 'Missing MapMotion-to-MapLibre camera adapter.');

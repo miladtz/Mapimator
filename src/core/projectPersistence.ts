@@ -14,6 +14,7 @@ import { hasConsistentViewMapMode, normalizePinLabelAngle, normalizeSegmentAnima
 import { globeFocusOf, normalizeGlobeFocus, normalizeQuaternion } from './globeMath';
 import { validateCustomFrameDimensions } from './projectFrameFormat';
 import { normalizeTransitionTiming } from './transitionTiming';
+import { isBasemapId } from './basemaps';
 
 type LegacyView = Omit<View, 'layerConfigs' | 'transitionLayerConfigs' | 'mapMode'> & {
   mapMode?: MapMode;
@@ -807,8 +808,7 @@ export function validateAndMigrateProject(value: unknown): Project {
       value.mapSettings.onlineLabelPolicyVersion !== 1) ||
     (value.mapSettings.basemapRenderer !== undefined &&
       !oneOf(value.mapSettings.basemapRenderer, ['legacy', 'online'] as const)) ||
-    (value.mapSettings.onlineStyleId !== undefined &&
-      !oneOf(value.mapSettings.onlineStyleId, ['3d', 'liberty', 'dark', 'bright'] as const))
+    (value.mapSettings.onlineStyleId !== undefined && !isBasemapId(value.mapSettings.onlineStyleId))
   )
     throw new Error('Project map settings are malformed.');
   const migrateOriginalOnlineLabels =
@@ -819,9 +819,7 @@ export function validateAndMigrateProject(value: unknown): Project {
     labelLanguage: migrateOriginalOnlineLabels ? 'both' : value.mapSettings.labelLanguage,
     onlineLabelPolicyVersion: 1,
     basemapRenderer: value.mapSettings.basemapRenderer === 'online' ? 'online' : 'legacy',
-    onlineStyleId: oneOf(value.mapSettings.onlineStyleId, ['3d', 'liberty', 'dark', 'bright'] as const)
-      ? value.mapSettings.onlineStyleId
-      : 'liberty',
+    onlineStyleId: isBasemapId(value.mapSettings.onlineStyleId) ? value.mapSettings.onlineStyleId : 'liberty',
   };
   if (!Array.isArray(value.layers)) throw new Error('Project layers must be an array.');
   value.layers.forEach((layer, index) => validateLayer(layer, `project.layers[${index}]`));

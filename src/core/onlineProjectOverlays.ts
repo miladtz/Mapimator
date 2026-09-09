@@ -69,6 +69,19 @@ const geographicRegionLayers = new WeakMap<MapLibreMap, GeographicRegionFillLaye
 const routeVehicleImageIds = new WeakMap<MapLibreMap, Set<string>>();
 const shapeRenderLayerIdsByMap = new WeakMap<MapLibreMap, Set<string>>();
 
+/** Provider-neutral insertion contract. No basemap-owned layer id is referenced. */
+export const onlineOverlayRepresentativeForLayer = (layer: Layer): string | undefined => {
+  if (!layer.visible) return undefined;
+  if (layer.type === 'animated-media') return `mapmotion-project-animated-media-${layer.id}`;
+  if (layer.type === 'image') return ONLINE_PROJECT_IMAGE_RENDER_LAYER_ID;
+  if (layer.type === 'region') return ONLINE_PROJECT_REGION_FILL_LAYER_ID;
+  if (layer.type === 'route') return ONLINE_PROJECT_ROUTE_SOLID_LAYER_ID;
+  if (layer.type === 'shape') return shapeRenderLayerIds(layer.id).fill;
+  if (layer.type === 'pin') return ONLINE_PROJECT_PIN_LAYER_ID;
+  if (layer.type === 'text') return ONLINE_PROJECT_TEXT_LAYER_ID;
+  return undefined;
+};
+
 export const onlineImageHandleFeatureCollection = (
   layers: readonly Layer[],
   selectedId: string | null,
@@ -1718,17 +1731,7 @@ export const ensureOnlineProjectOverlays = (
     'text-offset',
     labelOffsetExpression(layers, assetUrls),
   );
-  orderOnlineAnimatedMediaLayers(map, layers, (layer) => {
-    if (!layer.visible) return undefined;
-    if (layer.type === 'animated-media') return `mapmotion-project-animated-media-${layer.id}`;
-    if (layer.type === 'image') return ONLINE_PROJECT_IMAGE_RENDER_LAYER_ID;
-    if (layer.type === 'region') return ONLINE_PROJECT_REGION_FILL_LAYER_ID;
-    if (layer.type === 'route') return ONLINE_PROJECT_ROUTE_SOLID_LAYER_ID;
-    if (layer.type === 'shape') return shapeRenderLayerIds(layer.id).fill;
-    if (layer.type === 'pin') return ONLINE_PROJECT_PIN_LAYER_ID;
-    if (layer.type === 'text') return ONLINE_PROJECT_TEXT_LAYER_ID;
-    return undefined;
-  });
+  orderOnlineAnimatedMediaLayers(map, layers, onlineOverlayRepresentativeForLayer);
   if (map.getLayer(ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID)) map.moveLayer(ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID);
   if (map.getLayer(ONLINE_PROJECT_SHAPE_HANDLE_LAYER_ID)) map.moveLayer(ONLINE_PROJECT_SHAPE_HANDLE_LAYER_ID);
   return (

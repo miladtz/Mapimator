@@ -128,6 +128,13 @@ struct RoutingServiceSettings {
     open_route_service_api_key: String,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MapServiceSettings {
+    #[serde(default)]
+    maptiler_api_key: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OpenRouteServiceRequest {
@@ -179,6 +186,8 @@ pub fn run() {
             read_project_file,
             read_routing_service_settings,
             write_routing_service_settings,
+            read_map_service_settings,
+            write_map_service_settings,
             plan_open_route_service_route
         ])
         .run(tauri::generate_context!())
@@ -190,6 +199,47 @@ fn routing_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .app_data_dir()
         .map(|directory| directory.join("routing-services.json"))
         .map_err(|error| format!("Unable to resolve application settings storage: {error}"))
+}
+
+fn map_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join("map-services.json"))
+        .map_err(|error| format!("Unable to resolve application settings storage: {error}"))
+}
+
+#[tauri::command]
+fn read_map_service_settings(app: tauri::AppHandle) -> Result<MapServiceSettings, String> {
+    let path = map_settings_path(&app)?;
+    if !path.exists() {
+        return Ok(MapServiceSettings::default());
+    }
+    let contents = fs::read_to_string(path)
+        .map_err(|_| "Unable to read map service settings.".to_string())?;
+    serde_json::from_str(&contents)
+        .map_err(|_| "Map service settings are malformed.".to_string())
+}
+
+#[tauri::command]
+fn write_map_service_settings(
+    app: tauri::AppHandle,
+    settings: MapServiceSettings,
+) -> Result<(), String> {
+    let path = map_settings_path(&app)?;
+    let parent = path.parent().ok_or("Application settings path is invalid.")?;
+    fs::create_dir_all(parent)
+        .map_err(|_| "Unable to create application settings directory.".to_string())?;
+    let temporary = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec(&settings)
+        .map_err(|_| "Unable to encode map service settings.".to_string())?;
+    fs::write(&temporary, bytes)
+        .map_err(|_| "Unable to write map service settings.".to_string())?;
+    if path.exists() {
+        fs::remove_file(&path)
+            .map_err(|_| "Unable to replace map service settings.".to_string())?;
+    }
+    fs::rename(temporary, path)
+        .map_err(|_| "Unable to finalize map service settings.".to_string())
 }
 
 #[tauri::command]

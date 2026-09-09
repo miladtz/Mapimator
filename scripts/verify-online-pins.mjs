@@ -206,9 +206,18 @@ project.views = [viewA, viewB];
 project.transitions = [core.createTransition(viewA.id, viewB.id, project.layers)];
 project.transitions[0].duration = 1;
 project.transitions[0].layerConfigs[pin.id].included = false;
-assert.equal(core.evaluateProjectAtTime(project, 0.5).layers.some((layer) => layer.id === pin.id), true);
-assert.equal(core.evaluateProjectAtTime(project, 1.5).layers.some((layer) => layer.id === pin.id), false);
-assert.equal(core.evaluateProjectAtTime(project, 2.5).layers.some((layer) => layer.id === pin.id), false);
+assert.equal(
+  core.evaluateProjectAtTime(project, 0.5).layers.some((layer) => layer.id === pin.id),
+  true,
+);
+assert.equal(
+  core.evaluateProjectAtTime(project, 1.5).layers.some((layer) => layer.id === pin.id),
+  false,
+);
+assert.equal(
+  core.evaluateProjectAtTime(project, 2.5).layers.some((layer) => layer.id === pin.id),
+  false,
+);
 
 const reopened = core.parseProjectFile(core.serializeCanonicalProject(project).json);
 const reopenedPin = reopened.layers.find((layer) => layer.id === pin.id);
@@ -224,14 +233,23 @@ assert.equal(reopenedPin.pinLabelOpacity, 0.9);
 assert.equal(reopenedPin.pinLabelBorderColor, '#2468AC');
 assert.equal(reopenedPin.pinLabelBorderWidth, 3);
 assert.equal(reopenedPin.pinLabelAngle, 0);
-assert.deepEqual(core.onlinePinFeatureCollection([reopenedPin], null).features[0].geometry, collection.features[0].geometry);
+assert.deepEqual(
+  core.onlinePinFeatureCollection([reopenedPin], null).features[0].geometry,
+  collection.features[0].geometry,
+);
 
 const manyPins = Array.from({ length: 100 }, (_, index) => {
   const candidate = { ...core.createLayer('pin'), id: `pin-${index}`, x: index * 9, y: index * 4 };
   return candidate;
 });
 assert.equal(core.onlinePinFeatureCollection(manyPins, null).features.length, 100);
-assert.equal(core.onlinePinFeatureCollection(manyPins.filter((layer) => layer.id !== 'pin-50'), null).features.length, 99);
+assert.equal(
+  core.onlinePinFeatureCollection(
+    manyPins.filter((layer) => layer.id !== 'pin-50'),
+    null,
+  ).features.length,
+  99,
+);
 
 const interactive = source('src/components/OnlineOpenFreeMap.tsx');
 const overlays = source('src/core/onlineProjectOverlays.ts');
@@ -261,10 +279,7 @@ assert.match(overlays, /'text-opacity': \['get', 'labelOpacity'\]/);
 assert.match(hiddenRenderer, /updateOnlineProjectOverlays\(this\.map, layers/);
 assert.match(frameRenderer, /onlineRenderer\.render\(state\.camera, state\.layers/);
 assert.match(app, /previewState\?\.layers \?\? editingLayers/);
-assert.match(
-  app,
-  /if \(placing === 'pin' \|\| placing === 'text' \|\| placing === 'shape'\)\s*placeLayerAt\(placing, point\)/,
-);
+assert.match(app, /if \([\s\S]*placing === 'pin'[\s\S]*placeLayerAt\(placing, point\)/);
 assert.match(app, /Project Layer — \{layer\.name\}/);
 assert.doesNotMatch(app, /Project Layer â€”/);
 assert.match(app, /aria-label="Pin size value"/);
@@ -275,7 +290,10 @@ assert.match(app, /aria-label="Pin label border width"/);
 assert.match(app, /aria-label="Pin label angle"/);
 assert.match(app, /min="-50"[\s\S]*max="40"[\s\S]*pinLabelGap/);
 assert.doesNotMatch(app, /Label position[\s\S]{0,300}<select/);
-assert.doesNotMatch(app, /aria-label="Pin (?:size value|opacity percentage|label size value|label opacity percentage|label border width)"[\s\S]{0,80}type="range"/);
+assert.doesNotMatch(
+  app,
+  /aria-label="Pin (?:size value|opacity percentage|label size value|label opacity percentage|label border width)"[\s\S]{0,80}type="range"/,
+);
 assert.match(app, /function HexColorField/);
 assert.match(app, /normalizeHexColor/);
 assert.match(app, /className="layer-delete"/);

@@ -11,10 +11,21 @@ import {
   mapMotionWorldToLngLat,
   lngLatToMapMotionWorld,
   isRecoverableOpenFreeMapResourceError,
-  OPENFREEMAP_STYLES,
 } from '../core/openFreeMapAdapter';
+import {
+  BasemapSwitchGeneration,
+  basemapById,
+  basemapUnavailableMessage,
+  resolveBasemapStyle,
+  sanitizeBasemapError,
+  type MapServiceCredentials,
+} from '../core/basemaps';
 import { registerOnlineMapInstance } from '../core/onlineMapLifecycle';
-import { applyOnlineMapLabelLanguage, ensureMapLibreRtlSupport } from '../core/onlineMapLabels';
+import {
+  applyBasemapBoundaryPolicy,
+  applyBasemapLabelLanguage,
+  ensureMapLibreRtlSupport,
+} from '../core/onlineMapLabels';
 import {
   ensureOnlineProjectOverlays,
   loadOnlineProjectOverlayAssets,
@@ -188,6 +199,7 @@ interface Props {
   onSelectCustomRouteControlPoint?: (id: string | null) => void;
   assetUrls?: Readonly<Record<string, string>>;
   navigationRequest?: { id: number; camera: CameraState } | null;
+  mapServiceSettings: MapServiceCredentials;
 }
 
 export function OnlineOpenFreeMap({
@@ -224,12 +236,14 @@ export function OnlineOpenFreeMap({
   onSelectCustomRouteControlPoint,
   assetUrls = {},
   navigationRequest,
+  mapServiceSettings,
 }: Props) {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const displayRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const loadedStyleRef = useRef<OnlineBasemapStyleId | null>(null);
+  const styleGenerationRef = useRef(new BasemapSwitchGeneration());
   const cameraRef = useRef(camera);
   const onCameraChangeRef = useRef(onCameraChange);
   const labelLanguageRef = useRef(labelLanguage);
@@ -257,6 +271,7 @@ export function OnlineOpenFreeMap({
   const onMoveCustomRouteControlPointRef = useRef(onMoveCustomRouteControlPoint);
   const onSelectCustomRouteControlPointRef = useRef(onSelectCustomRouteControlPoint);
   const assetUrlsRef = useRef(assetUrls);
+  const mapServiceSettingsRef = useRef(mapServiceSettings);
   const applyingCanonicalCamera = useRef(false);
   const nativeCameraSignaturesRef = useRef(new Set<string>());
   const diagnosticsRef = useRef({ nativeSyncs: 0, externalApplications: 0 });
@@ -292,6 +307,7 @@ export function OnlineOpenFreeMap({
   onMoveCustomRouteControlPointRef.current = onMoveCustomRouteControlPoint;
   onSelectCustomRouteControlPointRef.current = onSelectCustomRouteControlPoint;
   assetUrlsRef.current = assetUrls;
+  mapServiceSettingsRef.current = mapServiceSettings;
   const overlayAssetSignature = useMemo(
     () =>
       JSON.stringify(
@@ -400,12 +416,19 @@ export function OnlineOpenFreeMap({
     };
     applyDisplayFit();
     const initial = mapMotionToMapLibreCamera(cameraRef.current, viewport);
-    const style = OPENFREEMAP_STYLES.find((candidate) => candidate.id === styleId)!;
+    const definition = basemapById(styleId);
+    const resolvedStyle = resolveBasemapStyle(definition, mapServiceSettingsRef.current);
+    if (resolvedStyle.status !== 'available') {
+      setError(basemapUnavailableMessage(definition, resolvedStyle));
+      setStatus(`${definition.displayName} unavailable`);
+      return;
+    }
     loadedStyleRef.current = styleId;
+    styleGenerationRef.current.begin();
     container.style.visibility = 'hidden';
     map = new maplibregl.Map({
       container,
-      style: style.url,
+      style: resolvedStyle.style,
       center: initial.center,
       zoom: initial.zoom,
       bearing: initial.bearing,
@@ -465,7 +488,7 @@ export function OnlineOpenFreeMap({
     }
     map.on('load', () => {
       const milliseconds = Math.round(performance.now() - startedAt);
-      setStatus(`Online map ready · ${milliseconds} ms`);
+      setStatus(`${definition.displayName} ready · ${milliseconds} ms`);
       const canvas = map!.getCanvas();
       console.info('[OpenFreeMap Interactive] renderer diagnostics', {
         loadMs: milliseconds,
@@ -482,12 +505,18 @@ export function OnlineOpenFreeMap({
       });
     });
     map.on('style.load', () => {
-      applyOnlineMapLabelLanguage(map!, labelLanguageRef.current, true);
-      void loadOnlineProjectOverlayAssets(map!, layersRef.current, assetUrlsRef.current).then(() =>
-        ensureOnlineProjectOverlays(map!, layersRef.current, selectedIdRef.current, assetUrlsRef.current),
-      );
+      const generation = styleGenerationRef.current.begin();
+      const activeDefinition = basemapById(loadedStyleRef.current ?? 'liberty');
+      applyBasemapBoundaryPolicy(map!, activeDefinition);
+      applyBasemapLabelLanguage(map!, activeDefinition, labelLanguageRef.current, true);
+      void loadOnlineProjectOverlayAssets(map!, layersRef.current, assetUrlsRef.current).then(() => {
+        if (!styleGenerationRef.current.isCurrent(generation)) return;
+        ensureOnlineProjectOverlays(map!, layersRef.current, selectedIdRef.current, assetUrlsRef.current);
+      });
       map!.once('idle', () => {
+        if (!styleGenerationRef.current.isCurrent(generation)) return;
         container.style.visibility = 'visible';
+        setStatus(`${activeDefinition.displayName} ready`);
       });
     });
     let movingPinId: string | null = null;
@@ -859,8 +888,7 @@ export function OnlineOpenFreeMap({
     });
     map.on('error', (event) => {
       if (isRecoverableOpenFreeMapResourceError(event.error)) return;
-      const message = event.error?.message ?? 'Style or tile request failed.';
-      console.warn('[OpenFreeMap POC] request failed', event.error);
+      const message = sanitizeBasemapError(event.error?.message ?? 'Style or tile request failed.');
       setError(`Online map unavailable · ${message}`);
     });
 
@@ -875,26 +903,37 @@ export function OnlineOpenFreeMap({
       map?.remove();
       releaseLifecycle();
     };
-  }, [rtlSettled, viewport.height, viewport.width]);
+  }, [mapServiceSettings.maptilerApiKey, rtlSettled, viewport.height, viewport.width]);
 
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    if (loadedStyleRef.current === styleId) return;
-    const style = OPENFREEMAP_STYLES.find((candidate) => candidate.id === styleId)!;
-    loadedStyleRef.current = styleId;
+    const definition = basemapById(styleId);
+    const resolvedStyle = resolveBasemapStyle(definition, mapServiceSettings);
+    if (resolvedStyle.status !== 'available') {
+      setError(basemapUnavailableMessage(definition, resolvedStyle));
+      setStatus(`${definition.displayName} unavailable`);
+      return;
+    }
     setError(null);
-    setStatus(`Loading ${style.label}...`);
+    if (loadedStyleRef.current === styleId) {
+      setStatus(`${definition.displayName} ready`);
+      return;
+    }
+    loadedStyleRef.current = styleId;
+    styleGenerationRef.current.begin();
+    setError(null);
+    setStatus(`Loading ${definition.displayName}...`);
     const container = containerRef.current;
     if (container) container.style.visibility = 'hidden';
-    map.setStyle(style.url);
-  }, [styleId]);
+    map.setStyle(resolvedStyle.style);
+  }, [mapServiceSettings, styleId]);
 
   useLayoutEffect(() => {
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
-    applyOnlineMapLabelLanguage(map, labelLanguage);
-  }, [labelLanguage]);
+    applyBasemapLabelLanguage(map, basemapById(styleId), labelLanguage);
+  }, [labelLanguage, styleId]);
 
   useLayoutEffect(() => {
     const map = mapRef.current;
@@ -1122,6 +1161,17 @@ export function OnlineOpenFreeMap({
     >
       <div ref={displayRef} className="online-map-display-frame">
         <div ref={containerRef} className="online-map-canvas" />
+        {basemapById(styleId).attribution.logoRequired && (
+          <a
+            className="maptiler-attribution-logo"
+            href="https://www.maptiler.com/"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="MapTiler"
+          >
+            <img src="https://api.maptiler.com/resources/logo.svg" alt="MapTiler" />
+          </a>
+        )}
         <div className="online-map-navigation" role="group" aria-label="Map navigation">
           <button
             type="button"
