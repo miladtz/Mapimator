@@ -121,13 +121,11 @@ assert.match(css, /\.scrub-playhead::after/);
 assert.match(css, /cursor: ew-resize/);
 assert.match(css, /\.view-drag-handle/);
 assert.match(css, /cursor: grab/);
-assert.match(css, /\.view-card\.drop-target/);
+assert.match(css, /\.view-card\.dragging/);
+assert.match(css, /\.view-insertion-marker/);
 assert.match(app, /aria-label=\{`Drag \$\{view\.name\} to reorder`\}/);
-assert.match(app, /event\.dataTransfer\.effectAllowed = 'move'/);
-assert.match(
-  app,
-  /const outgoing = p\.transitions\.find\(\(transition\) => transition\.fromViewId === view\.id\)/,
-);
+assert.match(app, /setPointerCapture\(event\.pointerId\)/);
+assert.match(app, /reorderProjectView\(projectRef\.current, session\.viewId, session\.targetIndex\)/);
 assert.match(app, /className="timeline-duration-input"/);
 assert.match(app, /className=\{timeline \? 'timeline-duration-input' : undefined\}/);
 const durationWheelBypass = app.indexOf("event.target.closest('.timeline-duration-input')");

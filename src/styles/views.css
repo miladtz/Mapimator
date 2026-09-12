@@ -203,8 +203,21 @@
   border-color: #e8533e;
   background: #29394b;
 }
-.view-card.drop-target {
-  box-shadow: inset 3px 0 0 #65d7ff;
+.view-card.dragging {
+  opacity: 0.62;
+  border-color: #65d7ff;
+}
+.view-insertion-marker {
+  position: absolute;
+  z-index: 8;
+  top: -4px;
+  bottom: -4px;
+  width: 3px;
+  transform: translateX(-1px);
+  border-radius: 2px;
+  background: #65d7ff;
+  box-shadow: 0 0 8px rgb(101 215 255 / 75%);
+  pointer-events: none;
 }
 .view-drag-handle {
   position: absolute;
@@ -216,12 +229,18 @@
   height: 22px;
   padding: 0;
   cursor: grab;
+  touch-action: none;
+  user-select: none;
   color: #b8c9d8;
   background: rgba(10, 18, 27, 0.82);
   border: 1px solid #40556a;
 }
 .view-drag-handle:active {
   cursor: grabbing;
+}
+.view-drag-handle:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 .view-thumb {
   position: relative;

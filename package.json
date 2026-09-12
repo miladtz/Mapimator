@@ -22,6 +22,7 @@
     "test:layer-model": "node scripts/verify-layer-model.mjs",
     "test:timeline-entities": "node scripts/verify-timeline-entities.mjs",
     "test:timeline-geometry": "node scripts/verify-timeline-geometry.mjs",
+    "test:view-reorder": "node scripts/verify-view-reorder.mjs",
     "test:editor-preview-modes": "node scripts/verify-editor-preview-modes.mjs",
     "test:map-mode": "node scripts/verify-map-mode.mjs",
     "test:segment-invariants": "node scripts/verify-segment-invariants.mjs",

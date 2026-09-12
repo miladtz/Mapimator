@@ -84,6 +84,7 @@ import {
 } from '../core/project';
 import { t } from '../core/i18n';
 import { compileTimeline, evaluateProjectAtTime } from '../core/viewCompiler';
+import { reorderProjectView, resolveSelectionAfterViewReorder } from '../core/viewReorder';
 import {
   createGeographicRegionLayer,
   createRegionLayer,
@@ -374,8 +375,14 @@ export function App() {
   const [locationSearchFocusRequest, setLocationSearchFocusRequest] = useState(0);
   const [recentLocations, setRecentLocations] = useState<SearchResult[]>([]);
   const [searchNavigation, setSearchNavigation] = useState<{ id: number; camera: CameraState } | null>(null);
-  const [draggedViewId, setDraggedViewId] = useState<string | null>(null);
-  const [viewDropTargetId, setViewDropTargetId] = useState<string | null>(null);
+  const [viewReorder, setViewReorder] = useState<{
+    pointerId: number;
+    viewId: string;
+    originalIndex: number;
+    targetIndex: number;
+    markerLeft: number;
+  } | null>(null);
+  const viewReorderRef = useRef<typeof viewReorder>(null);
   /** Editor-only temporary layer hiding (eye). Never persisted, never affects Preview/Export. */
   const [eyeHidden, setEyeHidden] = useState<Record<string, boolean>>({});
   const [allEyesHidden, setAllEyesHidden] = useState(false);
@@ -1431,29 +1438,47 @@ export function App() {
     setOpenViewMenuId(null);
     setNotice(next ? `Deleted View; selected ${next.name}` : 'Deleted last View');
   };
-  const reorderView = (fromId: string, toId: string) => {
-    if (fromId === toId) return;
-    updateProject((p) => {
-      const from = p.views.findIndex((view) => view.id === fromId);
-      const to = p.views.findIndex((view) => view.id === toId);
-      if (from < 0 || to < 0) return p;
-      const views = [...p.views];
-      const [moved] = views.splice(from, 1);
-      views.splice(to, 0, moved);
-      const transitions = views.slice(0, -1).map((view, index) => {
-        const next = views[index + 1];
-        const outgoing = p.transitions.find((transition) => transition.fromViewId === view.id);
-        return outgoing
-          ? { ...outgoing, fromViewId: view.id, toViewId: next.id }
-          : createTransition(view.id, next.id, p.layers, view);
-      });
-      return { ...p, views, transitions };
-    });
-    setTimelineSelection({ kind: 'view', id: fromId });
+  const viewInsertionIndexAt = (viewId: string, clientX: number) => {
+    const track = timelineScrollRef.current?.querySelector<HTMLElement>('.timeline-track');
+    const trackLeft = track?.getBoundingClientRect().left ?? 0;
+    const cards = projectRef.current.views
+      .filter((view) => view.id !== viewId)
+      .map((view) => timelineScrollRef.current?.querySelector<HTMLElement>(`[data-view-id="${view.id}"]`))
+      .filter((element): element is HTMLElement => Boolean(element));
+    let index = 0;
+    for (const card of cards) {
+      const rect = card.getBoundingClientRect();
+      if (clientX < rect.left + rect.width / 2) break;
+      index += 1;
+    }
+    const anchor = cards[index];
+    const last = cards.at(-1);
+    const markerLeft = anchor
+      ? anchor.getBoundingClientRect().left - trackLeft
+      : last
+        ? last.getBoundingClientRect().right - trackLeft
+        : 0;
+    return { index, markerLeft };
+  };
+  const finishViewReorder = (pointerId: number, cancelled = false) => {
+    const session = viewReorderRef.current;
+    if (!session || session.pointerId !== pointerId) return;
+    viewReorderRef.current = null;
+    setViewReorder(null);
+    if (cancelled || session.targetIndex === session.originalIndex) return;
+    const next = reorderProjectView(projectRef.current, session.viewId, session.targetIndex);
+    if (next === projectRef.current) return;
+    updateProject(() => next);
+    setTimelineSelection((selection) => resolveSelectionAfterViewReorder(next, selection));
     previewClock.stop();
     setTransitionPopoverId(null);
-    setPlaybackState('stopped');
   };
+  useEffect(
+    () => () => {
+      viewReorderRef.current = null;
+    },
+    [],
+  );
   const playPreview = () => {
     if (!project.views.length) return;
     const currentTime = previewClock.getSnapshot();
@@ -3367,6 +3392,13 @@ export function App() {
               )}
             </div>
             <div className="timeline-track" style={{ width: timelineLayout.width }}>
+              {viewReorder && (
+                <div
+                  className="view-insertion-marker"
+                  style={{ left: viewReorder.markerLeft }}
+                  aria-hidden="true"
+                />
+              )}
               {project.views.length > 0 && playbackState !== 'stopped' && (
                 <div
                   className="timeline-playhead"
@@ -3401,7 +3433,7 @@ export function App() {
                   <Fragment key={view.id}>
                     <div
                       data-view-id={view.id}
-                      className={`view-card ${activeViewId === view.id ? 'active' : ''} ${viewDropTargetId === view.id && draggedViewId !== view.id ? 'drop-target' : ''}`}
+                      className={`view-card ${activeViewId === view.id ? 'active' : ''} ${viewReorder?.viewId === view.id ? 'dragging' : ''}`}
                       style={{ flex: `0 0 ${cardWidth}px` }}
                       tabIndex={0}
                       onClick={() => {
@@ -3439,32 +3471,55 @@ export function App() {
                           scrollViewCardIntoView(target.id);
                         });
                       }}
-                      onDragEnter={() => setViewDropTargetId(view.id)}
-                      onDragOver={(event) => event.preventDefault()}
-                      onDragEnd={() => {
-                        setDraggedViewId(null);
-                        setViewDropTargetId(null);
-                      }}
-                      onDrop={(event) => {
-                        event.preventDefault();
-                        if (draggedViewId) reorderView(draggedViewId, view.id);
-                        setDraggedViewId(null);
-                        setViewDropTargetId(null);
-                      }}
                     >
                       <button
                         type="button"
                         className="view-drag-handle"
-                        draggable
+                        disabled={playbackState !== 'stopped'}
                         aria-label={`Drag ${view.name} to reorder`}
                         title="Drag to reorder View"
                         onClick={(event) => event.stopPropagation()}
-                        onDragStart={(event) => {
+                        onPointerDown={(event) => {
+                          if (playbackState !== 'stopped' || event.button !== 0) return;
+                          event.preventDefault();
                           event.stopPropagation();
-                          event.dataTransfer.effectAllowed = 'move';
-                          event.dataTransfer.setData('text/plain', view.id);
-                          setDraggedViewId(view.id);
+                          event.currentTarget.setPointerCapture(event.pointerId);
+                          const session = {
+                            pointerId: event.pointerId,
+                            viewId: view.id,
+                            originalIndex: index,
+                            targetIndex: index,
+                            markerLeft:
+                              event.currentTarget.closest<HTMLElement>('.view-card')?.offsetLeft ?? 0,
+                          };
+                          viewReorderRef.current = session;
+                          setViewReorder(session);
                         }}
+                        onPointerMove={(event) => {
+                          const session = viewReorderRef.current;
+                          if (!session || session.pointerId !== event.pointerId) return;
+                          const target = viewInsertionIndexAt(session.viewId, event.clientX);
+                          if (
+                            target.index === session.targetIndex &&
+                            target.markerLeft === session.markerLeft
+                          )
+                            return;
+                          const next = {
+                            ...session,
+                            targetIndex: target.index,
+                            markerLeft: target.markerLeft,
+                          };
+                          viewReorderRef.current = next;
+                          setViewReorder(next);
+                        }}
+                        onPointerUp={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          if (event.currentTarget.hasPointerCapture(event.pointerId))
+                            event.currentTarget.releasePointerCapture(event.pointerId);
+                          finishViewReorder(event.pointerId);
+                        }}
+                        onPointerCancel={(event) => finishViewReorder(event.pointerId, true)}
                       >
                         ⋮⋮
                       </button>
