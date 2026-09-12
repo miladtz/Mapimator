@@ -461,9 +461,9 @@ export const evaluateRouteVehicleInstances = (
   segmentLocalTime: number,
 ) => {
   if (!timing.vehicleEnabled) return [];
-  const delay = Math.max(0, timing.vehicleDelay ?? timing.drawDelay ?? 0);
+  const delay = Math.max(0, timing.vehicleDelay ?? 0);
   if (segmentLocalTime < delay) return [];
-  const duration = Math.max(0, timing.vehicleDuration ?? timing.drawDuration ?? 1.5);
+  const duration = Math.max(0, timing.vehicleDuration ?? 1.5);
   if (!timing.vehicleRepetitive)
     return [
       {
@@ -576,12 +576,12 @@ export const evaluateRouteRenderState = (
       exists && appearEnabled && appearType === 'draw-route' ? appearProgress : exists ? 1 : 0;
     let opacityMultiplier =
       exists && (!appearEnabled || appearType === 'draw-route') ? 1 : exists ? appearProgress : 0;
-    const hasVehicleTiming = Boolean(timing.vehicleEnabled || timing.drawEnabled);
-    const vehicleProgress = !hasVehicleTiming
-      ? 0
-      : timing.vehicleFollowsDraw !== false
-        ? drawProgress
-        : timedProgress(segmentLocalTime, timing.vehicleEnabled, timing.vehicleDelay, timing.vehicleDuration);
+    const vehicleProgress = timedProgress(
+      segmentLocalTime,
+      timing.vehicleEnabled,
+      timing.vehicleDelay,
+      timing.vehicleDuration,
+    );
     const wipeProgress = timedProgress(
       segmentLocalTime,
       timing.wipeEnabled ?? timing.routeWipeEnabled,

@@ -11,7 +11,7 @@ const entry = join(out, 'entry.ts');
 const source = (value) => join(root, value).replaceAll('\\', '/');
 writeFileSync(
   entry,
-  `export * from '${source('src/core/routes')}'; export { createProject } from '${source('src/core/project')}'; export { serializeCanonicalProject, parseProjectFile } from '${source('src/core/projectFile')}'; export { findReferencedAssets } from '${source('src/core/projectAssets')}'; export { onlineRouteFeatureCollection, loadOnlineProjectOverlayAssets } from '${source('src/core/onlineProjectOverlays')}';`,
+  `export * from '${source('src/core/routes')}'; export { createProject } from '${source('src/core/project')}'; export { evaluateProjectAtTime } from '${source('src/core/viewCompiler')}'; export { serializeCanonicalProject, parseProjectFile } from '${source('src/core/projectFile')}'; export { findReferencedAssets } from '${source('src/core/projectAssets')}'; export { onlineRouteFeatureCollection, loadOnlineProjectOverlayAssets } from '${source('src/core/onlineProjectOverlays')}';`,
 );
 let core;
 try {
@@ -183,6 +183,126 @@ assert.equal(
   assetId,
 );
 assert.ok(core.findReferencedAssets(reopened).has(assetId));
+
+const timelineRoute = core.createRouteLayer(points.slice(0, 2));
+const timelineSectionId = timelineRoute.routeSegments[0].id;
+const timelineAnimation = (vehicle, draw = undefined) => ({
+  routeSegmentAnimations: {
+    [timelineSectionId]: {
+      included: true,
+      ...(draw ?? {}),
+      ...(vehicle ?? {}),
+    },
+  },
+});
+const timelineView = (id, holdDuration, animation) => ({
+  id,
+  name: id,
+  holdDuration,
+  camera: { x: 0, y: 0, zoom: 1 },
+  mapMode: 'flat',
+  layerConfigs: { [timelineRoute.id]: { included: true, animation } },
+  thumbnailColor: '#000000',
+});
+const timelineTransition = (id, fromViewId, toViewId, duration, animation) => ({
+  id,
+  fromViewId,
+  toViewId,
+  duration,
+  referenceDuration: duration,
+  speed: 1,
+  timingSource: 'duration',
+  preset: 'linear',
+  type: 'linear',
+  layerConfigs: { [timelineRoute.id]: { included: true, animation } },
+});
+const movement = { vehicleEnabled: true, vehicleDelay: 2, vehicleDuration: 8 };
+const noEvent = timelineAnimation(undefined);
+const timingProject = core.createProject('Vehicle global timing');
+timingProject.layers = [timelineRoute];
+timingProject.views = [
+  timelineView('timing-v1', 3, timelineAnimation(movement)),
+  timelineView('timing-v2', 7, noEvent),
+];
+timingProject.transitions = [timelineTransition('timing-t1', 'timing-v1', 'timing-v2', 2, noEvent)];
+const vehicleStateAt = (project, time) => {
+  const routeLayer = core.evaluateProjectAtTime(project, time).layers.find((candidate) => candidate.id === timelineRoute.id);
+  return routeLayer?.routeRenderState?.[0]?.vehicleInstances ?? [];
+};
+for (const [time, expected] of [[0, undefined], [1, undefined], [2, 0], [4, 0.25], [6, 0.5], [8, 0.75], [10, 1]]) {
+  const instance = vehicleStateAt(timingProject, time)[0];
+  if (expected === undefined) assert.equal(instance, undefined, `Vehicle must wait at t=${time}`);
+  else assert.equal(instance?.progress, expected, `Vehicle progress at global t=${time}`);
+}
+assert.equal(vehicleStateAt(timingProject, 4)[0].progress, 0.25, 'movement continues through Transition');
+assert.equal(vehicleStateAt(timingProject, 6)[0].progress, 0.5, 'movement continues into the later View Hold');
+
+const routeWideProject = structuredClone(timingProject);
+routeWideProject.views[0].layerConfigs[timelineRoute.id].animation = {
+  routeVehicle: movement,
+  routeSegmentAnimations: { [timelineSectionId]: { included: true } },
+};
+assert.equal(
+  vehicleStateAt(routeWideProject, 6)[0].progress,
+  0.5,
+  'Route-wide Vehicle events use the same global continuation rule',
+);
+
+const differentDraw = structuredClone(timingProject);
+differentDraw.views[0].layerConfigs[timelineRoute.id].animation.routeSegmentAnimations[timelineSectionId] = {
+  ...movement,
+  appearEnabled: true,
+  appearType: 'draw-route',
+  appearDelay: 0,
+  appearDuration: 20,
+};
+assert.deepEqual(
+  vehicleStateAt(differentDraw, 6),
+  vehicleStateAt(timingProject, 6),
+  'Vehicle timing remains independent from Draw Route values and state',
+);
+
+const priorityProject = structuredClone(timingProject);
+priorityProject.views[0].layerConfigs[timelineRoute.id].animation = timelineAnimation({
+  vehicleEnabled: true,
+  vehicleDelay: 0,
+  vehicleDuration: 9,
+});
+priorityProject.transitions[0].layerConfigs[timelineRoute.id].animation = timelineAnimation({
+  vehicleEnabled: true,
+  vehicleDelay: 0,
+  vehicleDuration: 2,
+});
+assert.equal(
+  vehicleStateAt(priorityProject, 4)[0].progress,
+  4 / 9,
+  'oldest still-running explicit Vehicle event has the accepted event priority',
+);
+assert.deepEqual(
+  vehicleStateAt(priorityProject, 4),
+  vehicleStateAt(priorityProject, 4),
+  'direct seek is deterministic',
+);
+vehicleStateAt(priorityProject, 8);
+assert.deepEqual(
+  vehicleStateAt(priorityProject, 4),
+  vehicleStateAt(priorityProject, 4),
+  'reverse seek does not retain later Vehicle state',
+);
+
+const repeatedProject = structuredClone(timingProject);
+repeatedProject.views[0].layerConfigs[timelineRoute.id].animation = timelineAnimation({
+  vehicleEnabled: true,
+  vehicleDelay: 1,
+  vehicleDuration: 5,
+  vehicleRepetitive: true,
+  vehicleInterval: 2,
+});
+assert.deepEqual(
+  vehicleStateAt(repeatedProject, 4).map((instance) => instance.progress),
+  [0.6, 0.2],
+  'overlapping occurrences retain global Delay + n × Interval origins and independent Duration',
+);
 
 const started = performance.now();
 let maximumInstances = 0;

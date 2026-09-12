@@ -3,6 +3,7 @@ import type {
   Layer,
   MapMode,
   Project,
+  RouteSegmentAnimation,
   SegmentLayerAnimation,
   Transition,
   View,
@@ -351,6 +352,32 @@ const routeAppearCompleteTime = (timing: NonNullable<SegmentLayerAnimation['rout
   Math.max(0, timing.appearDelay ?? timing.drawDelay ?? 0) +
   Math.max(0, timing.appearDuration ?? timing.drawDuration ?? 1.5);
 
+const routeVehicleCompleteTime = (timing: RouteSegmentAnimation) =>
+  timing.vehicleRepetitive
+    ? Number.POSITIVE_INFINITY
+    : Math.max(0, timing.vehicleDelay ?? 0) + Math.max(0, timing.vehicleDuration ?? 1.5);
+
+/** Copy only the independently authored Vehicle channel and anchor it to project time. */
+const absoluteRouteVehicleTiming = (
+  timing: RouteSegmentAnimation,
+  eventSegmentStart: number,
+): RouteSegmentAnimation => ({
+  vehicleEnabled: timing.vehicleEnabled,
+  vehicleDelay: eventSegmentStart + Math.max(0, timing.vehicleDelay ?? 0),
+  vehicleDuration: Math.max(0, timing.vehicleDuration ?? 1.5),
+  vehicleFollowsDraw: false,
+  vehicleType: timing.vehicleType,
+  vehicleSize: timing.vehicleSize,
+  vehicleOpacity: timing.vehicleOpacity,
+  vehicleColor: timing.vehicleColor,
+  vehicleAccentColor: timing.vehicleAccentColor,
+  vehicleOrientationOffset: timing.vehicleOrientationOffset,
+  vehicleFollowDirection: timing.vehicleFollowDirection,
+  vehicleAssetId: timing.vehicleAssetId,
+  vehicleRepetitive: timing.vehicleRepetitive,
+  vehicleInterval: timing.vehicleInterval,
+});
+
 /** Derive playback windows from stable segment membership and authored project-time events. */
 export const animatedMediaActiveIntervals = (
   segments: readonly CompiledSegment[],
@@ -461,6 +488,7 @@ const applyActiveAppearEvents = (
     const currentSegment = segments[currentIndex];
     const currentAnimation = segmentAnimation(currentSegment, layer.id) ?? {};
     const routeSegmentAnimations = { ...(currentAnimation.routeSegmentAnimations ?? {}) };
+    let routeVehicle = currentAnimation.routeVehicle;
     let hasActiveRouteEvent = false;
     for (const section of layer.routeSegments ?? []) {
       // Oldest still-active Section event owns the Section until completion.
@@ -476,16 +504,55 @@ const applyActiveAppearEvents = (
           .every((part) => routeSectionIncluded(part, layer.id, section.id));
         if (!uninterrupted || time >= candidate.start + routeAppearCompleteTime(timing)) continue;
         routeSegmentAnimations[section.id] = {
-          ...timing,
+          ...routeSegmentAnimations[section.id],
           included:
             currentAnimation.routeSegmentAnimations?.[section.id]?.included ??
             currentAnimation.routeDefaults?.included ??
             true,
+          appearEnabled: timing.appearEnabled,
+          appearType: timing.appearType,
+          drawEnabled: timing.drawEnabled,
           appearDelay: candidate.start + Math.max(0, timing.appearDelay ?? timing.drawDelay ?? 0),
           appearDuration: Math.max(0, timing.appearDuration ?? timing.drawDuration ?? 1.5),
         };
         hasActiveRouteEvent = true;
         break;
+      }
+    }
+
+    // Vehicle events use the same accepted oldest-still-running priority and
+    // uninterrupted global-time continuation as Draw Route, but retain their
+    // own Delay, Duration, repetition, and render state.
+    for (let index = 0; index <= currentIndex; index += 1) {
+      const candidate = segments[index];
+      const timing = segmentAnimation(candidate, layer.id)?.routeVehicle;
+      if (!timing?.vehicleEnabled) continue;
+      const uninterrupted = segments
+        .slice(index, currentIndex + 1)
+        .every((part) => segmentMemberIds(part).has(layer.id));
+      if (!uninterrupted || time > candidate.start + routeVehicleCompleteTime(timing)) continue;
+      routeVehicle = absoluteRouteVehicleTiming(timing, candidate.start);
+      hasActiveRouteEvent = true;
+      break;
+    }
+
+    if (!routeVehicle?.vehicleEnabled) {
+      for (const section of layer.routeSegments ?? []) {
+        for (let index = 0; index <= currentIndex; index += 1) {
+          const candidate = segments[index];
+          const timing = segmentAnimation(candidate, layer.id)?.routeSegmentAnimations?.[section.id];
+          if (!timing?.vehicleEnabled) continue;
+          const uninterrupted = segments
+            .slice(index, currentIndex + 1)
+            .every((part) => routeSectionIncluded(part, layer.id, section.id));
+          if (!uninterrupted || time > candidate.start + routeVehicleCompleteTime(timing)) continue;
+          routeSegmentAnimations[section.id] = {
+            ...routeSegmentAnimations[section.id],
+            ...absoluteRouteVehicleTiming(timing, candidate.start),
+          };
+          hasActiveRouteEvent = true;
+          break;
+        }
       }
     }
     if (hasActiveRouteEvent) {
@@ -498,7 +565,7 @@ const applyActiveAppearEvents = (
           cameraZoom,
         );
       }
-      applyRouteEvaluation(layer, { ...currentAnimation, routeSegmentAnimations }, time);
+      applyRouteEvaluation(layer, { ...currentAnimation, routeSegmentAnimations, routeVehicle }, time);
       continued.add(layer.id);
     }
   }
