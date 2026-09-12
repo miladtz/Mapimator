@@ -146,6 +146,7 @@ const optionalNumbers = [
   'regionFillOpacity',
   'regionStrokeOpacity',
   'regionStrokeWidth',
+  'regionRoundness',
   'regionEffectDuration',
   'regionEffectDelay',
   'regionDrawSpeed',

@@ -43,6 +43,7 @@ import { projectFlatMapLabel, selectMapLabels } from '../core/mapLabels';
 import { constrainCameraForRenderer } from '../core/cameraZoomPolicy';
 import { preparseSvgPaths, projectSvgPath } from '../core/perspectiveGeometry';
 import { formatNumbers, resolveTextDirection, resolveTextLanguage } from '../core/text';
+import { renderedRegionGeometry } from '../core/regions';
 import { WebGLGlobe } from './WebGLGlobe';
 import { CameraOrbitControl } from './CameraOrbitControl';
 import {
@@ -1521,12 +1522,13 @@ function LayerGraphic({
   if (!point) return null;
   if (layer.type === 'region') {
     const country = findCountry(layer.countryId);
-    const geometryPath = layer.regionGeometry
+    const regionGeometry = renderedRegionGeometry(layer);
+    const geometryPath = regionGeometry
       ? (() => {
           const polygons =
-            layer.regionGeometry.type === 'Polygon'
-              ? [layer.regionGeometry.coordinates as number[][][]]
-              : (layer.regionGeometry.coordinates as number[][][][]);
+            regionGeometry.type === 'Polygon'
+              ? [regionGeometry.coordinates as number[][][]]
+              : (regionGeometry.coordinates as number[][][][]);
           return polygons
             .flatMap((polygon) => polygon)
             .map(

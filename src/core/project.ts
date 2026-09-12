@@ -535,6 +535,8 @@ export interface Layer {
   regionGroupMembers?: string[];
   regionGeometry?: RegionGeometry;
   regionGeometryEditable?: boolean;
+  /** Custom Region corner rounding, from 0 (authored vertices) to 100. */
+  regionRoundness?: number;
   regionFillMode?: RegionFillMode;
   regionFillColor?: string;
   regionFillOpacity?: number;

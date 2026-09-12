@@ -50,6 +50,7 @@ import {
   updateOnlineProjectOverlays,
 } from '../core/onlineProjectOverlays';
 import { imageGeographicCorners, rotateImageToward } from '../core/imageLayers';
+import { draggedShapePreviewCoordinates } from '../core/shapes';
 import { pointInAnimatedMediaScreenQuad, rotateAnimatedMediaToward } from '../core/animatedMedia';
 import { fitProjectViewport, type LogicalViewport } from '../core/projectRenderViewport';
 import type {
@@ -80,11 +81,18 @@ export const regionDraftFeatureCollection = (
   type: 'FeatureCollection' as const,
   features: draft.length
     ? [
-        {
-          type: 'Feature' as const,
-          properties: { kind: 'line' },
-          geometry: { type: 'LineString' as const, coordinates: pointer ? [...draft, pointer] : draft },
-        },
+        ...(draft.length > 1 || pointer
+          ? [
+              {
+                type: 'Feature' as const,
+                properties: { kind: 'line' },
+                geometry: {
+                  type: 'LineString' as const,
+                  coordinates: pointer ? [...draft, pointer] : draft,
+                },
+              },
+            ]
+          : []),
         ...draft.map((coordinate, index) => ({
           type: 'Feature' as const,
           properties: { kind: 'vertex', first: index === 0, snapped: index === 0 && snapped },
@@ -93,6 +101,43 @@ export const regionDraftFeatureCollection = (
       ]
     : [],
 });
+
+export const syncRegionDraftOverlay = (
+  map: MapLibreMap,
+  data: ReturnType<typeof regionDraftFeatureCollection>,
+) => {
+  if (!map.isStyleLoaded()) return false;
+  const id = 'mapmotion-region-draft';
+  const source = map.getSource(id) as import('maplibre-gl').GeoJSONSource | undefined;
+  if (source) source.setData(data as any);
+  else map.addSource(id, { type: 'geojson', data: data as any });
+  if (!map.getLayer(`${id}-line`))
+    map.addLayer({
+      id: `${id}-line`,
+      type: 'line',
+      source: id,
+      metadata: { 'mapmotion:editor-only': true },
+      filter: ['==', ['get', 'kind'], 'line'],
+      paint: { 'line-color': '#7fd4ff', 'line-width': 2, 'line-dasharray': [2, 1] },
+    });
+  if (!map.getLayer(`${id}-points`))
+    map.addLayer({
+      id: `${id}-points`,
+      type: 'circle',
+      source: id,
+      metadata: { 'mapmotion:editor-only': true },
+      filter: ['==', ['get', 'kind'], 'vertex'],
+      paint: {
+        'circle-radius': ['case', ['get', 'first'], 7, 5],
+        'circle-color': ['case', ['get', 'snapped'], '#65e6a7', '#ffffff'],
+        'circle-stroke-color': '#168bd2',
+        'circle-stroke-width': 2,
+      },
+    });
+  for (const layerId of [`${id}-line`, `${id}-points`]) if (map.getLayer(layerId)) map.moveLayer(layerId);
+  map.triggerRepaint();
+  return true;
+};
 export const routeDraftFeatureCollection = (
   draft: readonly [number, number][],
   candidate?: readonly [number, number][],
@@ -199,18 +244,21 @@ export const syncRouteDraftOverlay = (
   return true;
 };
 
-/** Retains only the newest editor draft until the live style can accept it. */
-export const createRouteDraftOverlaySynchronizer = () => {
-  let latest = routeDraftFeatureCollection([]);
+/** Retains only the newest editor overlay state until the live style can accept it. */
+export const createLatestEditorOverlaySynchronizer = <Data,>(
+  initial: Data,
+  write: (map: MapLibreMap, data: Data) => boolean,
+) => {
+  let latest = initial;
   let pending = false;
   return {
-    setLatest(data: ReturnType<typeof routeDraftFeatureCollection>) {
+    setLatest(data: Data) {
       latest = data;
       pending = true;
     },
     flush(map: MapLibreMap, force = false) {
       if (!pending && !force) return false;
-      const written = syncRouteDraftOverlay(map, latest);
+      const written = write(map, latest);
       if (written) pending = false;
       return written;
     },
@@ -218,34 +266,25 @@ export const createRouteDraftOverlaySynchronizer = () => {
   };
 };
 
+export const createRouteDraftOverlaySynchronizer = () =>
+  createLatestEditorOverlaySynchronizer(routeDraftFeatureCollection([]), syncRouteDraftOverlay);
+
 export const shapeDraftFeatureCollection = (
   draft: readonly [number, number][],
   kind?: ShapeKind,
   pointer?: [number, number],
 ) => {
   const authored = pointer ? [...draft, pointer] : [...draft];
-  const first = authored[0];
-  const last = authored.at(-1);
-  const primitiveLine =
-    first &&
-    last &&
-    authored.length >= 2 &&
-    ['rectangle', 'square', 'circle', 'ellipse', 'triangle', 'regular-polygon'].includes(kind ?? '')
-      ? (() => {
-          const center: [number, number] = [(first[0] + last[0]) / 2, (first[1] + last[1]) / 2];
-          const rx = Math.abs(last[0] - first[0]) / 2;
-          const ry = Math.abs(last[1] - first[1]) / 2;
-          const sides = kind === 'triangle' ? 3 : kind === 'regular-polygon' ? 5 : 48;
-          if (kind === 'rectangle' || kind === 'square')
-            return [first, [last[0], first[1]], last, [first[0], last[1]], first] as [number, number][];
-          return Array.from({ length: sides + 1 }, (_, index) => {
-            const angle = -Math.PI / 2 + ((index % sides) * Math.PI * 2) / sides;
-            return [center[0] + Math.cos(angle) * rx, center[1] + Math.sin(angle) * ry] as [number, number];
-          });
-        })()
+  const dragAuthored = authored.map(([longitude, latitude], index) => ({
+    id: `shape-draft-${index}`,
+    ...lngLatToMapMotionWorld(longitude, latitude),
+  }));
+  const canonicalDragLine =
+    kind && authored.length >= 2 && !['polyline', 'polygon'].includes(kind)
+      ? draggedShapePreviewCoordinates(kind, dragAuthored).map(([x, y]) => mapMotionWorldToLngLat(x, y))
       : undefined;
   const line =
-    primitiveLine ??
+    canonicalDragLine ??
     (draft.length
       ? pointer
         ? kind === 'polygon'
@@ -274,6 +313,44 @@ export const shapeDraftFeatureCollection = (
       })),
     ],
   };
+};
+
+export const syncShapeDraftOverlay = (
+  map: MapLibreMap,
+  data: ReturnType<typeof shapeDraftFeatureCollection>,
+) => {
+  if (!map.isStyleLoaded()) return false;
+  const id = 'mapmotion-shape-draft';
+  const source = map.getSource(id) as import('maplibre-gl').GeoJSONSource | undefined;
+  if (source) source.setData(data as any);
+  else map.addSource(id, { type: 'geojson', data: data as any });
+  if (!map.getLayer(`${id}-line`))
+    map.addLayer({
+      id: `${id}-line`,
+      type: 'line',
+      source: id,
+      metadata: { 'mapmotion:editor-only': true },
+      filter: ['==', ['get', 'kind'], 'line'],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#7fd4ff', 'line-width': 4, 'line-opacity': 0.95, 'line-dasharray': [2, 1] },
+    });
+  if (!map.getLayer(`${id}-points`))
+    map.addLayer({
+      id: `${id}-points`,
+      type: 'circle',
+      source: id,
+      metadata: { 'mapmotion:editor-only': true },
+      filter: ['==', ['get', 'kind'], 'vertex'],
+      paint: {
+        'circle-radius': ['case', ['get', 'endpoint'], 7, 5],
+        'circle-color': '#ffffff',
+        'circle-stroke-color': '#168bd2',
+        'circle-stroke-width': 2,
+      },
+    });
+  for (const layerId of [`${id}-line`, `${id}-points`]) if (map.getLayer(layerId)) map.moveLayer(layerId);
+  map.triggerRepaint();
+  return true;
 };
 
 export const interactivePixelRatioForDisplay = (displayScale: number, devicePixelRatio: number) =>
@@ -400,7 +477,13 @@ export function OnlineOpenFreeMap({
   const onSelectCustomRouteControlPointRef = useRef(onSelectCustomRouteControlPoint);
   const assetUrlsRef = useRef(assetUrls);
   const mapServiceSettingsRef = useRef(mapServiceSettings);
+  const regionDraftSynchronizerRef = useRef(
+    createLatestEditorOverlaySynchronizer(regionDraftFeatureCollection([]), syncRegionDraftOverlay),
+  );
   const routeDraftSynchronizerRef = useRef(createRouteDraftOverlaySynchronizer());
+  const shapeDraftSynchronizerRef = useRef(
+    createLatestEditorOverlaySynchronizer(shapeDraftFeatureCollection([]), syncShapeDraftOverlay),
+  );
   const applyingCanonicalCamera = useRef(false);
   const nativeCameraSignaturesRef = useRef(new Set<string>());
   const diagnosticsRef = useRef({ nativeSyncs: 0, externalApplications: 0 });
@@ -643,6 +726,9 @@ export function OnlineOpenFreeMap({
     map.on('style.load', () => {
       const generation = styleGenerationRef.current.begin();
       setEditorOverlayRevision((revision) => revision + 1);
+      const currentRegionDraftData = regionDraftFeatureCollection(regionDraftRef.current);
+      regionDraftSynchronizerRef.current.setLatest(currentRegionDraftData);
+      regionDraftSynchronizerRef.current.flush(map!, true);
       const currentDraftData = routeDraftFeatureCollection(
         routeDraftRef.current,
         routeCandidateRef.current,
@@ -652,6 +738,12 @@ export function OnlineOpenFreeMap({
       );
       routeDraftSynchronizerRef.current.setLatest(currentDraftData);
       routeDraftSynchronizerRef.current.flush(map!, true);
+      const currentShapeDraftData = shapeDraftFeatureCollection(
+        shapeDraftRef.current,
+        shapeDraftKindRef.current,
+      );
+      shapeDraftSynchronizerRef.current.setLatest(currentShapeDraftData);
+      shapeDraftSynchronizerRef.current.flush(map!, true);
       const activeDefinition = basemapById(loadedStyleRef.current ?? 'liberty');
       applyBasemapBoundaryPolicy(map!, activeDefinition);
       applyBasemapLabelLanguage(map!, activeDefinition, labelLanguageRef.current, true);
@@ -666,8 +758,9 @@ export function OnlineOpenFreeMap({
       });
     });
     map.on('idle', () => {
-      if (!routeDraftSynchronizerRef.current.hasPending()) return;
-      routeDraftSynchronizerRef.current.flush(map!);
+      if (regionDraftSynchronizerRef.current.hasPending()) regionDraftSynchronizerRef.current.flush(map!);
+      if (routeDraftSynchronizerRef.current.hasPending()) routeDraftSynchronizerRef.current.flush(map!);
+      if (shapeDraftSynchronizerRef.current.hasPending()) shapeDraftSynchronizerRef.current.flush(map!);
     });
     let movingPinId: string | null = null;
     let movingPinLabelId: string | null = null;
@@ -694,6 +787,7 @@ export function OnlineOpenFreeMap({
       });
     };
     let drawingShape = false;
+    let shapeDrawWorldPoints: { x: number; y: number }[] = [];
     let shapeDrawFinished = false;
     let movingRouteWaypoint: { layerId: string; waypointId: string } | null = null;
     let movingCustomControlId: string | null = null;
@@ -829,6 +923,7 @@ export function OnlineOpenFreeMap({
       shapeDrawFinished = false;
       const world = lngLatToMapMotionWorld(event.lngLat.lng, event.lngLat.lat);
       onShapeDrawPointRef.current(world);
+      shapeDrawWorldPoints = [world];
       map!.dragPan.disable();
       map!.getCanvas().style.cursor = 'crosshair';
     });
@@ -872,6 +967,16 @@ export function OnlineOpenFreeMap({
       if (drawingShape) {
         const world = lngLatToMapMotionWorld(event.lngLat.lng, event.lngLat.lat);
         onShapeDrawPointRef.current?.(world);
+        const shapeKind = shapeDraftKindRef.current;
+        if (shapeKind === 'free-draw') {
+          const previous = shapeDrawWorldPoints.at(-1);
+          if (!previous || Math.hypot(previous.x - world.x, previous.y - world.y) >= 1)
+            shapeDrawWorldPoints.push(world);
+        } else shapeDrawWorldPoints = [shapeDrawWorldPoints[0] ?? world, world];
+        const liveDraft = shapeDrawWorldPoints.map(({ x, y }) => mapMotionWorldToLngLat(x, y));
+        const data = shapeDraftFeatureCollection(liveDraft, shapeKind);
+        shapeDraftSynchronizerRef.current.setLatest(data);
+        shapeDraftSynchronizerRef.current.flush(map!);
         return;
       }
       if (movingShapePoint) {
@@ -1157,35 +1262,9 @@ export function OnlineOpenFreeMap({
 
   useLayoutEffect(() => {
     const map = mapRef.current;
-    if (!map?.isStyleLoaded()) return;
-    const id = 'mapmotion-region-draft';
     const data = regionDraftFeatureCollection(regionDraft);
-    const source = map.getSource(id) as import('maplibre-gl').GeoJSONSource | undefined;
-    if (source) source.setData(data as any);
-    else map.addSource(id, { type: 'geojson', data: data as any });
-    if (!map.getLayer(`${id}-line`))
-      map.addLayer({
-        id: `${id}-line`,
-        type: 'line',
-        source: id,
-        metadata: { 'mapmotion:editor-only': true },
-        filter: ['==', ['get', 'kind'], 'line'],
-        paint: { 'line-color': '#7fd4ff', 'line-width': 2, 'line-dasharray': [2, 1] },
-      });
-    if (!map.getLayer(`${id}-points`))
-      map.addLayer({
-        id: `${id}-points`,
-        type: 'circle',
-        source: id,
-        metadata: { 'mapmotion:editor-only': true },
-        filter: ['==', ['get', 'kind'], 'vertex'],
-        paint: {
-          'circle-radius': ['case', ['get', 'first'], 7, 5],
-          'circle-color': ['case', ['get', 'snapped'], '#65e6a7', '#ffffff'],
-          'circle-stroke-color': '#168bd2',
-          'circle-stroke-width': 2,
-        },
-      });
+    regionDraftSynchronizerRef.current.setLatest(data);
+    if (map) regionDraftSynchronizerRef.current.flush(map);
   }, [editorOverlayRevision, regionDraft]);
 
   useLayoutEffect(() => {
@@ -1210,37 +1289,9 @@ export function OnlineOpenFreeMap({
 
   useLayoutEffect(() => {
     const map = mapRef.current;
-    if (!map?.isStyleLoaded()) return;
-    const id = 'mapmotion-shape-draft';
     const data = shapeDraftFeatureCollection(shapeDraft, shapeDraftKind);
-    const source = map.getSource(id) as import('maplibre-gl').GeoJSONSource | undefined;
-    if (source) source.setData(data as any);
-    else map.addSource(id, { type: 'geojson', data: data as any });
-    if (!map.getLayer(`${id}-line`))
-      map.addLayer({
-        id: `${id}-line`,
-        type: 'line',
-        source: id,
-        metadata: { 'mapmotion:editor-only': true },
-        filter: ['==', ['get', 'kind'], 'line'],
-        layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': '#7fd4ff', 'line-width': 4, 'line-opacity': 0.95, 'line-dasharray': [2, 1] },
-      });
-    if (!map.getLayer(`${id}-points`))
-      map.addLayer({
-        id: `${id}-points`,
-        type: 'circle',
-        source: id,
-        metadata: { 'mapmotion:editor-only': true },
-        filter: ['==', ['get', 'kind'], 'vertex'],
-        paint: {
-          'circle-radius': ['case', ['get', 'endpoint'], 7, 5],
-          'circle-color': '#ffffff',
-          'circle-stroke-color': '#168bd2',
-          'circle-stroke-width': 2,
-        },
-      });
-    for (const layerId of [`${id}-line`, `${id}-points`]) if (map.getLayer(layerId)) map.moveLayer(layerId);
+    shapeDraftSynchronizerRef.current.setLatest(data);
+    if (map) shapeDraftSynchronizerRef.current.flush(map);
   }, [editorOverlayRevision, shapeDraft, shapeDraftKind]);
 
   useLayoutEffect(() => {

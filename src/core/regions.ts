@@ -17,6 +17,7 @@ export const REGION_DEFAULTS = {
   fillingDuration: 1.5,
   pulseSpeed: 1,
   pulseIntensity: 0.5,
+  roundness: 0,
 } as const;
 
 const samePoint = (a: LngLat, b: LngLat) => Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9;
@@ -40,6 +41,61 @@ export const validCustomRegionRing = (points: readonly LngLat[]) => {
 export const customRegionGeometry = (points: readonly LngLat[]): RegionGeometry | null =>
   validCustomRegionRing(points) ? { type: 'Polygon', coordinates: [closeRing(points)] } : null;
 
+const roundedRegionRing = (ring: readonly number[][], roundness: number): LngLat[] => {
+  const closed = ring.length > 1 && samePoint(ring[0] as LngLat, ring[ring.length - 1] as LngLat);
+  const authored = (closed ? ring.slice(0, -1) : ring)
+    .filter(
+      (point): point is LngLat => point.length >= 2 && Number.isFinite(point[0]) && Number.isFinite(point[1]),
+    )
+    .map(([longitude, latitude]) => [longitude, latitude] as LngLat);
+  if (authored.length < 3 || roundness <= 0) return closeRing(authored);
+  const amount = Math.max(0, Math.min(100, roundness)) / 300;
+  const result: LngLat[] = [];
+  for (let index = 0; index < authored.length; index += 1) {
+    const previous = authored[(index - 1 + authored.length) % authored.length];
+    const current = authored[index];
+    const next = authored[(index + 1) % authored.length];
+    const incoming: LngLat = [
+      current[0] + (previous[0] - current[0]) * amount,
+      current[1] + (previous[1] - current[1]) * amount,
+    ];
+    const outgoing: LngLat = [
+      current[0] + (next[0] - current[0]) * amount,
+      current[1] + (next[1] - current[1]) * amount,
+    ];
+    result.push(incoming);
+    for (let step = 1; step <= 4; step += 1) {
+      const t = step / 4;
+      const inverse = 1 - t;
+      result.push([
+        inverse * inverse * incoming[0] + 2 * inverse * t * current[0] + t * t * outgoing[0],
+        inverse * inverse * incoming[1] + 2 * inverse * t * current[1] + t * t * outgoing[1],
+      ]);
+    }
+  }
+  return closeRing(result);
+};
+
+/** Derives render geometry while retaining authored Custom Region vertices unchanged. */
+export const renderedRegionGeometry = (
+  layer: Pick<Layer, 'regionSource' | 'regionGeometry' | 'regionRoundness'>,
+): RegionGeometry | undefined => {
+  const geometry = layer.regionGeometry;
+  if (!geometry || layer.regionSource !== 'custom' || (layer.regionRoundness ?? 0) <= 0) return geometry;
+  const roundness = layer.regionRoundness ?? 0;
+  if (geometry.type === 'Polygon')
+    return {
+      type: 'Polygon',
+      coordinates: (geometry.coordinates as number[][][]).map((ring) => roundedRegionRing(ring, roundness)),
+    };
+  return {
+    type: 'MultiPolygon',
+    coordinates: (geometry.coordinates as number[][][][]).map((polygon) =>
+      polygon.map((ring) => roundedRegionRing(ring, roundness)),
+    ),
+  };
+};
+
 export const createRegionLayer = (
   name: string,
   geometry: RegionGeometry,
@@ -56,6 +112,7 @@ export const createRegionLayer = (
   y: 250,
   regionSource: 'custom',
   regionGeometryEditable: true,
+  regionRoundness: REGION_DEFAULTS.roundness,
   regionGeometry: geometry,
   regionFillMode: 'solid',
   regionFillColor: REGION_DEFAULTS.fillColor,

@@ -18,6 +18,7 @@ writeFileSync(
     `export * from '${join(root, 'src/core/openFreeMapAdapter').replaceAll('\\', '/')}';`,
     `export * from '${join(root, 'src/core/onlineProjectOverlays').replaceAll('\\', '/')}';`,
     `export * from '${join(root, 'src/core/viewCompiler').replaceAll('\\', '/')}';`,
+    `export { createLatestEditorOverlaySynchronizer, shapeDraftFeatureCollection, syncShapeDraftOverlay } from '${join(root, 'src/components/OnlineOpenFreeMap').replaceAll('\\', '/')}';`,
   ].join('\n'),
 );
 let core;
@@ -543,7 +544,8 @@ assert.match(styles, /\.shape-authoring-actions\s*\{[\s\S]*position: absolute;[\
 const onlineMap = readFileSync(join(root, 'src/components/OnlineOpenFreeMap.tsx'), 'utf8');
 assert.match(onlineMap, /shapeDraftKindRef/);
 assert.match(onlineMap, /mapmotion-shape-draft/);
-assert.match(onlineMap, /shapeDraftFeatureCollection\(shapeDraft, shapeKind, pointer\)/);
+assert.match(onlineMap, /shapeDraftSynchronizerRef\.current\.setLatest\(data\)/);
+assert.match(onlineMap, /shapeDraftSynchronizerRef\.current\.flush\(map!\)/);
 assert.match(app, /const shapeDraftRef = useRef<ShapePoint\[\]>/);
 assert.match(app, /const finishDraggedShape = \(\) => \{/);
 assert.doesNotMatch(
@@ -551,9 +553,119 @@ assert.doesNotMatch(
   /setShapeDraft\(\(points\) => \{[\s\S]{0,1600}addProjectLayer/,
   'Shape creation must not be a side effect inside a StrictMode-repeatable state updater',
 );
-for (const kind of ['rectangle', 'square', 'circle', 'ellipse', 'triangle', 'regular-polygon'])
-  assert.ok(onlineMap.includes(`'${kind}'`), `${kind} has live primitive draft geometry`);
+assert.match(onlineMap, /draggedShapePreviewCoordinates\(kind, dragAuthored\)/);
 assert.match(onlineMap, /shapeDrawFinished = true/);
+
+const draftLngLat = [
+  [10, 20],
+  [14, 24],
+];
+for (const kind of kinds) {
+  const preview = core.shapeDraftFeatureCollection(draftLngLat, kind, [16, 26]);
+  const lineFeature = preview.features.find((feature) => feature.geometry.type === 'LineString');
+  assert.ok(lineFeature, `${kind} produces live preview geometry`);
+  assert.ok(lineFeature.geometry.coordinates.length > 1, `${kind} preview is valid GeoJSON`);
+}
+const draggedWorld = draftLngLat.map(([longitude, latitude], index) => ({
+  id: `drag-${index}`,
+  ...core.lngLatToMapMotionWorld(longitude, latitude),
+}));
+for (const kind of ['rectangle', 'square', 'circle', 'ellipse', 'triangle', 'regular-polygon']) {
+  const defaults = core.createShapeLayerAt(kind, 500, 250);
+  const finalized = core.applyDraggedShapeGeometry(defaults, draggedWorld);
+  if (kind === 'rectangle' || kind === 'square' || kind === 'circle' || kind === 'ellipse')
+    assert.notEqual(finalized.shapeWidthKm, defaults.shapeWidthKm, `${kind} drag replaces default width`);
+  if (kind === 'rectangle' || kind === 'ellipse')
+    assert.notEqual(finalized.shapeHeightKm, defaults.shapeHeightKm, `${kind} drag replaces default height`);
+  if (kind === 'circle' || kind === 'triangle' || kind === 'regular-polygon')
+    assert.notEqual(finalized.shapeRadiusKm, defaults.shapeRadiusKm, `${kind} drag replaces default radius`);
+  const preview = core.shapeDraftFeatureCollection(draftLngLat, kind);
+  const previewLine = preview.features.find((feature) => feature.geometry.type === 'LineString').geometry.coordinates;
+  const renderedFinal = core.renderedShapeCoordinates(finalized);
+  const finalAlreadyClosed =
+    renderedFinal.coordinates.length > 1 &&
+    renderedFinal.coordinates[0][0] === renderedFinal.coordinates.at(-1)[0] &&
+    renderedFinal.coordinates[0][1] === renderedFinal.coordinates.at(-1)[1];
+  const finalCoordinates = renderedFinal.closed && !finalAlreadyClosed
+    ? [...renderedFinal.coordinates, renderedFinal.coordinates[0]]
+    : renderedFinal.coordinates;
+  const finalLine = finalCoordinates.map(([x, y]) => core.mapMotionWorldToLngLat(x, y));
+  assert.deepEqual(previewLine, finalLine, `${kind} pointerup geometry equals its final live preview`);
+}
+for (const kind of ['free-draw', 'arrow']) {
+  const finalized = core.applyDraggedShapeGeometry(core.createShapeLayerAt(kind, 500, 250), draggedWorld);
+  const preview = core.shapeDraftFeatureCollection(draftLngLat, kind);
+  const previewLine = preview.features.find((feature) => feature.geometry.type === 'LineString').geometry.coordinates;
+  const finalLine = core
+    .renderedShapeCoordinates(finalized)
+    .coordinates.map(([x, y]) => core.mapMotionWorldToLngLat(x, y));
+  assert.deepEqual(previewLine, finalLine, `${kind} final geometry remains identical to live authoring`);
+}
+for (const kind of ['rectangle', 'square', 'triangle', 'regular-polygon']) {
+  const lineFeature = core
+    .shapeDraftFeatureCollection(draftLngLat, kind)
+    .features.find((feature) => feature.geometry.type === 'LineString');
+  assert.deepEqual(
+    lineFeature.geometry.coordinates[0],
+    lineFeature.geometry.coordinates.at(-1),
+    `${kind} live outline closes its final side`,
+  );
+}
+for (const kind of ['polyline', 'free-draw', 'arrow']) {
+  const lineFeature = core
+    .shapeDraftFeatureCollection(draftLngLat, kind)
+    .features.find((feature) => feature.geometry.type === 'LineString');
+  assert.notDeepEqual(
+    lineFeature.geometry.coordinates[0],
+    lineFeature.geometry.coordinates.at(-1),
+    `${kind} remains open`,
+  );
+}
+const shapeSources = new Map();
+const shapeLayers = new Map();
+let shapeStyleReady = false;
+const makeDraftSource = (data) => ({
+  data,
+  setData(next) {
+    this.data = next;
+  },
+});
+const shapeMap = {
+  isStyleLoaded: () => shapeStyleReady,
+  getSource: (id) => shapeSources.get(id),
+  addSource: (id, definition) => shapeSources.set(id, makeDraftSource(definition.data)),
+  getLayer: (id) => shapeLayers.get(id),
+  addLayer: (layer) => shapeLayers.set(layer.id, layer),
+  moveLayer: (id) => {
+    const layer = shapeLayers.get(id);
+    if (layer) {
+      shapeLayers.delete(id);
+      shapeLayers.set(id, layer);
+    }
+  },
+  triggerRepaint() {},
+};
+const shapeA = core.shapeDraftFeatureCollection([[1, 1]], 'rectangle', [2, 2]);
+const shapeB = core.shapeDraftFeatureCollection([[1, 1]], 'rectangle', [4, 5]);
+const shapeSync = core.createLatestEditorOverlaySynchronizer(
+  core.shapeDraftFeatureCollection([]),
+  core.syncShapeDraftOverlay,
+);
+shapeSync.setLatest(shapeA);
+assert.equal(shapeSync.flush(shapeMap), false, 'style-unready Shape preview remains pending');
+shapeSync.setLatest(shapeB);
+shapeStyleReady = true;
+assert.equal(shapeSync.flush(shapeMap), true);
+assert.equal(shapeSources.get('mapmotion-shape-draft').data, shapeB, 'latest Shape preview reaches source');
+assert.ok(shapeLayers.has('mapmotion-shape-draft-line'));
+assert.ok(shapeLayers.has('mapmotion-shape-draft-points'));
+shapeSources.clear();
+shapeLayers.clear();
+assert.equal(shapeSync.flush(shapeMap, true), true);
+assert.equal(shapeSources.get('mapmotion-shape-draft').data, shapeB, 'style reload restores Shape draft');
+shapeSync.setLatest(core.shapeDraftFeatureCollection([]));
+shapeSync.flush(shapeMap);
+assert.equal(shapeSources.get('mapmotion-shape-draft').data.features.length, 0, 'finalize/cancel clears draft');
 
 // Arrow orientation is the sole timeline-global Shape animation choice.
 {

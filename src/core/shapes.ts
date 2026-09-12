@@ -152,6 +152,34 @@ const dimensionsFromPoints = (points: readonly ShapePoint[]) => {
   };
 };
 
+/** Applies an initial pointer drag to the same canonical fields used by later resize edits. */
+export const applyDraggedShapeGeometry = (layer: Layer, points: readonly ShapePoint[]): Layer => {
+  if (points.length < 2) return { ...layer, shapePoints: points.map((item) => ({ ...item })) };
+  const kind = layer.shapeKind ?? 'rectangle';
+  const dimensions = dimensionsFromPoints([points[0], points[points.length - 1]]);
+  const seeded = {
+    ...layer,
+    x: dimensions.x,
+    y: dimensions.y,
+    shapePoints: points.map((item) => ({ ...item })),
+  };
+  if (kind === 'rectangle' || kind === 'ellipse')
+    return resizeExactShape(seeded, {
+      widthKm: dimensions.shapeWidthKm,
+      heightKm: dimensions.shapeHeightKm,
+    });
+  if (kind === 'square' || kind === 'circle') {
+    const sizeKm = Math.max(dimensions.shapeWidthKm, dimensions.shapeHeightKm);
+    return resizeExactShape(seeded, { widthKm: sizeKm });
+  }
+  if (kind === 'triangle' || kind === 'regular-polygon')
+    return resizeExactShape(seeded, {
+      radiusKm: Math.max(dimensions.shapeWidthKm, dimensions.shapeHeightKm) / 2,
+      sides: kind === 'triangle' ? 3 : (layer.shapeRegularSides ?? 5),
+    });
+  return seeded;
+};
+
 const regularPoints = (
   existing: readonly ShapePoint[],
   centerX: number,
@@ -509,6 +537,40 @@ export const renderedShapeCoordinates = (
     renderedGeometryCache.delete(renderedGeometryCache.keys().next().value!);
   renderedGeometryCache.set(signature, rendered);
   return rendered;
+};
+
+/** Canonical preview geometry for the pointer-drag creation path. */
+export const draggedShapePreviewCoordinates = (
+  kind: ShapeKind,
+  points: readonly ShapePoint[],
+): ShapeCoordinate[] => {
+  if (points.length < 2) return points.map(({ x, y }) => [x, y]);
+  const first = points[0];
+  const last = points[points.length - 1];
+  const base: Layer = {
+    id: 'shape-draft-preview',
+    type: 'shape',
+    name: 'Shape draft',
+    visible: true,
+    locked: false,
+    opacity: 1,
+    color: '#61c4e8',
+    x: (first.x + last.x) / 2,
+    y: (first.y + last.y) / 2,
+    shapeKind: kind,
+    shapePoints: points.map((item) => ({ ...item })),
+    shapeArrowStartAngle: 0,
+    shapeArrowheadEnabled: true,
+    shapeRegularSides: kind === 'triangle' ? 3 : 5,
+  };
+  const coordinates = renderedShapeCoordinates(applyDraggedShapeGeometry(base, points)).coordinates;
+  if (!['rectangle', 'square', 'triangle', 'regular-polygon'].includes(kind) || coordinates.length < 3)
+    return coordinates;
+  const firstCoordinate = coordinates[0];
+  const lastCoordinate = coordinates[coordinates.length - 1];
+  return firstCoordinate[0] === lastCoordinate[0] && firstCoordinate[1] === lastCoordinate[1]
+    ? coordinates
+    : [...coordinates, [...firstCoordinate]];
 };
 
 export const shapePathPrefixByDistance = (

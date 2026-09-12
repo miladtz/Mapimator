@@ -151,6 +151,7 @@ import {
   removeCustomRouteControlPoint,
 } from '../core/customRoutePath';
 import {
+  applyDraggedShapeGeometry,
   createShapeLayerAt,
   createShapePoints,
   deleteShapePoint,
@@ -1028,23 +1029,7 @@ export function App() {
     const first = points[0];
     const last = points.at(-1)!;
     const center = { x: (first.x + last.x) / 2, y: (first.y + last.y) / 2 };
-    const layer = createShapeLayerAt(shapeKindToPlace, center.x, center.y);
-    if (shapeKindToPlace === 'triangle')
-      layer.shapePoints = [
-        { ...first, x: center.x, y: first.y },
-        { ...last },
-        { id: `shape-point-${crypto.randomUUID()}`, x: first.x, y: last.y },
-      ];
-    else if (shapeKindToPlace === 'regular-polygon')
-      layer.shapePoints = Array.from({ length: 5 }, (_, index) => {
-        const angle = -Math.PI / 2 + (index * Math.PI * 2) / 5;
-        return {
-          id: `shape-point-${crypto.randomUUID()}`,
-          x: center.x + (Math.cos(angle) * Math.abs(last.x - first.x)) / 2,
-          y: center.y + (Math.sin(angle) * Math.abs(last.y - first.y)) / 2,
-        };
-      });
-    else layer.shapePoints = points;
+    const layer = applyDraggedShapeGeometry(createShapeLayerAt(shapeKindToPlace, center.x, center.y), points);
     updateProject((current) => addProjectLayer(current, layer));
     selectLayer(layer.id);
     setPlacing(null);
@@ -8215,6 +8200,18 @@ function Inspector({
           {layer.regionSource === 'custom' && (
             <div className="pin-section">
               <span className="pin-section-title">Geometry</span>
+              <label>
+                Roundness
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value={layer.regionRoundness ?? 0}
+                  onChange={(event) => onChange({ regionRoundness: Number(event.target.value) })}
+                />
+                <output>{Math.round(layer.regionRoundness ?? 0)}</output>
+              </label>
               <button className="quiet" disabled>
                 Edit Boundary (next refinement)
               </button>

@@ -6,8 +6,7 @@ import {
   type Map as MapLibreMap,
 } from 'maplibre-gl';
 import type { Layer, RegionGeometry } from './project';
-import { resolveFlagCode } from './regions';
-import { regionPresentation } from './regions';
+import { regionPresentation, renderedRegionGeometry, resolveFlagCode } from './regions';
 
 export const ONLINE_GEOGRAPHIC_REGION_FILL_LAYER_ID = 'mapmotion-geographic-region-fills';
 const imagePromises = new Map<string, Promise<HTMLCanvasElement>>();
@@ -325,10 +324,11 @@ export class GeographicRegionFillLayer implements CustomLayerInterface {
       nextKeys.add(layer.id);
       const mode = layer.regionImageMode ?? 'cover';
       const tileCount = layer.regionTileCount ?? 4;
+      const renderedGeometry = renderedRegionGeometry(layer)!;
       const existing = this.entries.find((entry) => entry.key === layer.id);
       const dynamicOpacity =
         layer.opacity * (layer.regionFillOpacity ?? 0.35) * regionPresentation(layer).fillFactor;
-      const pendingSignature = `${geometryIdentity(layer.regionGeometry)}:${url}:${mode}:${tileCount}`;
+      const pendingSignature = `${geometryIdentity(renderedGeometry)}:${url}:${mode}:${tileCount}`;
       this.desired.set(layer.id, pendingSignature);
       if (existing && existing.staticSignature.startsWith(`${pendingSignature}:`)) {
         existing.opacity = dynamicOpacity;
@@ -343,7 +343,7 @@ export class GeographicRegionFillLayer implements CustomLayerInterface {
           key: layer.id,
           staticSignature,
           url,
-          vertices: meshFor(layer.regionGeometry!, aspect, mode, tileCount),
+          vertices: meshFor(renderedGeometry, aspect, mode, tileCount),
           opacity: dynamicOpacity,
           mode,
         };

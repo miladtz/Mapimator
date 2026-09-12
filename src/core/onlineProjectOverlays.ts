@@ -2,7 +2,7 @@ import type { GeoJSON } from 'geojson';
 import type { ExpressionSpecification, GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl';
 import { lngLatToMapMotionWorld, mapMotionWorldToLngLat } from './openFreeMapAdapter';
 import { PIN_DEFAULTS, pinLabelOffsetOf, pinSizeOf, pinStyleOf, type Layer } from './project';
-import { regionPresentation, resolveFlagCode, revealRegionGeometry } from './regions';
+import { regionPresentation, renderedRegionGeometry, resolveFlagCode, revealRegionGeometry } from './regions';
 import {
   defaultVehicleForPathType,
   resolveRouteAppearance,
@@ -293,10 +293,11 @@ export const onlineRegionFeatureCollection = (
     .filter((layer) => layer.type === 'region' && layer.visible && layer.regionGeometry)
     .flatMap((layer) => {
       const presentation = regionPresentation(layer);
+      const renderedGeometry = renderedRegionGeometry(layer)!;
       const base = {
         type: 'Feature' as const,
         id: layer.id,
-        geometry: layer.regionGeometry!,
+        geometry: renderedGeometry,
         properties: {
           layerId: layer.id,
           role: 'base',
@@ -326,7 +327,7 @@ export const onlineRegionFeatureCollection = (
       const trace = {
         ...base,
         id: `${layer.id}:trace`,
-        geometry: revealRegionGeometry(layer.regionGeometry!, presentation.drawProgress),
+        geometry: revealRegionGeometry(renderedGeometry, presentation.drawProgress),
         properties: {
           ...base.properties,
           role: 'trace',
