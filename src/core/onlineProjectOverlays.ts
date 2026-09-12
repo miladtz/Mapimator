@@ -1732,6 +1732,10 @@ export const ensureOnlineProjectOverlays = (
     labelOffsetExpression(layers, assetUrls),
   );
   orderOnlineAnimatedMediaLayers(map, layers, onlineOverlayRepresentativeForLayer);
+  // Custom WebGL layers can be displaced by raster/reference layers during a
+  // style replacement. Reassert the Project overlay contract after every
+  // update so Satellite imagery can never cover static project Images.
+  if (map.getLayer(ONLINE_PROJECT_IMAGE_RENDER_LAYER_ID)) map.moveLayer(ONLINE_PROJECT_IMAGE_RENDER_LAYER_ID);
   if (map.getLayer(ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID)) map.moveLayer(ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID);
   if (map.getLayer(ONLINE_PROJECT_SHAPE_HANDLE_LAYER_ID)) map.moveLayer(ONLINE_PROJECT_SHAPE_HANDLE_LAYER_ID);
   return (

@@ -499,8 +499,7 @@ export const evaluateRouteRenderState = (
     routeAppearDelay,
     routeAppearDuration,
   );
-  const routeAppearActive =
-    routeAppearEnabled && segmentLocalTime < routeAppearDelay + routeAppearDuration;
+  const routeAppearActive = routeAppearEnabled && segmentLocalTime < routeAppearDelay + routeAppearDuration;
   const routeWipeEnabled = Boolean(animation?.wipeEnabled);
   const routeWipeStart =
     routeAppearDelay +
@@ -512,7 +511,6 @@ export const evaluateRouteRenderState = (
     ? timedProgress(segmentLocalTime, true, routeWipeStart, routeWipeDuration)
     : 0;
   const routeWipeActive = routeWipeEnabled && segmentLocalTime >= routeWipeStart;
-  const routeLevelActive = routeAppearActive || routeWipeActive;
   const segments = layer.routeSegments ?? [];
   const included = segments.map((segment) => {
     const timing = {
@@ -521,6 +519,16 @@ export const evaluateRouteRenderState = (
     };
     return timing.included ?? true;
   });
+  const allSectionsIncluded = included.every(Boolean);
+  const allSectionAppearNone = segments.every((segment) => {
+    const own = animation?.routeSegmentAnimations?.[segment.id];
+    return !(own?.appearEnabled ?? own?.drawEnabled);
+  });
+  // Route-level Appear is a strict low-priority fallback. Any explicit Section
+  // appearance or partial Section membership owns the rendered run. Existing
+  // independent Route Wipe behavior is intentionally preserved.
+  const routeLevelActive =
+    routeWipeActive || (allSectionsIncluded && allSectionAppearNone && routeAppearActive);
   const lengths = segments.map((segment, index) =>
     included[index] ? routePathMetrics(segment.geometry).total : 0,
   );

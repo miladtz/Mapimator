@@ -25,16 +25,31 @@ try {
   await build({
     configFile: false,
     logLevel: 'silent',
-    build: { outDir, emptyOutDir: false, minify: false, lib: { entry, formats: ['es'], fileName: () => 'core.mjs' } },
+    build: {
+      outDir,
+      emptyOutDir: false,
+      minify: false,
+      lib: { entry, formats: ['es'], fileName: () => 'core.mjs' },
+    },
   });
   core = await import(pathToFileURL(join(outDir, 'core.mjs')).href);
 } finally {
   rmSync(outDir, { recursive: true, force: true });
 }
 
-const kinds = ['rectangle', 'square', 'ellipse', 'circle', 'triangle', 'regular-polygon', 'polyline', 'polygon', 'free-draw', 'arrow'];
-for (const kind of kinds)
-  assert.equal(core.supportsDrawShape(kind), true, `${kind} exposes Draw Shape`);
+const kinds = [
+  'rectangle',
+  'square',
+  'ellipse',
+  'circle',
+  'triangle',
+  'regular-polygon',
+  'polyline',
+  'polygon',
+  'free-draw',
+  'arrow',
+];
+for (const kind of kinds) assert.equal(core.supportsDrawShape(kind), true, `${kind} exposes Draw Shape`);
 const optionValues = (kind) =>
   core.getAppearOptionsForLayer(core.createShapeLayerAt(kind, 480, 270)).map(({ value }) => value);
 for (const kind of kinds)
@@ -46,12 +61,19 @@ for (const kind of kinds)
 const shapes = kinds.map((kind, index) => core.createShapeLayerAt(kind, 300 + index * 50, 240));
 assert.equal(new Set(shapes.map((shape) => shape.id)).size, kinds.length);
 assert.ok(shapes.every((shape) => shape.shapePoints.length >= 2));
-assert.ok(shapes.every((shape) => new Set(shape.shapePoints.map((point) => point.id)).size === shape.shapePoints.length));
+assert.ok(
+  shapes.every(
+    (shape) => new Set(shape.shapePoints.map((point) => point.id)).size === shape.shapePoints.length,
+  ),
+);
 
 const polygon = shapes[7];
 const authored = structuredClone(polygon.shapePoints);
 const exact = core.renderedShapeCoordinates({ ...polygon, shapeRoundness: 0 }).coordinates;
-assert.deepEqual(exact, authored.map(({ x, y }) => [x, y]));
+assert.deepEqual(
+  exact,
+  authored.map(({ x, y }) => [x, y]),
+);
 const rounded = core.renderedShapeCoordinates({ ...polygon, shapeRoundness: 75 }).coordinates;
 assert.ok(rounded.length > exact.length, 'Roundness derives a visibly smoother sampled path');
 assert.deepEqual(polygon.shapePoints, authored, 'Roundness never mutates authored points');
@@ -63,8 +85,14 @@ const inserted = core.insertShapePoint(line, firstId);
 assert.equal(inserted.shapePoints.length, line.shapePoints.length + 1);
 assert.deepEqual(line.shapePoints, shapes[6].shapePoints, 'editing is immutable');
 const movedPoint = core.updateShapePoint(inserted, firstId, 12, 34);
-assert.deepEqual(movedPoint.shapePoints.find((point) => point.id === firstId), { id: firstId, x: 12, y: 34 });
-assert.equal(core.deleteShapePoint(movedPoint, inserted.shapePoints[1].id).shapePoints.length, line.shapePoints.length);
+assert.deepEqual(
+  movedPoint.shapePoints.find((point) => point.id === firstId),
+  { id: firstId, x: 12, y: 34 },
+);
+assert.equal(
+  core.deleteShapePoint(movedPoint, inserted.shapePoints[1].id).shapePoints.length,
+  line.shapePoints.length,
+);
 const movedShape = core.moveShape(line, 10, -5);
 assert.equal(movedShape.shapePoints[0].x, line.shapePoints[0].x + 10);
 
@@ -89,7 +117,10 @@ const chordDx = chordEnd[0] - chordStart[0];
 const chordDy = chordEnd[1] - chordStart[1];
 const chordLength = Math.hypot(chordDx, chordDy);
 const normal = [-chordDy / chordLength, chordDx / chordLength];
-const signedOffset = (coordinate) => { const metric = core.shapeWorldToMercatorMeters(...coordinate); return (metric[0] - chordStart[0]) * normal[0] + (metric[1] - chordStart[1]) * normal[1]; };
+const signedOffset = (coordinate) => {
+  const metric = core.shapeWorldToMercatorMeters(...coordinate);
+  return (metric[0] - chordStart[0]) * normal[0] + (metric[1] - chordStart[1]) * normal[1];
+};
 assert.ok(signedOffset(positiveArc[32]) * signedOffset(negativeArc[32]) < 0);
 assert.ok(Math.abs(signedOffset(straight[32])) < 1e-5);
 const head = core.arrowHeadCoordinates(arrow);
@@ -106,28 +137,45 @@ assert.equal(arrowOutput.features.filter((feature) => feature.geometry.type === 
 const square = core.resizeExactShape(shapes[1], { widthKm: 1000 });
 assert.equal(square.shapeWidthKm, square.shapeHeightKm);
 const squareProjected = square.shapePoints.map((item) => core.shapeWorldToMercatorMeters(item.x, item.y));
-assert.ok(Math.abs(Math.abs(squareProjected[1][0] - squareProjected[0][0]) - Math.abs(squareProjected[1][1] - squareProjected[0][1])) < 1e-5);
+assert.ok(
+  Math.abs(
+    Math.abs(squareProjected[1][0] - squareProjected[0][0]) -
+      Math.abs(squareProjected[1][1] - squareProjected[0][1]),
+  ) < 1e-5,
+);
 const circle = core.updateShapePoint(shapes[3], shapes[3].shapePoints[0].id, 100, 120);
 assert.ok(Math.abs(circle.shapeWidthKm - circle.shapeHeightKm) < 1e-9);
 assert.ok(Math.abs(circle.shapeRadiusKm - circle.shapeWidthKm / 2) < 1e-9);
 const triangle = shapes[4];
 assert.equal(triangle.shapePoints.length, 3);
 const triangleCenter = core.shapeWorldToMercatorMeters(triangle.x, triangle.y);
-const triangleRadii = triangle.shapePoints.map((item) => { const projected = core.shapeWorldToMercatorMeters(item.x, item.y); return Math.hypot(projected[0] - triangleCenter[0], projected[1] - triangleCenter[1]); });
+const triangleRadii = triangle.shapePoints.map((item) => {
+  const projected = core.shapeWorldToMercatorMeters(item.x, item.y);
+  return Math.hypot(projected[0] - triangleCenter[0], projected[1] - triangleCenter[1]);
+});
 assert.ok(triangleRadii.every((radius) => Math.abs(radius - triangleRadii[0]) < 1e-5));
 const heptagon = core.resizeExactShape(shapes[5], { sides: 7, radiusKm: 700, rotation: 15 });
 assert.equal(heptagon.shapePoints.length, 7);
 assert.equal(heptagon.shapeRegularSides, 7);
 
 const duplicate = core.duplicateShapeIdentity(polygon);
-assert.deepEqual(duplicate.shapePoints.map(({ x, y }) => [x, y]), polygon.shapePoints.map(({ x, y }) => [x, y]));
-assert.equal(new Set([...duplicate.shapePoints, ...polygon.shapePoints].map((point) => point.id)).size, polygon.shapePoints.length * 2);
+assert.deepEqual(
+  duplicate.shapePoints.map(({ x, y }) => [x, y]),
+  polygon.shapePoints.map(({ x, y }) => [x, y]),
+);
+assert.equal(
+  new Set([...duplicate.shapePoints, ...polygon.shapePoints].map((point) => point.id)).size,
+  polygon.shapePoints.length * 2,
+);
 const noisy = [
   { id: 'a', x: 0, y: 0 },
   { id: 'b', x: 1, y: 0.01 },
   { id: 'c', x: 2, y: 0 },
 ];
-assert.deepEqual(core.simplifyShapePoints(noisy, 0.1).map((point) => point.id), ['a', 'c']);
+assert.deepEqual(
+  core.simplifyShapePoints(noisy, 0.1).map((point) => point.id),
+  ['a', 'c'],
+);
 
 const project = core.createProject('Shape persistence');
 project.layers = shapes;
@@ -145,23 +193,46 @@ delete legacyArrow.shapeArrowStartAngle;
 legacyArrow.shapeArrowBend = 25;
 legacyArrowProject.layers = [legacyArrow];
 const normalizedArrow = core.validateAndMigrateProject(legacyArrowProject).layers[0];
-assert.deepEqual(normalizedArrow.shapePoints.map(({ id }) => id), [legacyArrow.shapePoints[0].id, legacyArrow.shapePoints.at(-1).id]);
+assert.deepEqual(
+  normalizedArrow.shapePoints.map(({ id }) => id),
+  [legacyArrow.shapePoints[0].id, legacyArrow.shapePoints.at(-1).id],
+);
 assert.equal(normalizedArrow.shapeArrowStartAngle, 20);
 const data = core.onlineShapeFeatureCollection(shapes, polygon.id);
-assert.equal(data.features.filter((feature) => feature.properties.featureKind === 'handle').length, polygon.shapePoints.length);
-assert.equal(data.features.filter((feature) => feature.properties.featureKind !== 'handle').length, kinds.length + 1);
+assert.equal(
+  data.features.filter((feature) => feature.properties.featureKind === 'handle').length,
+  polygon.shapePoints.length,
+);
+assert.equal(
+  data.features.filter((feature) => feature.properties.featureKind !== 'handle').length,
+  kinds.length + 1,
+);
 const arrowLine = data.features.find((feature) => feature.id === `${arrow.id}-geometry`);
 assert.equal(arrowLine.properties.strokeWidth, arrow.shapeStrokeWidth);
-assert.equal(data.features.find((feature) => feature.id === `${arrow.id}-arrowhead`).properties.featureKind, 'arrowhead');
-assert.equal(core.onlineShapeFeatureCollection([{ ...arrow, shapeArrowheadEnabled: false }], null).features.length, 1);
-assert.deepEqual(core.onlineShapeFeatureCollection(shapes, null), core.onlineShapeFeatureCollection(shapes, null));
+assert.equal(
+  data.features.find((feature) => feature.id === `${arrow.id}-arrowhead`).properties.featureKind,
+  'arrowhead',
+);
+assert.equal(
+  core.onlineShapeFeatureCollection([{ ...arrow, shapeArrowheadEnabled: false }], null).features.length,
+  1,
+);
+assert.deepEqual(
+  core.onlineShapeFeatureCollection(shapes, null),
+  core.onlineShapeFeatureCollection(shapes, null),
+);
 
 const timelineProject = core.createProject('Shape timeline');
 const timelineArrow = { ...structuredClone(arrow), id: 'shape-timeline-arrow', visible: true };
 const timelineCircle = { ...structuredClone(shapes[3]), id: 'shape-timeline-circle', visible: true };
 timelineProject.layers = [timelineArrow, timelineCircle];
 const timelineCamera = { x: 0, y: 0, zoom: 4, bearing: 35, pitch: 55 };
-const timelineViewA = core.createView('Shape A', timelineProject.layers, timelineCamera, timelineProject.layers);
+const timelineViewA = core.createView(
+  'Shape A',
+  timelineProject.layers,
+  timelineCamera,
+  timelineProject.layers,
+);
 const timelineViewB = core.createView('Shape B', [timelineCircle], timelineCamera, timelineProject.layers);
 timelineViewA.holdDuration = 3;
 timelineViewB.holdDuration = 2;
@@ -174,11 +245,7 @@ timelineViewA.layerConfigs[timelineArrow.id].animation = {
   shapeOrientation: 'face-camera',
 };
 timelineProject.views = [timelineViewA, timelineViewB];
-const timelineTransition = core.createTransition(
-  timelineViewA.id,
-  timelineViewB.id,
-  timelineProject.layers,
-);
+const timelineTransition = core.createTransition(timelineViewA.id, timelineViewB.id, timelineProject.layers);
 timelineTransition.duration = 2;
 timelineTransition.layerConfigs[timelineArrow.id] = {
   included: true,
@@ -250,7 +317,8 @@ for (const appearType of ['fade', 'pop', 'drop']) {
     .evaluateProjectAtTime(timelineProject, 1)
     .layers.find((layer) => layer.id === timelineArrow.id);
   assert.ok(evaluated.opacity > 0 && evaluated.opacity < timelineArrow.opacity);
-  if (appearType === 'pop') assert.ok(evaluated.shapeAnimationScale > 0.85 && evaluated.shapeAnimationScale < 1);
+  if (appearType === 'pop')
+    assert.ok(evaluated.shapeAnimationScale > 0.85 && evaluated.shapeAnimationScale < 1);
   if (appearType === 'drop') assert.ok(evaluated.shapeDropOffsetY < 0);
 }
 
@@ -266,7 +334,11 @@ assert.deepEqual(
   timelineViewA.layerConfigs[timelineArrow.id].animation,
   'Shape timeline usage persists by stable Shape ID',
 );
-assert.equal(timelineProject.layers[0].shapePathProgress, undefined, 'evaluation never mutates project Shapes');
+assert.equal(
+  timelineProject.layers[0].shapePathProgress,
+  undefined,
+  'evaluation never mutates project Shapes',
+);
 
 for (const kind of kinds) {
   const pathLayer = { ...core.createShapeLayerAt(kind, 480, 270), id: `draw-${kind}` };
@@ -287,11 +359,7 @@ for (const kind of kinds) {
     core.evaluatedShapeCoordinates(partial).coordinates.length <=
       core.evaluatedShapeCoordinates(complete).coordinates.length,
   );
-  if (
-    ['rectangle', 'square', 'ellipse', 'circle', 'triangle', 'regular-polygon', 'polygon'].includes(
-      kind,
-    )
-  ) {
+  if (['rectangle', 'square', 'ellipse', 'circle', 'triangle', 'regular-polygon', 'polygon'].includes(kind)) {
     assert.equal(core.evaluatedShapeCoordinates(partial).closed, false);
     assert.equal(core.evaluatedShapeCoordinates(complete).closed, true);
     assert.deepEqual(
@@ -329,7 +397,9 @@ const closeCoordinate = (actual, expected, label) => {
   assert.ok(Math.abs(actual[0] - expected[0]) < 1e-8, `${label} longitude`);
   assert.ok(Math.abs(actual[1] - expected[1]) < 1e-8, `${label} latitude`);
 };
-const canonicalArrowEndpoints = timelineArrow.shapePoints.map(({ x, y }) => core.mapMotionWorldToLngLat(x, y));
+const canonicalArrowEndpoints = timelineArrow.shapePoints.map(({ x, y }) =>
+  core.mapMotionWorldToLngLat(x, y),
+);
 const canonicalArrowBeforeOrientationRendering = structuredClone(timelineArrow.shapePoints);
 const cameraMaps = [
   { zoom: 3, bearing: 0, pitch: 0 },
@@ -369,9 +439,18 @@ for (const shapeArrowStartAngle of [-35, 0, 35]) {
         shapePathProgress: 1,
       };
       const collection = core.onlineShapeFeatureCollection([candidate], null, cameraMap);
-      const line = collection.features.find((feature) => feature.id.endsWith('-geometry')).geometry.coordinates;
-      closeCoordinate(line[0], canonicalArrowEndpoints[0], `camera ${cameraIndex}, angle ${shapeArrowStartAngle} start`);
-      closeCoordinate(line.at(-1), canonicalArrowEndpoints[1], `camera ${cameraIndex}, angle ${shapeArrowStartAngle} end`);
+      const line = collection.features.find((feature) => feature.id.endsWith('-geometry')).geometry
+        .coordinates;
+      closeCoordinate(
+        line[0],
+        canonicalArrowEndpoints[0],
+        `camera ${cameraIndex}, angle ${shapeArrowStartAngle} start`,
+      );
+      closeCoordinate(
+        line.at(-1),
+        canonicalArrowEndpoints[1],
+        `camera ${cameraIndex}, angle ${shapeArrowStartAngle} end`,
+      );
       assert.equal(
         collection.features.some((feature) => feature.id.endsWith('-arrowhead')),
         shapeArrowheadEnabled,
@@ -389,20 +468,38 @@ const flatAgain = core.onlineShapeFeatureCollection(
   [{ ...timelineArrow, shapeOrientation: 'flat-on-map' }],
   null,
 );
-assert.deepEqual(flatAgain, flatFeatures, 'Switching back to Flat restores the exact original visual geometry.');
+assert.deepEqual(
+  flatAgain,
+  flatFeatures,
+  'Switching back to Flat restores the exact original visual geometry.',
+);
 
 for (const latitude of [0, 35, 60]) {
   const center = core.lngLatToMapMotionWorld(20, latitude);
   const centerMeters = core.shapeWorldToMercatorMeters(center.x, center.y);
   const exactCircle = core.createShapeLayerAt('circle', center.x, center.y);
-  const circleRadii = core.renderedShapeCoordinates(exactCircle).coordinates.map(([x, y]) => { const projected = core.shapeWorldToMercatorMeters(x, y); return Math.hypot(projected[0] - centerMeters[0], projected[1] - centerMeters[1]); });
+  const circleRadii = core.renderedShapeCoordinates(exactCircle).coordinates.map(([x, y]) => {
+    const projected = core.shapeWorldToMercatorMeters(x, y);
+    return Math.hypot(projected[0] - centerMeters[0], projected[1] - centerMeters[1]);
+  });
   assert.ok(Math.max(...circleRadii) - Math.min(...circleRadii) < 1e-5, `circle at ${latitude} degrees`);
   const exactSquare = core.createShapeLayerAt('square', center.x, center.y);
-  const squareMeters = core.renderedShapeCoordinates(exactSquare).coordinates.map(([x, y]) => core.shapeWorldToMercatorMeters(x, y));
-  const sideLengths = squareMeters.map((point, index) => { const next = squareMeters[(index + 1) % squareMeters.length]; return Math.hypot(next[0] - point[0], next[1] - point[1]); });
+  const squareMeters = core
+    .renderedShapeCoordinates(exactSquare)
+    .coordinates.map(([x, y]) => core.shapeWorldToMercatorMeters(x, y));
+  const sideLengths = squareMeters.map((point, index) => {
+    const next = squareMeters[(index + 1) % squareMeters.length];
+    return Math.hypot(next[0] - point[0], next[1] - point[1]);
+  });
   assert.ok(Math.max(...sideLengths) - Math.min(...sideLengths) < 1e-5, `square at ${latitude} degrees`);
-  const hexagon = core.resizeExactShape(core.createShapeLayerAt('regular-polygon', center.x, center.y), { sides: 6, radiusKm: 300 });
-  const hexRadii = hexagon.shapePoints.map((item) => { const projected = core.shapeWorldToMercatorMeters(item.x, item.y); return Math.hypot(projected[0] - centerMeters[0], projected[1] - centerMeters[1]); });
+  const hexagon = core.resizeExactShape(core.createShapeLayerAt('regular-polygon', center.x, center.y), {
+    sides: 6,
+    radiusKm: 300,
+  });
+  const hexRadii = hexagon.shapePoints.map((item) => {
+    const projected = core.shapeWorldToMercatorMeters(item.x, item.y);
+    return Math.hypot(projected[0] - centerMeters[0], projected[1] - centerMeters[1]);
+  });
   assert.ok(Math.max(...hexRadii) - Math.min(...hexRadii) < 1e-5, `hexagon at ${latitude} degrees`);
 }
 
@@ -430,8 +527,7 @@ assert.equal(
 );
 assert.match(app, /layer\.type === 'shape' && layer\.shapeKind === 'arrow'[\s\S]*Orientation/);
 assert.ok(
-  app.indexOf('className="pin-section shape-properties"') <
-    app.indexOf('data-shape-timeline-settings='),
+  app.indexOf('className="pin-section shape-properties"') < app.indexOf('data-shape-timeline-settings='),
   'canonical Shape properties are declared before View/Transition usage controls',
 );
 assert.match(app, /map-frame[\s\S]*shape-authoring-actions/);
@@ -448,6 +544,16 @@ const onlineMap = readFileSync(join(root, 'src/components/OnlineOpenFreeMap.tsx'
 assert.match(onlineMap, /shapeDraftKindRef/);
 assert.match(onlineMap, /mapmotion-shape-draft/);
 assert.match(onlineMap, /shapeDraftFeatureCollection\(shapeDraft, shapeKind, pointer\)/);
+assert.match(app, /const shapeDraftRef = useRef<ShapePoint\[\]>/);
+assert.match(app, /const finishDraggedShape = \(\) => \{/);
+assert.doesNotMatch(
+  app,
+  /setShapeDraft\(\(points\) => \{[\s\S]{0,1600}addProjectLayer/,
+  'Shape creation must not be a side effect inside a StrictMode-repeatable state updater',
+);
+for (const kind of ['rectangle', 'square', 'circle', 'ellipse', 'triangle', 'regular-polygon'])
+  assert.ok(onlineMap.includes(`'${kind}'`), `${kind} has live primitive draft geometry`);
+assert.match(onlineMap, /shapeDrawFinished = true/);
 
 // Arrow orientation is the sole timeline-global Shape animation choice.
 {
@@ -529,4 +635,6 @@ assert.match(onlineMap, /shapeDraftFeatureCollection\(shapeDraft, shapeKind, poi
   );
 }
 
-console.log('Online Shapes: editable arrows, exact primitives, ordering, persistence, and render parity passed.');
+console.log(
+  'Online Shapes: editable arrows, exact primitives, ordering, persistence, and render parity passed.',
+);

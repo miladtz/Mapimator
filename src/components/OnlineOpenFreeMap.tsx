@@ -28,8 +28,10 @@ import {
 } from '../core/onlineMapLabels';
 import {
   ensureOnlineProjectOverlays,
+  getRenderedPinVisualCenterOffset,
   loadOnlineProjectOverlayAssets,
   ONLINE_PROJECT_PIN_LAYER_ID,
+  ONLINE_PROJECT_PIN_LABEL_LAYER_ID,
   ONLINE_PROJECT_TEXT_LAYER_ID,
   ONLINE_PROJECT_TEXT_FLAT_LAYER_ID,
   ONLINE_PROJECT_SHAPE_FILL_LAYER_ID,
@@ -94,18 +96,29 @@ export const regionDraftFeatureCollection = (
 export const routeDraftFeatureCollection = (
   draft: readonly [number, number][],
   candidate?: readonly [number, number][],
+  candidates: readonly (readonly [number, number][])[] = [],
   controlPointIds: readonly string[] = [],
   selectedControlPointId?: string | null,
 ) => ({
   type: 'FeatureCollection' as const,
   features: draft.length
     ? [
-        ...((candidate?.length ?? 0) > 1 || draft.length > 1
+        ...candidates
+          .filter((geometry) => geometry.length > 1)
+          .map((geometry, sectionIndex) => ({
+            type: 'Feature' as const,
+            properties: { kind: 'candidate', sectionIndex },
+            geometry: { type: 'LineString' as const, coordinates: geometry },
+          })),
+        ...((candidate?.length ?? 0) > 1 || (!candidates.length && draft.length > 1)
           ? [
               {
                 type: 'Feature' as const,
                 properties: { kind: candidate ? 'candidate' : 'line' },
-                geometry: { type: 'LineString' as const, coordinates: candidate ?? draft },
+                geometry: {
+                  type: 'LineString' as const,
+                  coordinates: candidate?.length ? candidate : draft,
+                },
               },
             ]
           : []),
@@ -129,15 +142,38 @@ export const shapeDraftFeatureCollection = (
   kind?: ShapeKind,
   pointer?: [number, number],
 ) => {
-  const line = draft.length
-    ? pointer
-      ? kind === 'polygon'
-        ? [...draft, pointer, draft[0]]
-        : [...draft, pointer]
-      : kind === 'polygon' && draft.length > 1
-        ? [...draft, draft[0]]
-        : draft
-    : [];
+  const authored = pointer ? [...draft, pointer] : [...draft];
+  const first = authored[0];
+  const last = authored.at(-1);
+  const primitiveLine =
+    first &&
+    last &&
+    authored.length >= 2 &&
+    ['rectangle', 'square', 'circle', 'ellipse', 'triangle', 'regular-polygon'].includes(kind ?? '')
+      ? (() => {
+          const center: [number, number] = [(first[0] + last[0]) / 2, (first[1] + last[1]) / 2];
+          const rx = Math.abs(last[0] - first[0]) / 2;
+          const ry = Math.abs(last[1] - first[1]) / 2;
+          const sides = kind === 'triangle' ? 3 : kind === 'regular-polygon' ? 5 : 48;
+          if (kind === 'rectangle' || kind === 'square')
+            return [first, [last[0], first[1]], last, [first[0], last[1]], first] as [number, number][];
+          return Array.from({ length: sides + 1 }, (_, index) => {
+            const angle = -Math.PI / 2 + ((index % sides) * Math.PI * 2) / sides;
+            return [center[0] + Math.cos(angle) * rx, center[1] + Math.sin(angle) * ry] as [number, number];
+          });
+        })()
+      : undefined;
+  const line =
+    primitiveLine ??
+    (draft.length
+      ? pointer
+        ? kind === 'polygon'
+          ? [...draft, pointer, draft[0]]
+          : [...draft, pointer]
+        : kind === 'polygon' && draft.length > 1
+          ? [...draft, draft[0]]
+          : draft
+      : []);
   return {
     type: 'FeatureCollection' as const,
     features: [
@@ -175,7 +211,9 @@ interface Props {
   layers: Layer[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
+  onStatus?: (status: string) => void;
   onMovePin: (id: string, x: number, y: number) => void;
+  onMovePinLabel?: (id: string, angle: number, gap: number) => void;
   onMoveShapePoint?: (layerId: string, pointId: string, x: number, y: number) => void;
   onMoveShape?: (layerId: string, dx: number, dy: number) => void;
   onChangeImage?: (layerId: string, patch: Partial<Layer>) => void;
@@ -190,6 +228,7 @@ interface Props {
   onRoutePoint?: (point: [number, number]) => void;
   routeDraft?: [number, number][];
   routeCandidate?: [number, number][];
+  routeCandidates?: [number, number][][];
   shapeDraftKind?: ShapeKind;
   shapeDraft?: [number, number][];
   customRouteControlPointIds?: string[];
@@ -212,7 +251,9 @@ export function OnlineOpenFreeMap({
   layers,
   selectedId,
   onSelect,
+  onStatus,
   onMovePin,
+  onMovePinLabel,
   onMoveShapePoint,
   onMoveShape,
   onChangeImage,
@@ -227,6 +268,7 @@ export function OnlineOpenFreeMap({
   onRoutePoint,
   routeDraft = [],
   routeCandidate,
+  routeCandidates = [],
   shapeDraftKind,
   shapeDraft = [],
   customRouteControlPointIds = [],
@@ -252,6 +294,7 @@ export function OnlineOpenFreeMap({
   const selectedIdRef = useRef(selectedId);
   const onSelectRef = useRef(onSelect);
   const onMovePinRef = useRef(onMovePin);
+  const onMovePinLabelRef = useRef(onMovePinLabel);
   const onMoveShapePointRef = useRef(onMoveShapePoint);
   const onMoveShapeRef = useRef(onMoveShape);
   const onShapeDrawPointRef = useRef(onShapeDrawPoint);
@@ -278,8 +321,10 @@ export function OnlineOpenFreeMap({
   const appliedNavigationIdRef = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState('Loading online map...');
+  const [editorOverlayRevision, setEditorOverlayRevision] = useState(0);
   const [rtlSettled, setRtlSettled] = useState(false);
   const [rtlFailure, setRtlFailure] = useState<string | null>(null);
+  useEffect(() => onStatus?.(status), [onStatus, status]);
   cameraRef.current = camera;
   onCameraChangeRef.current = onCameraChange;
   labelLanguageRef.current = labelLanguage;
@@ -288,6 +333,7 @@ export function OnlineOpenFreeMap({
   selectedIdRef.current = selectedId;
   onSelectRef.current = onSelect;
   onMovePinRef.current = onMovePin;
+  onMovePinLabelRef.current = onMovePinLabel;
   onMoveShapePointRef.current = onMoveShapePoint;
   onMoveShapeRef.current = onMoveShape;
   onShapeDrawPointRef.current = onShapeDrawPoint;
@@ -506,6 +552,7 @@ export function OnlineOpenFreeMap({
     });
     map.on('style.load', () => {
       const generation = styleGenerationRef.current.begin();
+      setEditorOverlayRevision((revision) => revision + 1);
       const activeDefinition = basemapById(loadedStyleRef.current ?? 'liberty');
       applyBasemapBoundaryPolicy(map!, activeDefinition);
       applyBasemapLabelLanguage(map!, activeDefinition, labelLanguageRef.current, true);
@@ -520,14 +567,29 @@ export function OnlineOpenFreeMap({
       });
     });
     let movingPinId: string | null = null;
+    let movingPinLabelId: string | null = null;
     let movingShapePoint: { layerId: string; pointId: string } | null = null;
     let movingShape: { layerId: string; x: number; y: number } | null = null;
     let movingImage: {
       layerId: string;
       x: number;
       y: number;
+      initialX: number;
+      initialY: number;
       handle?: 'rotate';
     } | null = null;
+    let pendingImageChange: { layerId: string; patch: Partial<Layer> } | null = null;
+    let imageChangeFrame: number | null = null;
+    const scheduleImageChange = (layerId: string, patch: Partial<Layer>) => {
+      pendingImageChange = { layerId, patch };
+      if (imageChangeFrame !== null) return;
+      imageChangeFrame = requestAnimationFrame(() => {
+        imageChangeFrame = null;
+        const pending = pendingImageChange;
+        pendingImageChange = null;
+        if (pending) onChangeImageRef.current?.(pending.layerId, pending.patch);
+      });
+    };
     let drawingShape = false;
     let shapeDrawFinished = false;
     let movingRouteWaypoint: { layerId: string; waypointId: string } | null = null;
@@ -541,6 +603,16 @@ export function OnlineOpenFreeMap({
       event.preventDefault();
       movingPinId = id;
       pinMoved = false;
+      onSelectRef.current(id);
+      map!.dragPan.disable();
+      map!.getCanvas().style.cursor = 'grabbing';
+    });
+    map.on('mousedown', ONLINE_PROJECT_PIN_LABEL_LAYER_ID, (event) => {
+      if (!interactionEnabledRef.current || !event.features?.[0]) return;
+      const id = String(event.features[0].properties?.layerId ?? '');
+      if (!id) return;
+      event.preventDefault();
+      movingPinLabelId = id;
       onSelectRef.current(id);
       map!.dragPan.disable();
       map!.getCanvas().style.cursor = 'grabbing';
@@ -577,7 +649,8 @@ export function OnlineOpenFreeMap({
       event.preventDefault();
       const world = lngLatToMapMotionWorld(event.lngLat.lng, event.lngLat.lat);
       const layer = layersRef.current.find((candidate) => candidate.id === layerId);
-      movingImage = { layerId, x: world.x, y: world.y, handle };
+      if (!layer) return;
+      movingImage = { layerId, x: world.x, y: world.y, initialX: layer.x, initialY: layer.y, handle };
       imageInteractionFinished = false;
       onSelectRef.current(layerId);
       map!.dragPan.disable();
@@ -614,7 +687,13 @@ export function OnlineOpenFreeMap({
       if (!hit) return;
       event.preventDefault();
       const world = lngLatToMapMotionWorld(event.lngLat.lng, event.lngLat.lat);
-      movingImage = { layerId: hit.id, x: world.x, y: world.y };
+      movingImage = {
+        layerId: hit.id,
+        x: world.x,
+        y: world.y,
+        initialX: hit.x,
+        initialY: hit.y,
+      };
       imageInteractionFinished = false;
       onSelectRef.current(hit.id);
       map!.dragPan.disable();
@@ -672,6 +751,21 @@ export function OnlineOpenFreeMap({
       map!.getCanvas().style.cursor = 'grabbing';
     });
     map.on('mousemove', (event) => {
+      if (movingPinLabelId) {
+        const layer = layersRef.current.find((candidate) => candidate.id === movingPinLabelId);
+        if (layer?.type !== 'pin') return;
+        const anchor = map!.project(mapMotionWorldToLngLat(layer.x, layer.y));
+        const centerOffset = getRenderedPinVisualCenterOffset(
+          layer,
+          map!.getZoom(),
+          Boolean(layer.pinCustomAssetId && assetUrlsRef.current[layer.pinCustomAssetId]),
+        );
+        const dx = event.point.x - (anchor.x + centerOffset[0]);
+        const dy = event.point.y - (anchor.y + centerOffset[1]);
+        const angle = ((Math.atan2(-dy, dx) * 180) / Math.PI + 360) % 360;
+        onMovePinLabelRef.current?.(layer.id, angle, Math.min(200, Math.hypot(dx, dy)));
+        return;
+      }
       if (drawingShape) {
         const world = lngLatToMapMotionWorld(event.lngLat.lng, event.lngLat.lat);
         onShapeDrawPointRef.current?.(world);
@@ -693,18 +787,17 @@ export function OnlineOpenFreeMap({
         const layer = layersRef.current.find((candidate) => candidate.id === movingImage!.layerId);
         if (!layer) return;
         if (movingImage.handle === 'rotate')
-          onChangeImageRef.current?.(
+          scheduleImageChange(
             layer.id,
             layer.type === 'animated-media'
               ? rotateAnimatedMediaToward(layer, world)
               : rotateImageToward(layer, world),
           );
         else {
-          onChangeImageRef.current?.(layer.id, {
-            x: layer.x + world.x - movingImage.x,
-            y: layer.y + world.y - movingImage.y,
+          scheduleImageChange(layer.id, {
+            x: movingImage.initialX + world.x - movingImage.x,
+            y: movingImage.initialY + world.y - movingImage.y,
           });
-          movingImage = { ...movingImage, x: world.x, y: world.y };
         }
         return;
       }
@@ -761,6 +854,7 @@ export function OnlineOpenFreeMap({
       }
       if (
         !movingPinId &&
+        !movingPinLabelId &&
         !movingShapePoint &&
         !movingShape &&
         !movingImage &&
@@ -768,8 +862,16 @@ export function OnlineOpenFreeMap({
         !movingCustomControlId
       )
         return;
-      if (movingImage) imageInteractionFinished = true;
+      if (movingImage) {
+        imageInteractionFinished = true;
+        if (imageChangeFrame !== null) cancelAnimationFrame(imageChangeFrame);
+        imageChangeFrame = null;
+        const pending = pendingImageChange;
+        pendingImageChange = null;
+        if (pending) onChangeImageRef.current?.(pending.layerId, pending.patch);
+      }
       movingPinId = null;
+      movingPinLabelId = null;
       movingShapePoint = null;
       movingShape = null;
       movingImage = null;
@@ -897,6 +999,7 @@ export function OnlineOpenFreeMap({
     return () => {
       resizeObserver.disconnect();
       if (cameraSyncFrame !== null) cancelAnimationFrame(cameraSyncFrame);
+      if (imageChangeFrame !== null) cancelAnimationFrame(imageChangeFrame);
       map?.off('move', scheduleCameraSync);
       map?.off('moveend', finishCameraSync);
       mapRef.current = null;
@@ -980,7 +1083,7 @@ export function OnlineOpenFreeMap({
           'circle-stroke-width': 2,
         },
       });
-  }, [regionDraft]);
+  }, [editorOverlayRevision, regionDraft]);
 
   useLayoutEffect(() => {
     const map = mapRef.current;
@@ -989,6 +1092,7 @@ export function OnlineOpenFreeMap({
     const data = routeDraftFeatureCollection(
       routeDraft,
       routeCandidate,
+      routeCandidates,
       customRouteControlPointIds,
       selectedCustomRouteControlPointId,
     );
@@ -1035,7 +1139,14 @@ export function OnlineOpenFreeMap({
       });
     for (const layerId of [`${id}-line`, `${id}-points`, `${id}-labels`])
       if (map.getLayer(layerId)) map.moveLayer(layerId);
-  }, [customRouteControlPointIds, routeCandidate, routeDraft, selectedCustomRouteControlPointId]);
+  }, [
+    customRouteControlPointIds,
+    editorOverlayRevision,
+    routeCandidate,
+    routeCandidates,
+    routeDraft,
+    selectedCustomRouteControlPointId,
+  ]);
 
   useLayoutEffect(() => {
     const map = mapRef.current;
@@ -1070,7 +1181,7 @@ export function OnlineOpenFreeMap({
         },
       });
     for (const layerId of [`${id}-line`, `${id}-points`]) if (map.getLayer(layerId)) map.moveLayer(layerId);
-  }, [shapeDraft, shapeDraftKind]);
+  }, [editorOverlayRevision, shapeDraft, shapeDraftKind]);
 
   useLayoutEffect(() => {
     const map = mapRef.current;
@@ -1200,7 +1311,7 @@ export function OnlineOpenFreeMap({
           </button>
         </div>
       </div>
-      <div className="online-map-status">{rtlStatus ?? error ?? status}</div>
+      {(rtlStatus || error) && <div className="online-map-status">{rtlStatus ?? error}</div>}
     </div>
   );
 }

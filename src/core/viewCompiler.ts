@@ -463,7 +463,10 @@ const applyActiveAppearEvents = (
     const routeSegmentAnimations = { ...(currentAnimation.routeSegmentAnimations ?? {}) };
     let hasActiveRouteEvent = false;
     for (const section of layer.routeSegments ?? []) {
-      for (let index = currentIndex; index >= 0; index -= 1) {
+      // Oldest still-active Section event owns the Section until completion.
+      // Walking forward makes direct/reverse seek independent of playback history
+      // and prevents a later boundary from interrupting a long Draw/Fade event.
+      for (let index = 0; index <= currentIndex; index += 1) {
         const candidate = segments[index];
         const candidateAnimation = segmentAnimation(candidate, layer.id);
         const timing = candidateAnimation?.routeSegmentAnimations?.[section.id];
@@ -471,7 +474,7 @@ const applyActiveAppearEvents = (
         const uninterrupted = segments
           .slice(index, currentIndex + 1)
           .every((part) => routeSectionIncluded(part, layer.id, section.id));
-        if (!uninterrupted || time >= candidate.start + routeAppearCompleteTime(timing)) break;
+        if (!uninterrupted || time >= candidate.start + routeAppearCompleteTime(timing)) continue;
         routeSegmentAnimations[section.id] = {
           ...timing,
           included:

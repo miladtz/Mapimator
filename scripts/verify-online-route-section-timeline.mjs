@@ -223,6 +223,7 @@ for (const token of [
   'Exists in this',
   'Draw Route',
   'Apply to all sections',
+  'Deselect Others',
   'onSetDerivedMembership',
   'Layer exists in this',
 ])

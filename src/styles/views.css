@@ -203,6 +203,26 @@
   border-color: #e8533e;
   background: #29394b;
 }
+.view-card.drop-target {
+  box-shadow: inset 3px 0 0 #65d7ff;
+}
+.view-drag-handle {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  z-index: 3;
+  width: 25px;
+  min-width: 25px;
+  height: 22px;
+  padding: 0;
+  cursor: grab;
+  color: #b8c9d8;
+  background: rgba(10, 18, 27, 0.82);
+  border: 1px solid #40556a;
+}
+.view-drag-handle:active {
+  cursor: grabbing;
+}
 .view-thumb {
   position: relative;
   display: block;

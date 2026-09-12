@@ -298,14 +298,18 @@ export const setCustomRoutePathShape = (
       };
 };
 
-export const convertMaritimeSectionToCustom = (draft: RoutePlannerDraft, sectionId: string) => {
+/** Converts an already-calculated provider Section to an editable deterministic Custom path. */
+export const convertCalculatedSectionToCustom = (draft: RoutePlannerDraft, sectionId: string) => {
   const section = draft.sections.find((candidate) => candidate.id === sectionId);
   const plan =
     section?.plans.find((candidate) => candidate.id === section.selectedPlanId) ?? section?.plans[0];
-  if (!section || section.pathType !== 'maritime' || !plan) return draft;
+  if (!section || !['road', 'maritime'].includes(section.pathType) || !plan) return draft;
   const converted = setRoutePlannerSectionPathType(draft, sectionId, 'custom');
   return setCustomRouteSection(converted, sectionId, customRouteSettingsFromGeometry(plan.geometry));
 };
+
+/** @deprecated Use convertCalculatedSectionToCustom. */
+export const convertMaritimeSectionToCustom = convertCalculatedSectionToCustom;
 
 export const moveStop = (
   draft: RoutePlannerDraft,

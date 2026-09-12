@@ -133,7 +133,7 @@ import {
   setCustomRoutePathShape,
   setCustomRouteSection,
   addRoutePlannerStop,
-  convertMaritimeSectionToCustom,
+  convertCalculatedSectionToCustom,
   promoteCustomControlsToStops,
   type AirModel,
   type RoutePickTarget,
@@ -348,6 +348,8 @@ export function App() {
   const [shapeToolOpen, setShapeToolOpen] = useState(false);
   const [shapeKindToPlace, setShapeKindToPlace] = useState<ShapeKind>('rectangle');
   const [shapeDraft, setShapeDraft] = useState<ShapePoint[]>([]);
+  const shapeDraftRef = useRef<ShapePoint[]>([]);
+  shapeDraftRef.current = shapeDraft;
   const [regionDraft, setRegionDraft] = useState<LngLat[]>([]);
   const [routeDraft, setRouteDraft] = useState<RoutePoint[]>([]);
   const [routePlanner, setRoutePlanner] = useState<RoutePlannerDraft | null>(null);
@@ -373,6 +375,7 @@ export function App() {
   const [recentLocations, setRecentLocations] = useState<SearchResult[]>([]);
   const [searchNavigation, setSearchNavigation] = useState<{ id: number; camera: CameraState } | null>(null);
   const [draggedViewId, setDraggedViewId] = useState<string | null>(null);
+  const [viewDropTargetId, setViewDropTargetId] = useState<string | null>(null);
   /** Editor-only temporary layer hiding (eye). Never persisted, never affects Preview/Export. */
   const [eyeHidden, setEyeHidden] = useState<Record<string, boolean>>({});
   const [allEyesHidden, setAllEyesHidden] = useState(false);
@@ -385,6 +388,7 @@ export function App() {
     totalFrames: 0,
     percentage: 0,
   });
+  const [exportPanelDismissed, setExportPanelDismissed] = useState(false);
   const [customFrameDraft, setCustomFrameDraft] = useState<{ width: string; height: string } | null>(null);
   const [portableBusy, setPortableBusy] = useState(false);
   const [projectFilePath, setProjectFilePath] = useState<string | null>(null);
@@ -995,6 +999,49 @@ export function App() {
     setPlacing(null);
     setNotice(`${layer.name} added — click its Properties to style it`);
   };
+  const updateDraggedShapeDraft = (point: { x: number; y: number }) => {
+    const current = shapeDraftRef.current;
+    const authored = { id: `shape-point-${crypto.randomUUID()}`, x: point.x, y: point.y };
+    const next = !current.length
+      ? [authored]
+      : shapeKindToPlace === 'free-draw'
+        ? Math.hypot(current.at(-1)!.x - point.x, current.at(-1)!.y - point.y) < 1
+          ? current
+          : [...current, authored]
+        : [current[0], authored];
+    shapeDraftRef.current = next;
+    setShapeDraft(next);
+  };
+  const finishDraggedShape = () => {
+    const points = shapeDraftRef.current;
+    shapeDraftRef.current = [];
+    setShapeDraft([]);
+    if (points.length < 2) return;
+    const first = points[0];
+    const last = points.at(-1)!;
+    const center = { x: (first.x + last.x) / 2, y: (first.y + last.y) / 2 };
+    const layer = createShapeLayerAt(shapeKindToPlace, center.x, center.y);
+    if (shapeKindToPlace === 'triangle')
+      layer.shapePoints = [
+        { ...first, x: center.x, y: first.y },
+        { ...last },
+        { id: `shape-point-${crypto.randomUUID()}`, x: first.x, y: last.y },
+      ];
+    else if (shapeKindToPlace === 'regular-polygon')
+      layer.shapePoints = Array.from({ length: 5 }, (_, index) => {
+        const angle = -Math.PI / 2 + (index * Math.PI * 2) / 5;
+        return {
+          id: `shape-point-${crypto.randomUUID()}`,
+          x: center.x + (Math.cos(angle) * Math.abs(last.x - first.x)) / 2,
+          y: center.y + (Math.sin(angle) * Math.abs(last.y - first.y)) / 2,
+        };
+      });
+    else layer.shapePoints = points;
+    updateProject((current) => addProjectLayer(current, layer));
+    selectLayer(layer.id);
+    setPlacing(null);
+    setNotice(`${layer.name} added`);
+  };
   const addLayer = async (type: LayerType) => {
     setPlacing(null);
     setPendingMediaPlacement(null);
@@ -1074,7 +1121,7 @@ export function App() {
     selectLayer(layer.id);
     setNotice(`${layer.name} added`);
   };
-  const save = async () => {
+  const save = async (forceChoosePath = false) => {
     if (playbackState !== 'stopped') {
       setNotice('Stop Preview before saving the project.');
       return;
@@ -1087,7 +1134,7 @@ export function App() {
       await validateProjectAssetStorage(next);
       const serialized = serializeCanonicalProject(next);
       const selectedPath =
-        projectFilePath ??
+        (!forceChoosePath ? projectFilePath : null) ??
         normalizeDialogPath(
           await saveFile({
             title: 'Save MapMotion Project',
@@ -1395,11 +1442,10 @@ export function App() {
       views.splice(to, 0, moved);
       const transitions = views.slice(0, -1).map((view, index) => {
         const next = views[index + 1];
-        return (
-          p.transitions.find(
-            (transition) => transition.fromViewId === view.id && transition.toViewId === next.id,
-          ) ?? createTransition(view.id, next.id, p.layers, view)
-        );
+        const outgoing = p.transitions.find((transition) => transition.fromViewId === view.id);
+        return outgoing
+          ? { ...outgoing, fromViewId: view.id, toViewId: next.id }
+          : createTransition(view.id, next.id, p.layers, view);
       });
       return { ...p, views, transitions };
     });
@@ -1977,6 +2023,7 @@ export function App() {
     if (exportAbort.current) return;
     const controller = new AbortController();
     exportAbort.current = controller;
+    setExportPanelDismissed(false);
     setExportState({ status: 'preparing', currentFrame: 0, totalFrames: 0, percentage: 0 });
     try {
       const outputPath = await saveFile({
@@ -2140,11 +2187,19 @@ export function App() {
           </button>
           <button
             className="primary"
-            onClick={save}
+            onClick={() => void save()}
             disabled={playbackState !== 'stopped'}
             title={playbackState === 'stopped' ? 'Save Project' : 'Stop Preview before saving'}
           >
             Save Project
+          </button>
+          <button
+            className="quiet"
+            onClick={() => void save(true)}
+            disabled={playbackState !== 'stopped'}
+            title="Choose a new location and make it the current project save target"
+          >
+            Save As
           </button>
           <label className="export-preset">
             <span>H.264 MP4 · Auto encoder</span>
@@ -2317,7 +2372,6 @@ export function App() {
           <div className="canvas-head">
             <div>
               <span className="eyebrow">{words.map}</span>
-              <span className="map-status">● {notice}</span>
             </div>
             <div className="style-switch">
               <select
@@ -2528,7 +2582,11 @@ export function App() {
                     allEyesHidden
                       ? []
                       : editingScene.layers
-                          .filter((layer) => !eyeHidden[layer.id])
+                          .filter(
+                            (layer) =>
+                              !eyeHidden[layer.id] &&
+                              !(routePlanner && editingRouteLayerId && layer.id === editingRouteLayerId),
+                          )
                           .map((layer) => ({
                             ...layer,
                             visible: true,
@@ -2549,7 +2607,11 @@ export function App() {
                   mapServiceSettings={mapServiceSettings ?? EMPTY_MAP_SERVICE_SETTINGS}
                   selectedId={selectedId}
                   onSelect={selectLayer}
+                  onStatus={setNotice}
                   onMovePin={(id, x, y) => updateLayer(id, { x, y })}
+                  onMovePinLabel={(id, angle, gap) =>
+                    updateLayer(id, { pinLabelAngle: angle, pinLabelGap: gap })
+                  }
                   onMoveShapePoint={(layerId, pointId, x, y) => {
                     const layer = projectRef.current.layers.find((candidate) => candidate.id === layerId);
                     if (layer?.type !== 'shape') return;
@@ -2571,24 +2633,13 @@ export function App() {
                   }}
                   onChangeImage={(layerId, patch) => updateLayer(layerId, patch)}
                   onShapeDrawPoint={
-                    placing === 'shape' && shapeKindToPlace === 'free-draw'
-                      ? (point) =>
-                          setShapeDraft((current) => {
-                            const last = current[current.length - 1];
-                            if (last && Math.hypot(last.x - point.x, last.y - point.y) < 1) return current;
-                            return [
-                              ...current,
-                              { id: `shape-point-${crypto.randomUUID()}`, x: point.x, y: point.y },
-                            ];
-                          })
+                    placing === 'shape' && !['polyline', 'polygon'].includes(shapeKindToPlace)
+                      ? updateDraggedShapeDraft
                       : undefined
                   }
                   onShapeDrawFinish={
-                    placing === 'shape' && shapeKindToPlace === 'free-draw'
-                      ? () =>
-                          requestAnimationFrame(() =>
-                            window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })),
-                          )
+                    placing === 'shape' && !['polyline', 'polygon'].includes(shapeKindToPlace)
+                      ? finishDraggedShape
                       : undefined
                   }
                   onMoveRouteWaypoint={
@@ -2689,13 +2740,17 @@ export function App() {
                       ? [...shapeDraft, shapeDraft[0]].map((point) =>
                           mapMotionWorldToLngLat(point.x, point.y),
                         )
-                      : undefined) ??
-                    customRouteCandidate ??
-                    routePlanner?.sections.flatMap((section) => {
-                      const plan =
-                        section.plans.find((item) => item.id === section.selectedPlanId) ?? section.plans[0];
-                      return plan?.geometry ?? [];
-                    })
+                      : undefined) ?? customRouteCandidate
+                  }
+                  routeCandidates={
+                    routePlanner
+                      ? routePlanner.sections.flatMap((section) => {
+                          const plan =
+                            section.plans.find((item) => item.id === section.selectedPlanId) ??
+                            section.plans[0];
+                          return plan?.geometry?.length ? [plan.geometry] : [];
+                        })
+                      : []
                   }
                   customRouteControlPointIds={(
                     customRouteSession?.draft.controlPoints ?? pathStopSection?.customSettings?.controlPoints
@@ -2900,8 +2955,17 @@ export function App() {
             )}
             <div className="map-hint">{words.panZoom}</div>
           </div>
-          {exportState.status !== 'idle' && (
+          {exportState.status !== 'idle' && !exportPanelDismissed && (
             <div className={`export-status export-status-${exportState.status}`} aria-live="polite">
+              <button
+                type="button"
+                className="export-status-close"
+                aria-label="Dismiss export status"
+                title="Dismiss export status"
+                onClick={() => setExportPanelDismissed(true)}
+              >
+                ×
+              </button>
               <div>
                 <strong>{exportStatusLabel(exportState.status)}</strong>
                 <span>
@@ -2922,6 +2986,10 @@ export function App() {
               {exportIsActive && <button onClick={cancelExport}>Cancel</button>}
             </div>
           )}
+          <div className="application-status-line" role="status" aria-live="polite">
+            <span className="status-dot" />
+            <span>{notice}</span>
+          </div>
         </section>
         {locationSearchOpen && (
           <SearchPanel
@@ -3041,8 +3109,8 @@ export function App() {
                 setPathStopDrawer(null);
               }}
               onClosePathStops={() => setPathStopDrawer(null)}
-              onConvertMaritime={(sectionId) =>
-                setRoutePlanner((current) => current && convertMaritimeSectionToCustom(current, sectionId))
+              onConvertCalculated={(sectionId) =>
+                setRoutePlanner((current) => current && convertCalculatedSectionToCustom(current, sectionId))
               }
               customRouteSession={customRouteSession}
               onBeginCustomPath={beginCustomRoutePath}
@@ -3333,9 +3401,8 @@ export function App() {
                   <Fragment key={view.id}>
                     <div
                       data-view-id={view.id}
-                      className={`view-card ${activeViewId === view.id ? 'active' : ''}`}
+                      className={`view-card ${activeViewId === view.id ? 'active' : ''} ${viewDropTargetId === view.id && draggedViewId !== view.id ? 'drop-target' : ''}`}
                       style={{ flex: `0 0 ${cardWidth}px` }}
-                      draggable
                       tabIndex={0}
                       onClick={() => {
                         if (playbackState !== 'stopped') return;
@@ -3372,14 +3439,35 @@ export function App() {
                           scrollViewCardIntoView(target.id);
                         });
                       }}
-                      onDragStart={() => setDraggedViewId(view.id)}
+                      onDragEnter={() => setViewDropTargetId(view.id)}
                       onDragOver={(event) => event.preventDefault()}
+                      onDragEnd={() => {
+                        setDraggedViewId(null);
+                        setViewDropTargetId(null);
+                      }}
                       onDrop={(event) => {
                         event.preventDefault();
                         if (draggedViewId) reorderView(draggedViewId, view.id);
                         setDraggedViewId(null);
+                        setViewDropTargetId(null);
                       }}
                     >
+                      <button
+                        type="button"
+                        className="view-drag-handle"
+                        draggable
+                        aria-label={`Drag ${view.name} to reorder`}
+                        title="Drag to reorder View"
+                        onClick={(event) => event.stopPropagation()}
+                        onDragStart={(event) => {
+                          event.stopPropagation();
+                          event.dataTransfer.effectAllowed = 'move';
+                          event.dataTransfer.setData('text/plain', view.id);
+                          setDraggedViewId(view.id);
+                        }}
+                      >
+                        ⋮⋮
+                      </button>
                       <span
                         className="view-thumb"
                         style={{ background: view.thumbnailColor, aspectRatio: frameFormat.aspectRatio }}
@@ -3682,7 +3770,9 @@ function OnlinePreviewMap({
   mapServiceSettings,
   selectedId,
   onSelect,
+  onStatus,
   onMovePin,
+  onMovePinLabel,
   onMoveShapePoint,
   onMoveShape,
   onChangeImage,
@@ -3697,6 +3787,7 @@ function OnlinePreviewMap({
   onRoutePoint,
   routeDraft,
   routeCandidate,
+  routeCandidates,
   shapeDraftKind,
   shapeDraft,
   customRouteControlPointIds,
@@ -3718,7 +3809,9 @@ function OnlinePreviewMap({
   mapServiceSettings: MapServiceCredentials;
   selectedId: string | null;
   onSelect: (id: string | null) => void;
+  onStatus?: (status: string) => void;
   onMovePin: (id: string, x: number, y: number) => void;
+  onMovePinLabel?: (id: string, angle: number, gap: number) => void;
   onMoveShapePoint?: (layerId: string, pointId: string, x: number, y: number) => void;
   onMoveShape?: (layerId: string, dx: number, dy: number) => void;
   onChangeImage?: (layerId: string, patch: Partial<Layer>) => void;
@@ -3733,6 +3826,7 @@ function OnlinePreviewMap({
   onRoutePoint?: (point: [number, number]) => void;
   routeDraft?: [number, number][];
   routeCandidate?: [number, number][];
+  routeCandidates?: [number, number][][];
   shapeDraftKind?: ShapeKind;
   shapeDraft?: [number, number][];
   customRouteControlPointIds?: string[];
@@ -3757,7 +3851,9 @@ function OnlinePreviewMap({
       layers={previewState?.layers ?? editingLayers}
       selectedId={playbackState === 'stopped' ? selectedId : null}
       onSelect={onSelect}
+      onStatus={onStatus}
       onMovePin={onMovePin}
+      onMovePinLabel={onMovePinLabel}
       onMoveShapePoint={onMoveShapePoint}
       onMoveShape={onMoveShape}
       onChangeImage={onChangeImage}
@@ -3772,6 +3868,7 @@ function OnlinePreviewMap({
       onRoutePoint={onRoutePoint}
       routeDraft={playbackState === 'stopped' ? routeDraft : []}
       routeCandidate={playbackState === 'stopped' ? routeCandidate : undefined}
+      routeCandidates={playbackState === 'stopped' ? routeCandidates : []}
       shapeDraftKind={playbackState === 'stopped' ? shapeDraftKind : undefined}
       shapeDraft={playbackState === 'stopped' ? shapeDraft : []}
       customRouteControlPointIds={playbackState === 'stopped' ? customRouteControlPointIds : []}
@@ -5393,6 +5490,25 @@ function RouteSettings({
                     onChange={(event) => patchSegmentTiming(segment.id, { included: event.target.checked })}
                   />
                 </label>
+                <button
+                  type="button"
+                  className="quiet"
+                  title="Keep this and every preceding Section; turn later Sections off"
+                  onClick={() => {
+                    let next = timelineContext.anim;
+                    for (
+                      let sectionIndex = 0;
+                      sectionIndex < (layer.routeSegments ?? []).length;
+                      sectionIndex += 1
+                    )
+                      next = patchRouteSectionTimelineUsage(next, layer.routeSegments![sectionIndex].id, {
+                        included: sectionIndex <= index,
+                      });
+                    timelineContext.onPatchAnim({ routeSegmentAnimations: next?.routeSegmentAnimations });
+                  }}
+                >
+                  Deselect Others
+                </button>
                 <label>
                   Appear
                   <select
@@ -5774,7 +5890,7 @@ function RoutePlannerPanel({
   onTogglePathStop,
   onApplyPathStops,
   onClosePathStops,
-  onConvertMaritime,
+  onConvertCalculated,
   customRouteSession,
   onBeginCustomPath,
   onFinishCustomPath,
@@ -5802,7 +5918,7 @@ function RoutePlannerPanel({
   onTogglePathStop: (id: string) => void;
   onApplyPathStops: () => void;
   onClosePathStops: () => void;
-  onConvertMaritime: (sectionId: string) => void;
+  onConvertCalculated: (sectionId: string) => void;
   customRouteSession: {
     sectionId: string;
     draft: CustomRouteGeneratorSettings;
@@ -6086,9 +6202,9 @@ function RoutePlannerPanel({
                   · {plan.routeSummary}
                 </small>
               )}
-              {section.pathType === 'maritime' && plan && (
-                <button type="button" onClick={() => onConvertMaritime(section.id)}>
-                  Convert to Custom Path
+              {(section.pathType === 'road' || section.pathType === 'maritime') && plan && (
+                <button type="button" onClick={() => onConvertCalculated(section.id)}>
+                  Turn to Custom
                 </button>
               )}
               {section.error && <small className="route-planner-error">{section.error}</small>}
@@ -7306,13 +7422,14 @@ function Inspector({
                 <input
                   type="number"
                   min="-50"
-                  max="40"
+                  max="200"
                   step="0.5"
                   value={layer.pinLabelGap ?? 5}
                   onWheel={(event) => event.stopPropagation()}
                   onChange={(event) => {
                     const value = Number(event.target.value);
-                    if (Number.isFinite(value)) onChange({ pinLabelGap: Math.max(-50, Math.min(40, value)) });
+                    if (Number.isFinite(value))
+                      onChange({ pinLabelGap: Math.max(-50, Math.min(200, value)) });
                   }}
                 />
               </label>

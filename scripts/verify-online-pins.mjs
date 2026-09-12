@@ -288,7 +288,10 @@ assert.match(app, /aria-label="Pin label size value"/);
 assert.match(app, /aria-label="Pin label opacity percentage"/);
 assert.match(app, /aria-label="Pin label border width"/);
 assert.match(app, /aria-label="Pin label angle"/);
-assert.match(app, /min="-50"[\s\S]*max="40"[\s\S]*pinLabelGap/);
+assert.match(app, /min="-50"[\s\S]*max="200"[\s\S]*pinLabelGap/);
+assert.match(interactive, /ONLINE_PROJECT_PIN_LABEL_LAYER_ID/);
+assert.match(interactive, /onMovePinLabelRef/);
+assert.match(interactive, /Math\.min\(200, Math\.hypot\(dx, dy\)\)/);
 assert.doesNotMatch(app, /Label position[\s\S]{0,300}<select/);
 assert.doesNotMatch(
   app,

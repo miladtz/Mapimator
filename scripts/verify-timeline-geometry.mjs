@@ -119,6 +119,15 @@ assert.match(css, /\.view-transition[\s\S]*?flex-shrink: 0/);
 assert.match(css, /\.view-card[\s\S]*?flex-shrink: 0/);
 assert.match(css, /\.scrub-playhead::after/);
 assert.match(css, /cursor: ew-resize/);
+assert.match(css, /\.view-drag-handle/);
+assert.match(css, /cursor: grab/);
+assert.match(css, /\.view-card\.drop-target/);
+assert.match(app, /aria-label=\{`Drag \$\{view\.name\} to reorder`\}/);
+assert.match(app, /event\.dataTransfer\.effectAllowed = 'move'/);
+assert.match(
+  app,
+  /const outgoing = p\.transitions\.find\(\(transition\) => transition\.fromViewId === view\.id\)/,
+);
 assert.match(app, /className="timeline-duration-input"/);
 assert.match(app, /className=\{timeline \? 'timeline-duration-input' : undefined\}/);
 const durationWheelBypass = app.indexOf("event.target.closest('.timeline-duration-input')");
