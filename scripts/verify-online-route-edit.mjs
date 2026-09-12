@@ -96,16 +96,12 @@ assert.deepEqual(
 
 edit = {
   ...edit,
-  sections: edit.sections.map((section) =>
-    section.plans.length
-      ? section
-      : {
-          ...section,
-          status: 'ready',
-          plans: [{ ...draft.sections[0].plans[0], id: `updated-${section.id}` }],
-          selectedPlanId: `updated-${section.id}`,
-        },
-  ),
+  sections: edit.sections.map((section) => ({
+    ...section,
+    status: 'ready',
+    plans: [{ ...draft.sections[0].plans[0], id: `updated-${section.id}` }],
+    selectedPlanId: `updated-${section.id}`,
+  })),
 };
 const updated = route.routeLayerFromSections(edit, accepted);
 assert.equal(updated.id, accepted.id);

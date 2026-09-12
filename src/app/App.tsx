@@ -118,6 +118,8 @@ import {
   updateRoutePoint,
 } from '../core/routes';
 import {
+  applyRouteSectionCalculationResult,
+  canUseRoutePlannerDraft,
   createRoutePlannerDraft,
   invalidateRoutePlans,
   moveStop,
@@ -128,15 +130,22 @@ import {
   routeLayerFromSections,
   routePlannerDraftFromLayer,
   routePlannerDraftGeometries,
+  routePathStopCandidateGroups,
+  routePlannerBlockingSummary,
+  routePlannerSectionInputSignature,
+  routePlannerSectionsNeedingCalculation,
   replaceAcceptedRouteLayer,
   routePlannerPoints,
   setRoutePlannerSectionPathType,
   setRoutePlannerPoint,
+  setRoutePlannerPreference,
   setCustomRoutePathShape,
   setCustomRouteSection,
   addRoutePlannerStop,
   convertCalculatedSectionToCustom,
-  promoteCustomControlsToStops,
+  promoteSelectedCustomControlsToStops,
+  toggleRoutePathStopCandidate,
+  type RoutePathStopCandidate,
   type AirModel,
   type RoutePickTarget,
   type RoutePlannerDraft,
@@ -363,10 +372,9 @@ export function App() {
     draft: CustomRouteGeneratorSettings;
     selectedControlPointId: string | null;
   } | null>(null);
-  const [pathStopDrawer, setPathStopDrawer] = useState<{ sectionId: string; selectedIds: string[] } | null>(
-    null,
-  );
+  const [pathStopDrawer, setPathStopDrawer] = useState<{ selectedIds: string[] } | null>(null);
   const routeRequestRef = useRef<AbortController | null>(null);
+  const routeCalculationGenerationRef = useRef(0);
   const [routingSettings, setRoutingSettings] = useState<RoutingServiceSettings>(EMPTY_ROUTING_SETTINGS);
   const [routingSettingsOpen, setRoutingSettingsOpen] = useState(false);
   const [mapServiceSettings, setMapServiceSettings] = useState<MapServiceCredentials | null>(null);
@@ -492,6 +500,18 @@ export function App() {
     const onKey = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape') {
         if (customRouteSession) {
+          setRoutePlanner((current) =>
+            current
+              ? {
+                  ...current,
+                  sections: current.sections.map((section) =>
+                    section.id === customRouteSession.sectionId
+                      ? { ...section, status: section.plans.length ? 'ready' : 'editing' }
+                      : section,
+                  ),
+                }
+              : current,
+          );
           setCustomRouteSession(null);
           setNotice('Custom path edit cancelled');
           return;
@@ -1789,110 +1809,95 @@ export function App() {
       );
       return;
     }
+    const snapshot = routePlanner;
+    const targets = onlySectionId
+      ? snapshot.sections.filter((section) => section.id === onlySectionId && section.pathType !== 'custom')
+      : routePlannerSectionsNeedingCalculation(snapshot);
+    if (!targets.length) return;
     routeRequestRef.current?.abort();
     const controller = new AbortController();
+    const generation = ++routeCalculationGenerationRef.current;
     routeRequestRef.current = controller;
-    const snapshot = routePlanner;
-    setRoutePlanner({
-      ...snapshot,
-      status: 'calculating',
-      error: undefined,
-    });
-    try {
-      const points = new Map(routePlannerPoints(snapshot).map((point) => [point.id, point]));
-      let sections = [...snapshot.sections];
-      let customPathRequired = false;
-      let failed = false;
-      for (const section of sections) {
-        if (onlySectionId && section.id !== onlySectionId) continue;
-        if (section.pathType === 'custom') {
-          if (section.status !== 'ready' || !section.plans.length) {
-            customPathRequired = true;
-            sections = sections.map((item) =>
-              item.id === section.id
-                ? { ...item, status: 'custom' as const, error: 'Custom path required' }
-                : item,
-            );
+    const signatures = new Map(
+      targets.map((section) => [section.id, routePlannerSectionInputSignature(snapshot, section.id)]),
+    );
+    const results = new Map<string, RoutePlannerDraft['sections'][number]>();
+    setRoutePlanner((current) =>
+      current
+        ? {
+            ...current,
+            status: 'calculating',
+            error: undefined,
+            sections: current.sections.map((section) =>
+              signatures.has(section.id) ? { ...section, status: 'calculating', error: undefined } : section,
+            ),
           }
-          continue;
-        }
-        try {
-          const source = points.get(section.startPointId);
-          const destination = points.get(section.endPointId);
-          if (!source || !destination) throw new Error('Route Section endpoints are missing.');
-          setRoutePlanner(
-            (current) =>
-              current && {
-                ...current,
-                sections: current.sections.map((item) =>
-                  item.id === section.id ? { ...item, status: 'calculating' } : item,
-                ),
-              },
-          );
-          let plans = planLocalSection(source, destination, section.pathType, section.airModel);
-          if (!plans.length) {
-            const provider = plannerForPathType(section.pathType, routingSettings);
-            if (!provider) throw new Error('Road routing is not configured.');
-            plans = await provider.planRoute(
-              { source, destination, pathType: section.pathType, preference: snapshot.preference },
-              controller.signal,
-            );
-          }
-          sections = sections.map((item) =>
-            item.id === section.id
-              ? { ...item, plans, selectedPlanId: plans[0]?.id, status: 'ready' as const, error: undefined }
-              : item,
-          );
-        } catch (sectionError) {
-          if (controller.signal.aborted) return;
-          failed = true;
-          const message = sectionError instanceof Error ? sectionError.message : String(sectionError);
-          sections = sections.map((item) =>
-            item.id === section.id ? { ...item, status: 'error' as const, error: message } : item,
+        : current,
+    );
+    const points = new Map(routePlannerPoints(snapshot).map((point) => [point.id, point]));
+    for (const section of targets) {
+      try {
+        const source = points.get(section.startPointId);
+        const destination = points.get(section.endPointId);
+        if (!source || !destination) throw new Error('Route Section endpoints are missing.');
+        let plans = planLocalSection(source, destination, section.pathType, section.airModel);
+        if (!plans.length) {
+          const provider = plannerForPathType(section.pathType, routingSettings);
+          if (!provider) throw new Error('Road routing is not configured.');
+          plans = await provider.planRoute(
+            { source, destination, pathType: section.pathType, preference: snapshot.preference },
+            controller.signal,
           );
         }
+        results.set(section.id, {
+          ...section,
+          plans,
+          selectedPlanId: plans[0]?.id,
+          status: 'ready',
+          error: undefined,
+        });
+      } catch (sectionError) {
+        if (controller.signal.aborted || generation !== routeCalculationGenerationRef.current) return;
+        results.set(section.id, {
+          ...section,
+          status: 'error',
+          error: sectionError instanceof Error ? sectionError.message : String(sectionError),
+        });
       }
-      if (controller.signal.aborted) return;
-      setRoutePlanner(
-        (current) =>
-          current && {
-            ...current,
-            sections,
-            status: failed
-              ? 'error'
-              : sections.every((section) => section.status === 'ready')
-                ? 'ready'
-                : 'idle',
-            error: customPathRequired
-              ? 'Custom path required'
-              : failed
-                ? 'One or more Route Sections failed.'
-                : undefined,
-          },
-      );
-      setNotice(
-        customPathRequired
-          ? 'Custom path required — draw each Custom section on the map'
-          : onlySectionId
-            ? 'Route Section calculated'
-            : 'All Route Sections calculated',
-      );
-    } catch (error) {
-      if (controller.signal.aborted) return;
-      setRoutePlanner(
-        (current) =>
-          current && {
-            ...current,
-            status: 'error',
-            error: error instanceof Error ? error.message : String(error),
-          },
-      );
     }
+    if (controller.signal.aborted || generation !== routeCalculationGenerationRef.current) return;
+    setRoutePlanner((current) => {
+      if (!current) return current;
+      let resolved = current;
+      for (const [sectionId, result] of results)
+        resolved = applyRouteSectionCalculationResult(resolved, result, signatures.get(sectionId) ?? '');
+      const sections = resolved.sections;
+      const failed = sections.some((section) => section.status === 'error');
+      return {
+        ...resolved,
+        sections,
+        status: failed ? 'error' : sections.every((section) => section.status === 'ready') ? 'ready' : 'idle',
+        error: failed ? 'One or more Route Sections failed.' : undefined,
+      };
+    });
+    setNotice(onlySectionId ? 'Route Section calculation finished' : 'Requested Route Sections calculated');
   };
   const beginCustomRoutePath = (sectionId: string) => {
     const section = routePlanner?.sections.find((candidate) => candidate.id === sectionId);
     if (!section || !routePlanner?.source || !routePlanner.destination) return;
     setRoutePickTarget(null);
+    setRoutePlanner((current) =>
+      current
+        ? {
+            ...current,
+            sections: current.sections.map((candidate) =>
+              candidate.id === sectionId
+                ? { ...candidate, status: 'editing' as const, error: undefined }
+                : candidate,
+            ),
+          }
+        : current,
+    );
     setCustomRouteSession({
       sectionId,
       draft: customRouteSettings(
@@ -1914,6 +1919,23 @@ export function App() {
     setPathStopDrawer(null);
     setNotice('Custom path ready');
   };
+  const cancelCustomRoutePath = () => {
+    if (!customRouteSession) return;
+    setRoutePlanner((current) =>
+      current
+        ? {
+            ...current,
+            sections: current.sections.map((section) =>
+              section.id === customRouteSession.sectionId
+                ? { ...section, status: section.plans.length ? 'ready' : 'editing', error: undefined }
+                : section,
+            ),
+          }
+        : current,
+    );
+    setCustomRouteSession(null);
+    setNotice('Custom path edit cancelled');
+  };
   const clearCustomRoutePath = (sectionId: string) => {
     setCustomRouteSession((session) => (session?.sectionId === sectionId ? null : session));
     setRoutePlanner(
@@ -1928,7 +1950,7 @@ export function App() {
                   customSettings: customRouteSettings(section.customSettings?.pathShape ?? 'exact'),
                   plans: [],
                   selectedPlanId: undefined,
-                  status: 'custom',
+                  status: 'editing',
                   error: undefined,
                 }
               : section,
@@ -1965,6 +1987,8 @@ export function App() {
   const usePlannedRoute = () => {
     if (!routePlanner) return;
     try {
+      if (!canUseRoutePlannerDraft(routePlanner))
+        throw new Error('Every Route Section must be Ready before Use Route.');
       const accepted = editingRouteLayerId
         ? projectRef.current.layers.find((layer) => layer.id === editingRouteLayerId)
         : undefined;
@@ -2019,19 +2043,15 @@ export function App() {
       : undefined;
   const plannerRouteCandidates = routePlanner ? routePlannerDraftGeometries(routePlanner) : [];
   const plannerRouteCandidate = plannerRouteCandidates.length === 1 ? plannerRouteCandidates[0] : undefined;
-  const pathStopSection = pathStopDrawer
-    ? routePlanner?.sections.find((section) => section.id === pathStopDrawer.sectionId)
-    : undefined;
-  const pathStopStart = pathStopSection ? customRoutePointMap.get(pathStopSection.startPointId) : undefined;
-  const pathStopEnd = pathStopSection ? customRoutePointMap.get(pathStopSection.endPointId) : undefined;
-  const pathStopCoordinates =
-    pathStopSection?.customSettings && pathStopStart && pathStopEnd
-      ? customRouteAuthoredCoordinates(
-          pathStopStart,
-          pathStopEnd,
-          pathStopSection.customSettings.controlPoints,
-        )
-      : undefined;
+  const pathStopCandidateGroups = routePlanner ? routePathStopCandidateGroups(routePlanner) : [];
+  const pathStopCandidates = pathStopDrawer
+    ? pathStopCandidateGroups.flatMap((group) =>
+        group.candidates.map((candidate) => ({
+          ...candidate,
+          selected: pathStopDrawer.selectedIds.includes(candidate.id),
+        })),
+      )
+    : [];
   const exportProof = async () => {
     if (exportAbort.current) return;
     const controller = new AbortController();
@@ -2738,7 +2758,6 @@ export function App() {
                   }
                   routeDraft={
                     customRouteDraftCoordinates ??
-                    pathStopCoordinates ??
                     (routePlanner
                       ? routePlannerPoints(routePlanner).map((point) => [point.longitude, point.latitude])
                       : routeDraft.map((point) => [point.longitude, point.latitude]))
@@ -2757,10 +2776,21 @@ export function App() {
                       ? plannerRouteCandidates
                       : []
                   }
-                  customRouteControlPointIds={(
-                    customRouteSession?.draft.controlPoints ?? pathStopSection?.customSettings?.controlPoints
-                  )?.map((point) => point.id)}
+                  customRouteControlPointIds={(customRouteSession?.draft.controlPoints ?? []).map(
+                    (point) => point.id,
+                  )}
                   selectedCustomRouteControlPointId={customRouteSession?.selectedControlPointId}
+                  routeStopCandidates={pathStopCandidates}
+                  onToggleRouteStopCandidate={(candidateId) =>
+                    setPathStopDrawer((drawer) =>
+                      drawer
+                        ? {
+                            ...drawer,
+                            selectedIds: toggleRoutePathStopCandidate(drawer.selectedIds, candidateId),
+                          }
+                        : drawer,
+                    )
+                  }
                   onCustomRoutePoint={
                     customRouteSession
                       ? (point, insertionIndex) =>
@@ -3087,15 +3117,13 @@ export function App() {
                 setLocationSearchOpen(true);
                 setLocationSearchFocusRequest((request) => request + 1);
               }}
-              onOpenPathStops={(sectionId) => setPathStopDrawer({ sectionId, selectedIds: [] })}
+              onOpenPathStops={() => setPathStopDrawer({ selectedIds: [] })}
               onTogglePathStop={(id) =>
                 setPathStopDrawer((drawer) =>
                   drawer
                     ? {
                         ...drawer,
-                        selectedIds: drawer.selectedIds.includes(id)
-                          ? drawer.selectedIds.filter((item) => item !== id)
-                          : [...drawer.selectedIds, id],
+                        selectedIds: toggleRoutePathStopCandidate(drawer.selectedIds, id),
                       }
                     : drawer,
                 )
@@ -3104,12 +3132,7 @@ export function App() {
                 if (!pathStopDrawer) return;
                 setRoutePlanner(
                   (current) =>
-                    current &&
-                    promoteCustomControlsToStops(
-                      current,
-                      pathStopDrawer.sectionId,
-                      pathStopDrawer.selectedIds,
-                    ),
+                    current && promoteSelectedCustomControlsToStops(current, pathStopDrawer.selectedIds),
                 );
                 setPathStopDrawer(null);
               }}
@@ -3120,7 +3143,7 @@ export function App() {
               customRouteSession={customRouteSession}
               onBeginCustomPath={beginCustomRoutePath}
               onFinishCustomPath={finishCustomRoutePath}
-              onCancelCustomPath={() => setCustomRouteSession(null)}
+              onCancelCustomPath={cancelCustomRoutePath}
               onClearCustomPath={clearCustomRoutePath}
               onCustomPathShape={(sectionId, pathShape) => {
                 if (customRouteSession?.sectionId === sectionId)
@@ -3823,6 +3846,7 @@ function OnlinePreviewMap({
   routeDraft,
   routeCandidate,
   routeCandidates,
+  routeStopCandidates,
   shapeDraftKind,
   shapeDraft,
   customRouteControlPointIds,
@@ -3830,6 +3854,7 @@ function OnlinePreviewMap({
   onCustomRoutePoint,
   onMoveCustomRouteControlPoint,
   onSelectCustomRouteControlPoint,
+  onToggleRouteStopCandidate,
   assetUrls,
   navigationRequest,
 }: {
@@ -3862,6 +3887,7 @@ function OnlinePreviewMap({
   routeDraft?: [number, number][];
   routeCandidate?: [number, number][];
   routeCandidates?: [number, number][][];
+  routeStopCandidates?: (RoutePathStopCandidate & { selected: boolean })[];
   shapeDraftKind?: ShapeKind;
   shapeDraft?: [number, number][];
   customRouteControlPointIds?: string[];
@@ -3869,6 +3895,7 @@ function OnlinePreviewMap({
   onCustomRoutePoint?: (point: [number, number], insertionIndex: number) => void;
   onMoveCustomRouteControlPoint?: (id: string, point: [number, number]) => void;
   onSelectCustomRouteControlPoint?: (id: string | null) => void;
+  onToggleRouteStopCandidate?: (candidateId: string) => void;
   assetUrls: Readonly<Record<string, string>>;
   navigationRequest?: { id: number; camera: CameraState } | null;
 }) {
@@ -3904,6 +3931,7 @@ function OnlinePreviewMap({
       routeDraft={playbackState === 'stopped' ? routeDraft : []}
       routeCandidate={playbackState === 'stopped' ? routeCandidate : undefined}
       routeCandidates={playbackState === 'stopped' ? routeCandidates : []}
+      routeStopCandidates={playbackState === 'stopped' ? routeStopCandidates : []}
       shapeDraftKind={playbackState === 'stopped' ? shapeDraftKind : undefined}
       shapeDraft={playbackState === 'stopped' ? shapeDraft : []}
       customRouteControlPointIds={playbackState === 'stopped' ? customRouteControlPointIds : []}
@@ -3913,6 +3941,7 @@ function OnlinePreviewMap({
       onCustomRoutePoint={onCustomRoutePoint}
       onMoveCustomRouteControlPoint={onMoveCustomRouteControlPoint}
       onSelectCustomRouteControlPoint={onSelectCustomRouteControlPoint}
+      onToggleRouteStopCandidate={onToggleRouteStopCandidate}
       assetUrls={assetUrls}
       navigationRequest={navigationRequest}
     />
@@ -5947,9 +5976,9 @@ function RoutePlannerPanel({
   onSearch: (target: RoutePickTarget) => void;
   onChange: (draft: RoutePlannerDraft) => void;
   onCalculate: (sectionId?: string) => void;
-  pathStopDrawer: { sectionId: string; selectedIds: string[] } | null;
+  pathStopDrawer: { selectedIds: string[] } | null;
   onAddStop: () => void;
-  onOpenPathStops: (sectionId: string) => void;
+  onOpenPathStops: () => void;
   onTogglePathStop: (id: string) => void;
   onApplyPathStops: () => void;
   onClosePathStops: () => void;
@@ -5999,8 +6028,8 @@ function RoutePlannerPanel({
       <h3>Route Planner</h3>
       <div className="route-service-status">
         <span>Road: {roadConfigured ? 'Connected' : 'Not configured'}</span>
-        <span>Maritime: Built-in · Ready</span>
-        <span>Air: Built-in · Ready</span>
+        <span>Maritime: Built-in · Approximate</span>
+        <span>Air: Built-in · Explicit calculation</span>
       </div>
       <button type="button" onClick={onConfigure}>
         Configure Routing
@@ -6057,59 +6086,45 @@ function RoutePlannerPanel({
       <button type="button" onClick={onAddStop}>
         + Add Stop
       </button>
-      {draft.sections.some(
-        (section) => section.pathType === 'custom' && section.customSettings?.controlPoints.length,
-      ) && (
-        <button
-          type="button"
-          onClick={() =>
-            onOpenPathStops(
-              draft.sections.find(
-                (section) => section.pathType === 'custom' && section.customSettings?.controlPoints.length,
-              )!.id,
-            )
-          }
-        >
+      {routePathStopCandidateGroups(draft).length > 0 && (
+        <button type="button" onClick={onOpenPathStops}>
           Add Stops From Path
         </button>
       )}
-      {pathStopDrawer &&
-        (() => {
-          const section = draft.sections.find((candidate) => candidate.id === pathStopDrawer.sectionId);
-          return section?.customSettings ? (
-            <div className="route-path-stop-drawer">
-              <strong>ADD STOPS FROM PATH</strong>
-              {section.customSettings.controlPoints.map((point, index) => (
-                <label key={point.id}>
+      {pathStopDrawer && (
+        <div className="route-path-stop-drawer">
+          <strong>ADD STOPS FROM PATH</strong>
+          {routePathStopCandidateGroups(draft).map((group) => (
+            <fieldset key={group.sectionId}>
+              <legend>Section {group.sectionOrder + 1}</legend>
+              {group.candidates.map((candidate) => (
+                <label key={candidate.id}>
                   <input
                     type="checkbox"
-                    checked={pathStopDrawer.selectedIds.includes(point.id)}
-                    onChange={() => onTogglePathStop(point.id)}
+                    checked={pathStopDrawer.selectedIds.includes(candidate.id)}
+                    onChange={() => onTogglePathStop(candidate.id)}
                   />{' '}
-                  Point {index + 1}
+                  Point {candidate.displayNumber}
                 </label>
               ))}
-              <div className="route-planner-actions">
-                <button
-                  type="button"
-                  disabled={!pathStopDrawer.selectedIds.length}
-                  onClick={onApplyPathStops}
-                >
-                  Add Selected Stops
-                </button>
-                <button type="button" onClick={onClosePathStops}>
-                  Cancel
-                </button>
-              </div>
-            </div>
-          ) : null;
-        })()}
+            </fieldset>
+          ))}
+          <div className="route-planner-actions">
+            <button type="button" disabled={!pathStopDrawer.selectedIds.length} onClick={onApplyPathStops}>
+              Add Selected Stops
+            </button>
+            <button type="button" onClick={onClosePathStops}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
       <label>
         Preference
         <select
           value={draft.preference}
           onChange={(event) =>
-            onChange({ ...draft, preference: event.target.value as RoutePlannerDraft['preference'] })
+            onChange(setRoutePlannerPreference(draft, event.target.value as RoutePlannerDraft['preference']))
           }
         >
           <option value="fastest">Fastest</option>
@@ -6221,12 +6236,16 @@ function RoutePlannerPanel({
                     ? 'Editing custom path...'
                     : section.status === 'ready'
                       ? 'Ready'
-                      : 'Custom path required'
-                  : section.status === 'idle'
+                      : 'Editing'
+                  : section.status === 'needs-calculation'
                     ? 'Needs calculation'
                     : section.status === 'ready' && section.pathType === 'maritime'
-                      ? 'Calculated — Experimental'
-                      : section.status}
+                      ? 'Ready — Approximate'
+                      : section.status === 'calculating'
+                        ? 'Calculating…'
+                        : section.status === 'error'
+                          ? 'Calculation failed'
+                          : section.status}
               </span>
               {plan && (
                 <small>
@@ -6237,7 +6256,7 @@ function RoutePlannerPanel({
                   · {plan.routeSummary}
                 </small>
               )}
-              {(section.pathType === 'road' || section.pathType === 'maritime') && plan && (
+              {section.pathType !== 'custom' && section.status === 'ready' && plan && (
                 <button type="button" onClick={() => onConvertCalculated(section.id)}>
                   Turn to Custom
                 </button>
@@ -6246,10 +6265,16 @@ function RoutePlannerPanel({
               {section.pathType !== 'custom' && (
                 <button
                   type="button"
-                  disabled={section.status === 'calculating'}
+                  disabled={draft.status === 'calculating'}
                   onClick={() => onCalculate(section.id)}
                 >
-                  {section.status === 'calculating' ? 'Calculating…' : 'Calculate'}
+                  {section.status === 'calculating'
+                    ? 'Calculating…'
+                    : section.status === 'ready'
+                      ? 'Recalculate'
+                      : section.status === 'error'
+                        ? 'Retry'
+                        : 'Calculate'}
                 </button>
               )}
             </article>
@@ -6262,13 +6287,15 @@ function RoutePlannerPanel({
         </p>
       )}
       <div className="route-planner-actions">
-        <button
-          type="button"
-          disabled={!draft.source || !draft.destination || draft.status === 'calculating'}
-          onClick={() => onCalculate()}
-        >
-          {draft.status === 'calculating' ? 'Calculating sections…' : 'Calculate All'}
-        </button>
+        {routePlannerSectionsNeedingCalculation(draft).length > 0 && (
+          <button
+            type="button"
+            disabled={!draft.source || !draft.destination || draft.status === 'calculating'}
+            onClick={() => onCalculate()}
+          >
+            {draft.status === 'calculating' ? 'Calculating sections…' : 'Calculate All'}
+          </button>
+        )}
         <button type="button" onClick={onCancel}>
           Cancel
         </button>
@@ -6278,13 +6305,16 @@ function RoutePlannerPanel({
           {draft.error}
         </p>
       )}
-      {draft.sections.length > 0 &&
-        draft.sections.every((section) => section.plans.length > 0) &&
-        !customRouteSession && (
-          <button type="button" onClick={onUse}>
-            Use Route
-          </button>
-        )}
+      <button
+        type="button"
+        disabled={!canUseRoutePlannerDraft(draft) || Boolean(customRouteSession)}
+        onClick={onUse}
+      >
+        Use Route
+      </button>
+      {!canUseRoutePlannerDraft(draft) && routePlannerBlockingSummary(draft) && (
+        <small className="route-planner-warning">{routePlannerBlockingSummary(draft)}</small>
+      )}
     </section>
   );
 }

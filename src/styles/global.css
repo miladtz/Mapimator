@@ -1037,6 +1037,26 @@ button:disabled {
 .route-planner-actions button.active {
   outline: 2px solid #ffbd45;
 }
+.route-path-stop-drawer {
+  display: grid;
+  gap: 8px;
+}
+.route-path-stop-drawer fieldset {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.route-path-stop-drawer legend {
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 .route-planner-warning,
 .route-planner-error {
   margin: 0;

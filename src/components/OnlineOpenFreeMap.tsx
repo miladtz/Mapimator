@@ -60,6 +60,7 @@ import type {
   OnlineBasemapStyleId,
   ShapeKind,
 } from '../core/project';
+import type { RoutePathStopCandidate } from '../core/routePlanner';
 
 export const ONLINE_INTERACTIVE_MIN_PIXEL_RATIO = 0.75;
 export const ONLINE_INTERACTIVE_MAX_PIXEL_RATIO = 1.25;
@@ -144,6 +145,7 @@ export const routeDraftFeatureCollection = (
   candidates: readonly (readonly [number, number][])[] = [],
   controlPointIds: readonly string[] = [],
   selectedControlPointId?: string | null,
+  stopCandidates: readonly (RoutePathStopCandidate & { selected: boolean })[] = [],
 ) => ({
   type: 'FeatureCollection' as const,
   features: draft.length
@@ -177,6 +179,17 @@ export const routeDraftFeatureCollection = (
               index > 0 && index < draft.length - 1 && controlPointIds[index - 1] === selectedControlPointId,
           },
           geometry: { type: 'Point' as const, coordinates: coordinate },
+        })),
+        ...stopCandidates.map((stopCandidate) => ({
+          type: 'Feature' as const,
+          properties: {
+            kind: 'stop-candidate',
+            candidateId: stopCandidate.id,
+            sectionId: stopCandidate.sectionId,
+            index: `${stopCandidate.displayNumber}`,
+            selected: stopCandidate.selected,
+          },
+          geometry: { type: 'Point' as const, coordinates: stopCandidate.coordinate },
         })),
       ]
     : [],
@@ -215,13 +228,22 @@ export const syncRouteDraftOverlay = (
       type: 'circle',
       source: id,
       metadata: { 'mapmotion:editor-only': true },
-      filter: ['==', ['get', 'kind'], 'vertex'],
+      filter: ['any', ['==', ['get', 'kind'], 'vertex'], ['==', ['get', 'kind'], 'stop-candidate']],
       paint: {
-        'circle-radius': 6,
+        'circle-radius': ['case', ['==', ['get', 'kind'], 'stop-candidate'], 7, 6],
         'circle-color': ['case', ['get', 'selected'], '#ffbd45', '#ffffff'],
         'circle-stroke-color': '#34bfa3',
         'circle-stroke-width': 2,
       },
+    });
+  if (!map.getLayer(`${id}-stop-candidate-hit`))
+    map.addLayer({
+      id: `${id}-stop-candidate-hit`,
+      type: 'circle',
+      source: id,
+      metadata: { 'mapmotion:editor-only': true },
+      filter: ['==', ['get', 'kind'], 'stop-candidate'],
+      paint: { 'circle-radius': 13, 'circle-color': '#000000', 'circle-opacity': 0 },
     });
   if (!map.getLayer(`${id}-labels`))
     map.addLayer({
@@ -229,7 +251,7 @@ export const syncRouteDraftOverlay = (
       type: 'symbol',
       source: id,
       metadata: { 'mapmotion:editor-only': true },
-      filter: ['==', ['get', 'kind'], 'vertex'],
+      filter: ['any', ['==', ['get', 'kind'], 'vertex'], ['==', ['get', 'kind'], 'stop-candidate']],
       layout: {
         'text-field': ['get', 'index'],
         'text-size': 12,
@@ -238,7 +260,13 @@ export const syncRouteDraftOverlay = (
       },
       paint: { 'text-color': '#071018' },
     });
-  for (const layerId of [`${id}-casing`, `${id}-line`, `${id}-points`, `${id}-labels`])
+  for (const layerId of [
+    `${id}-casing`,
+    `${id}-line`,
+    `${id}-stop-candidate-hit`,
+    `${id}-points`,
+    `${id}-labels`,
+  ])
     if (map.getLayer(layerId)) map.moveLayer(layerId);
   map.triggerRepaint();
   return true;
@@ -387,6 +415,7 @@ interface Props {
   routeDraft?: [number, number][];
   routeCandidate?: [number, number][];
   routeCandidates?: [number, number][][];
+  routeStopCandidates?: (RoutePathStopCandidate & { selected: boolean })[];
   shapeDraftKind?: ShapeKind;
   shapeDraft?: [number, number][];
   customRouteControlPointIds?: string[];
@@ -394,6 +423,7 @@ interface Props {
   onCustomRoutePoint?: (point: [number, number], insertionIndex: number) => void;
   onMoveCustomRouteControlPoint?: (id: string, point: [number, number]) => void;
   onSelectCustomRouteControlPoint?: (id: string | null) => void;
+  onToggleRouteStopCandidate?: (candidateId: string) => void;
   assetUrls?: Readonly<Record<string, string>>;
   navigationRequest?: { id: number; camera: CameraState } | null;
   mapServiceSettings: MapServiceCredentials;
@@ -427,6 +457,7 @@ export function OnlineOpenFreeMap({
   routeDraft = [],
   routeCandidate,
   routeCandidates = [],
+  routeStopCandidates = [],
   shapeDraftKind,
   shapeDraft = [],
   customRouteControlPointIds = [],
@@ -434,6 +465,7 @@ export function OnlineOpenFreeMap({
   onCustomRoutePoint,
   onMoveCustomRouteControlPoint,
   onSelectCustomRouteControlPoint,
+  onToggleRouteStopCandidate,
   assetUrls = {},
   navigationRequest,
   mapServiceSettings,
@@ -468,6 +500,7 @@ export function OnlineOpenFreeMap({
   const routeDraftRef = useRef(routeDraft);
   const routeCandidateRef = useRef(routeCandidate);
   const routeCandidatesRef = useRef(routeCandidates);
+  const routeStopCandidatesRef = useRef(routeStopCandidates);
   const customRouteControlPointIdsRef = useRef(customRouteControlPointIds);
   const selectedCustomRouteControlPointIdRef = useRef(selectedCustomRouteControlPointId);
   const shapeDraftKindRef = useRef(shapeDraftKind);
@@ -475,6 +508,7 @@ export function OnlineOpenFreeMap({
   const onCustomRoutePointRef = useRef(onCustomRoutePoint);
   const onMoveCustomRouteControlPointRef = useRef(onMoveCustomRouteControlPoint);
   const onSelectCustomRouteControlPointRef = useRef(onSelectCustomRouteControlPoint);
+  const onToggleRouteStopCandidateRef = useRef(onToggleRouteStopCandidate);
   const assetUrlsRef = useRef(assetUrls);
   const mapServiceSettingsRef = useRef(mapServiceSettings);
   const regionDraftSynchronizerRef = useRef(
@@ -518,6 +552,7 @@ export function OnlineOpenFreeMap({
   routeDraftRef.current = routeDraft;
   routeCandidateRef.current = routeCandidate;
   routeCandidatesRef.current = routeCandidates;
+  routeStopCandidatesRef.current = routeStopCandidates;
   customRouteControlPointIdsRef.current = customRouteControlPointIds;
   selectedCustomRouteControlPointIdRef.current = selectedCustomRouteControlPointId;
   shapeDraftKindRef.current = shapeDraftKind;
@@ -525,6 +560,7 @@ export function OnlineOpenFreeMap({
   onCustomRoutePointRef.current = onCustomRoutePoint;
   onMoveCustomRouteControlPointRef.current = onMoveCustomRouteControlPoint;
   onSelectCustomRouteControlPointRef.current = onSelectCustomRouteControlPoint;
+  onToggleRouteStopCandidateRef.current = onToggleRouteStopCandidate;
   assetUrlsRef.current = assetUrls;
   mapServiceSettingsRef.current = mapServiceSettings;
   const overlayAssetSignature = useMemo(
@@ -735,6 +771,7 @@ export function OnlineOpenFreeMap({
         routeCandidatesRef.current,
         customRouteControlPointIdsRef.current,
         selectedCustomRouteControlPointIdRef.current,
+        routeStopCandidatesRef.current,
       );
       routeDraftSynchronizerRef.current.setLatest(currentDraftData);
       routeDraftSynchronizerRef.current.flush(map!, true);
@@ -791,10 +828,21 @@ export function OnlineOpenFreeMap({
     let shapeDrawFinished = false;
     let movingRouteWaypoint: { layerId: string; waypointId: string } | null = null;
     let movingCustomControlId: string | null = null;
+    let routeStopCandidatePointerActive = false;
+    let routeStopCandidateClickHandled = false;
     let pinMoved = false;
     let imageInteractionFinished = false;
-    map.on('mousedown', ONLINE_PROJECT_PIN_LAYER_ID, (event) => {
+    map.on('mousedown', 'mapmotion-route-draft-stop-candidate-hit', (event) => {
       if (!interactionEnabledRef.current || !event.features?.[0]) return;
+      const candidateId = String(event.features[0].properties?.candidateId ?? '');
+      if (!candidateId || !onToggleRouteStopCandidateRef.current) return;
+      event.preventDefault();
+      routeStopCandidatePointerActive = true;
+      routeStopCandidateClickHandled = true;
+      onToggleRouteStopCandidateRef.current(candidateId);
+    });
+    map.on('mousedown', ONLINE_PROJECT_PIN_LAYER_ID, (event) => {
+      if (!interactionEnabledRef.current || routeStopCandidatePointerActive || !event.features?.[0]) return;
       const id = String(event.features[0].properties?.layerId ?? '');
       if (!id) return;
       event.preventDefault();
@@ -805,7 +853,7 @@ export function OnlineOpenFreeMap({
       map!.getCanvas().style.cursor = 'grabbing';
     });
     map.on('mousedown', ONLINE_PROJECT_PIN_LABEL_LAYER_ID, (event) => {
-      if (!interactionEnabledRef.current || !event.features?.[0]) return;
+      if (!interactionEnabledRef.current || routeStopCandidatePointerActive || !event.features?.[0]) return;
       const id = String(event.features[0].properties?.layerId ?? '');
       if (!id) return;
       event.preventDefault();
@@ -815,7 +863,7 @@ export function OnlineOpenFreeMap({
       map!.getCanvas().style.cursor = 'grabbing';
     });
     const beginTextMove = (event: import('maplibre-gl').MapLayerMouseEvent) => {
-      if (!interactionEnabledRef.current || !event.features?.[0]) return;
+      if (!interactionEnabledRef.current || routeStopCandidatePointerActive || !event.features?.[0]) return;
       const id = String(event.features[0].properties?.layerId ?? '');
       if (!id) return;
       event.preventDefault();
@@ -828,7 +876,7 @@ export function OnlineOpenFreeMap({
     map.on('mousedown', ONLINE_PROJECT_TEXT_LAYER_ID, beginTextMove);
     map.on('mousedown', ONLINE_PROJECT_TEXT_FLAT_LAYER_ID, beginTextMove);
     map.on('mousedown', ONLINE_PROJECT_SHAPE_HANDLE_LAYER_ID, (event) => {
-      if (!interactionEnabledRef.current || !event.features?.[0]) return;
+      if (!interactionEnabledRef.current || routeStopCandidatePointerActive || !event.features?.[0]) return;
       const layerId = String(event.features[0].properties?.layerId ?? '');
       const pointId = String(event.features[0].properties?.pointId ?? '');
       if (!layerId || !pointId) return;
@@ -839,7 +887,7 @@ export function OnlineOpenFreeMap({
       map!.getCanvas().style.cursor = 'grabbing';
     });
     map.on('mousedown', ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID, (event) => {
-      if (!interactionEnabledRef.current || !event.features?.[0]) return;
+      if (!interactionEnabledRef.current || routeStopCandidatePointerActive || !event.features?.[0]) return;
       const layerId = String(event.features[0].properties?.layerId ?? '');
       const handle = String(event.features[0].properties?.handle ?? '');
       if (!layerId || handle !== 'rotate') return;
@@ -854,7 +902,13 @@ export function OnlineOpenFreeMap({
       map!.getCanvas().style.cursor = 'grabbing';
     });
     map.on('mousedown', (event) => {
-      if (!interactionEnabledRef.current || movingImage || onShapeDrawPointRef.current) return;
+      if (
+        !interactionEnabledRef.current ||
+        routeStopCandidatePointerActive ||
+        movingImage ||
+        onShapeDrawPointRef.current
+      )
+        return;
       const candidates = [...layersRef.current]
         .reverse()
         .filter(
@@ -897,7 +951,13 @@ export function OnlineOpenFreeMap({
       map!.getCanvas().style.cursor = 'grabbing';
     });
     const beginShapeMove = (event: import('maplibre-gl').MapLayerMouseEvent) => {
-      if (!interactionEnabledRef.current || movingShapePoint || !event.features?.[0]) return;
+      if (
+        !interactionEnabledRef.current ||
+        routeStopCandidatePointerActive ||
+        movingShapePoint ||
+        !event.features?.[0]
+      )
+        return;
       const layerId = String(event.features[0].properties?.layerId ?? '');
       if (!layerId) return;
       event.preventDefault();
@@ -915,7 +975,8 @@ export function OnlineOpenFreeMap({
     ])
       map.on('mousedown', layerId, beginShapeMove);
     map.on('mousedown', (event) => {
-      if (!interactionEnabledRef.current || !onShapeDrawPointRef.current) return;
+      if (!interactionEnabledRef.current || routeStopCandidatePointerActive || !onShapeDrawPointRef.current)
+        return;
       event.preventDefault();
       movingShape = null;
       movingShapePoint = null;
@@ -928,7 +989,7 @@ export function OnlineOpenFreeMap({
       map!.getCanvas().style.cursor = 'crosshair';
     });
     map.on('mousedown', ONLINE_PROJECT_ROUTE_WAYPOINT_LAYER_ID, (event) => {
-      if (!interactionEnabledRef.current || !event.features?.[0]) return;
+      if (!interactionEnabledRef.current || routeStopCandidatePointerActive || !event.features?.[0]) return;
       const layerId = String(event.features[0].properties?.layerId ?? '');
       const waypointId = String(event.features[0].properties?.waypointId ?? '');
       if (!layerId || !waypointId) return;
@@ -939,7 +1000,7 @@ export function OnlineOpenFreeMap({
       map!.getCanvas().style.cursor = 'grabbing';
     });
     map.on('mousedown', 'mapmotion-route-draft-points', (event) => {
-      if (!interactionEnabledRef.current || !event.features?.[0]) return;
+      if (!interactionEnabledRef.current || routeStopCandidatePointerActive || !event.features?.[0]) return;
       const controlPointId = String(event.features[0].properties?.controlPointId ?? '');
       if (!controlPointId || !onMoveCustomRouteControlPointRef.current) return;
       event.preventDefault();
@@ -1050,6 +1111,7 @@ export function OnlineOpenFreeMap({
       onMovePinRef.current(movingPinId, point.x, point.y);
     });
     const finishPinMove = () => {
+      const clearCandidateClickFallback = routeStopCandidatePointerActive;
       if (drawingShape) {
         drawingShape = false;
         movingShape = null;
@@ -1067,7 +1129,8 @@ export function OnlineOpenFreeMap({
         !movingShape &&
         !movingImage &&
         !movingRouteWaypoint &&
-        !movingCustomControlId
+        !movingCustomControlId &&
+        !routeStopCandidatePointerActive
       )
         return;
       if (movingImage) {
@@ -1085,18 +1148,41 @@ export function OnlineOpenFreeMap({
       movingImage = null;
       movingRouteWaypoint = null;
       movingCustomControlId = null;
+      routeStopCandidatePointerActive = false;
+      if (clearCandidateClickFallback)
+        window.setTimeout(() => {
+          routeStopCandidateClickHandled = false;
+        }, 0);
       map!.dragPan.enable();
       map!.getCanvas().style.cursor = '';
     };
     map.on('mouseup', finishPinMove);
     map.on('click', (event) => {
       if (!interactionEnabledRef.current) return;
+      if (routeStopCandidateClickHandled) {
+        routeStopCandidateClickHandled = false;
+        return;
+      }
       if (imageInteractionFinished) {
         imageInteractionFinished = false;
         return;
       }
       if (shapeDrawFinished) {
         shapeDrawFinished = false;
+        return;
+      }
+      const stopCandidateHitLayers = [
+        'mapmotion-route-draft-stop-candidate-hit',
+        'mapmotion-route-draft-points',
+      ].filter((id) => Boolean(map!.getLayer(id)));
+      const stopCandidateHit = stopCandidateHitLayers.length
+        ? map!
+            .queryRenderedFeatures(event.point, { layers: stopCandidateHitLayers })
+            .find((feature) => feature.properties?.kind === 'stop-candidate')
+        : undefined;
+      const stopCandidateId = String(stopCandidateHit?.properties?.candidateId ?? '');
+      if (stopCandidateId && onToggleRouteStopCandidateRef.current) {
+        onToggleRouteStopCandidateRef.current(stopCandidateId);
         return;
       }
       if (captureBackgroundClickRef.current && onBackgroundClickRef.current) {
@@ -1275,6 +1361,7 @@ export function OnlineOpenFreeMap({
       routeCandidates,
       customRouteControlPointIds,
       selectedCustomRouteControlPointId,
+      routeStopCandidates,
     );
     routeDraftSynchronizerRef.current.setLatest(data);
     if (map) routeDraftSynchronizerRef.current.flush(map);
@@ -1285,6 +1372,7 @@ export function OnlineOpenFreeMap({
     routeCandidates,
     routeDraft,
     selectedCustomRouteControlPointId,
+    routeStopCandidates,
   ]);
 
   useLayoutEffect(() => {

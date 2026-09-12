@@ -10,6 +10,6 @@ assert.equal(draft.sections.length,1); const ad=draft.sections[0].id;
 draft={...draft,stops:[b]}; draft=m.reconcileRouteSections(draft); assert.equal(draft.sections.length,2); assert.notEqual(draft.sections[0].id,ad);
 const bd=draft.sections[1].id; draft={...draft,stops:[b,c]}; draft=m.reconcileRouteSections(draft); assert.equal(draft.sections.length,3); assert.equal(draft.sections[0].id, draft.sections[0].id); assert.notEqual(draft.sections[1].id,bd); assert.equal(draft.sections[2].endPointId,'d');
 const cd=draft.sections[2].id; draft={...draft,stops:[c]}; draft=m.reconcileRouteSections(draft); assert.equal(draft.sections.length,2); assert.equal(draft.sections[1].id,cd,'unrelated C→D identity survives stop deletion');
-draft=m.setRoutePlannerSectionPathType(draft,draft.sections[0].id,'maritime'); assert.equal(draft.sections[0].pathType,'maritime'); assert.equal(draft.sections[0].status,'idle');
+draft=m.setRoutePlannerSectionPathType(draft,draft.sections[0].id,'maritime'); assert.equal(draft.sections[0].pathType,'maritime'); assert.equal(draft.sections[0].status,'needs-calculation');
 assert.doesNotMatch(JSON.stringify(draft),/providerLeg|multimodal|vehicleSwitch/);
 console.log('Online Route Sections: N-1 adjacency, insertion/deletion, stable unaffected identity, and independent modes passed.');

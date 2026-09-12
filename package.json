@@ -72,6 +72,8 @@
     "test:online-route": "node scripts/verify-online-route.mjs",
     "test:online-route-visible": "node scripts/verify-online-route-visible.mjs",
     "test:online-route-planner": "node scripts/verify-online-route-planner.mjs",
+    "test:route-planner-workflow": "node scripts/verify-route-planner-workflow.mjs",
+    "test:route-path-stops": "node scripts/verify-route-path-stops.mjs",
     "test:online-routing-services": "node scripts/verify-online-routing-services.mjs",
     "test:online-route-sections": "node scripts/verify-online-route-sections.mjs",
     "test:online-custom-route": "node scripts/verify-online-custom-route.mjs",

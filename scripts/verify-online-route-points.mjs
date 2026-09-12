@@ -20,9 +20,13 @@ let custom=m.createRoutePlannerDraft(); custom=m.setRoutePlannerPoint(custom,'so
 const sid=custom.sections[0].id; custom=m.setRoutePlannerSectionPathType(custom,sid,'custom');
 const controls=[b,c,d].map(x=>m.createCustomRouteControlPoint(x.longitude,x.latitude,`control-${x.id}`));
 custom=m.setCustomRouteSection(custom,sid,m.customRouteSettings('exact',controls));
+const originalCustomGeometry=custom.sections[0].plans[0].geometry;
 custom=m.promoteCustomControlsToStops(custom,sid,['control-b','control-d']);
 assert.deepEqual(custom.stops.map(x=>x.sourceControlPointId),['control-b','control-d']); assert.equal(custom.sections.length,3);
 assert.deepEqual(custom.sections.map(s=>s.customSettings.controlPoints.map(x=>x.id)),[[],['control-c'],[]]);
+assert.ok(custom.sections.every(s=>s.pathType==='custom'&&s.status==='ready'));
+const segmented=custom.sections.flatMap((section,index)=>{const geometry=section.plans.find(plan=>plan.id===section.selectedPlanId).geometry; return index===0?geometry:geometry.slice(1);});
+assert.deepEqual(segmented,originalCustomGeometry,'segmentation reconstructs the exact accepted geometry');
 custom=m.removeStop(custom,custom.stops[0].id); assert.equal(custom.sections.length,2); assert.ok(custom.sections[0].customSettings.controlPoints.some(x=>x.id==='control-b'));
 
 const maritimeGeometry=Array.from({length:501},(_,i)=>[i/10,Math.sin(i/30)*5]);
@@ -34,6 +38,6 @@ const dubai=pt('dubai',55.27,25.2),la=pt('la',-118.24,34.05); const gc=m.planLoc
 assert.ok(gc.geometry.length>20); assert.ok(Math.max(...gc.geometry.map(x=>x[1]))>60); assert.notDeepEqual(gc.geometry,direct.geometry); assert.deepEqual(m.planLocalSection(dubai,la,'air','great-circle')[0].geometry,gc.geometry);
 const anti=m.planLocalSection(pt('x',179,0),pt('y',-179,1),'air','direct')[0].geometry; assert.ok(Math.max(...anti.map(x=>x[0]))-Math.min(...anti.map(x=>x[0]))<3);
 const app=readFileSync(join(root,'src/app/App.tsx'),'utf8'), maritimeSource=readFileSync(join(root,'src/core/maritimeRouting.ts'),'utf8');
-for(const token of ['SOURCE','DESTINATION','Add Stops From Path','Convert to Custom Path','Move Stop','Pick on Map']) assert.ok(app.includes(token));
+for(const token of ['SOURCE','DESTINATION','Add Stops From Path','Turn to Custom','Move Stop','Pick on Map']) assert.ok(app.includes(token));
 const normalBody=maritimeSource.slice(maritimeSource.indexOf('export const planMaritimeRoute')); assert.ok(!normalBody.includes('requestRefinement('));
 console.log(`Online Route Points: stable endpoints/stops, reconciliation, path promotion, raw Maritime conversion, and Air passed; Dubai→LA ${gc.geometry.length} points, ${(gc.distanceMeters/1000).toFixed(0)} km, max latitude ${Math.max(...gc.geometry.map(x=>x[1])).toFixed(2)}°.`);

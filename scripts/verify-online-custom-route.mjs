@@ -90,7 +90,7 @@ draft = route.setRoutePlannerPoint(draft, 'source', start);
 draft = route.setRoutePlannerPoint(draft, 'destination', end);
 const sectionId = draft.sections[0].id;
 draft = route.setRoutePlannerSectionPathType(draft, sectionId, 'custom');
-assert.equal(draft.sections[0].status, 'custom');
+assert.equal(draft.sections[0].status, 'editing');
 draft = route.setCustomRouteSection(draft, sectionId, smoothSettings);
 assert.equal(draft.sections[0].status, 'ready');
 assert.equal(draft.sections[0].id, sectionId);
@@ -126,7 +126,7 @@ assert.equal(route.routeLayerFromSections(twoCustom).routeSegments.filter((segme
 
 const app = readFileSync(join(root, 'src/app/App.tsx'), 'utf8');
 const map = readFileSync(join(root, 'src/components/OnlineOpenFreeMap.tsx'), 'utf8');
-for (const token of ['CUSTOM PATH', 'Draw Path', 'Edit Path', 'Clear Path', 'Custom path required', 'Editing custom path...', 'Finish'])
+for (const token of ['CUSTOM PATH', 'Draw Path', 'Edit Path', 'Clear Path', 'Editing custom path...', 'Finish'])
   assert.ok(app.includes(token), `missing Custom UI token: ${token}`);
 for (const token of ['Backspace', 'Escape', "event.key === 'Enter'", 'insertCustomRouteControlPoint', 'moveCustomRouteControlPoint', 'removeCustomRouteControlPoint'])
   assert.ok(app.includes(token), `missing authoring behavior: ${token}`);

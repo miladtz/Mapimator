@@ -42,13 +42,15 @@ export interface NormalizedRoutePlan {
   routedEnd?: [number, number];
 }
 export type AirModel = 'great-circle' | 'direct';
+export type RoutePlannerSectionStatus = 'needs-calculation' | 'calculating' | 'ready' | 'error' | 'editing';
 export interface RoutePlannerSection {
   id: string;
   startPointId: string;
   endPointId: string;
   pathType: PathType;
   airModel: AirModel;
-  status: 'idle' | 'calculating' | 'ready' | 'error' | 'custom';
+  /** Planner-session authoritativeness; deliberately independent from retained geometry. */
+  status: RoutePlannerSectionStatus;
   plans: NormalizedRoutePlan[];
   selectedPlanId?: string;
   error?: string;
@@ -93,7 +95,7 @@ export const reconcileRouteSections = (draft: RoutePlannerDraft): RoutePlannerDr
         endPointId: end.id,
         pathType: 'road' as const,
         airModel: 'great-circle' as const,
-        status: 'idle' as const,
+        status: 'needs-calculation' as const,
         plans: [],
       }
     );
@@ -106,6 +108,58 @@ export const createRoutePlannerDraft = (): RoutePlannerDraft => ({
   preference: 'fastest',
   status: 'idle',
 });
+
+export const routePlannerSectionIsReady = (section: RoutePlannerSection) => section.status === 'ready';
+export const canUseRoutePlannerDraft = (draft: RoutePlannerDraft) =>
+  Boolean(draft.source && draft.destination && draft.sections.length) &&
+  draft.sections.every(routePlannerSectionIsReady);
+export const routePlannerSectionsNeedingCalculation = (draft: RoutePlannerDraft) =>
+  draft.sections.filter(
+    (section) =>
+      section.pathType !== 'custom' && (section.status === 'needs-calculation' || section.status === 'error'),
+  );
+export const routePlannerBlockingSummary = (draft: RoutePlannerDraft) => {
+  const calculations = draft.sections.filter(
+    (section) => section.pathType !== 'custom' && section.status !== 'ready',
+  ).length;
+  const customEdits = draft.sections.filter(
+    (section) => section.pathType === 'custom' && section.status !== 'ready',
+  ).length;
+  return [
+    calculations ? `${calculations} Section${calculations === 1 ? '' : 's'} need calculation` : '',
+    customEdits ? `${customEdits} Custom Section${customEdits === 1 ? '' : 's'} still being edited` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+};
+export const routePlannerSectionInputSignature = (draft: RoutePlannerDraft, sectionId: string) => {
+  const section = draft.sections.find((candidate) => candidate.id === sectionId);
+  if (!section) return '';
+  const points = new Map(routePlannerPoints(draft).map((point) => [point.id, point]));
+  const start = points.get(section.startPointId);
+  const end = points.get(section.endPointId);
+  return JSON.stringify([
+    section.id,
+    section.pathType,
+    section.airModel,
+    draft.preference,
+    start?.longitude,
+    start?.latitude,
+    end?.longitude,
+    end?.latitude,
+  ]);
+};
+export const applyRouteSectionCalculationResult = (
+  draft: RoutePlannerDraft,
+  section: RoutePlannerSection,
+  inputSignature: string,
+): RoutePlannerDraft =>
+  routePlannerSectionInputSignature(draft, section.id) !== inputSignature
+    ? draft
+    : {
+        ...draft,
+        sections: draft.sections.map((candidate) => (candidate.id === section.id ? section : candidate)),
+      };
 
 const cloneRoutePoint = (point: RoutePoint): RoutePoint => ({ ...point });
 const cloneGeometry = (geometry: readonly [number, number][]): [number, number][] =>
@@ -165,7 +219,7 @@ export const routePlannerDraftFromLayer = (layer: Layer): RoutePlannerDraft => {
       pathType: section.pathType,
       airModel:
         settings?.airModel ?? (accepted?.routeSummary?.includes('Direct') ? 'direct' : 'great-circle'),
-      status: plan ? 'ready' : section.pathType === 'custom' ? 'custom' : 'idle',
+      status: plan ? 'ready' : section.pathType === 'custom' ? 'editing' : 'needs-calculation',
       plans: plan ? [plan] : [],
       selectedPlanId: plan?.id,
       customSettings,
@@ -180,7 +234,17 @@ export const routePlannerDraftFromLayer = (layer: Layer): RoutePlannerDraft => {
     status: sections.every((section) => section.status === 'ready') ? 'ready' : 'idle',
   });
 };
-export const invalidateRoutePlans = (draft: RoutePlannerDraft) => reconcileRouteSections(draft);
+export const invalidateRoutePlans = (draft: RoutePlannerDraft) => {
+  const reconciled = reconcileRouteSections(draft);
+  return {
+    ...reconciled,
+    sections: reconciled.sections.map((section) =>
+      section.status === 'calculating'
+        ? { ...section, status: 'needs-calculation' as const, error: undefined }
+        : section,
+    ),
+  };
+};
 export const setRoutePlannerPoint = (draft: RoutePlannerDraft, target: RoutePickTarget, point: RoutePoint) =>
   (() => {
     const existing =
@@ -206,23 +270,14 @@ export const setRoutePlannerPoint = (draft: RoutePlannerDraft, target: RoutePick
         section.startPointId === existing.id || section.endPointId === existing.id
           ? {
               ...section,
-              status: (section.pathType === 'custom' ? 'custom' : 'idle') as RoutePlannerSection['status'],
-              plans: [],
-              selectedPlanId: undefined,
+              status: (section.pathType === 'custom'
+                ? 'editing'
+                : 'needs-calculation') as RoutePlannerSection['status'],
               error: undefined,
             }
           : section,
       ),
     };
-    for (const section of invalidated.sections) {
-      if (
-        section.pathType === 'custom' &&
-        section.customSettings &&
-        (section.startPointId === existing.id || section.endPointId === existing.id)
-      ) {
-        invalidated = setCustomRouteSection(invalidated, section.id, section.customSettings);
-      }
-    }
     return invalidated;
   })();
 export const setRoutePlannerSectionPathType = (
@@ -236,7 +291,7 @@ export const setRoutePlannerSectionPathType = (
       ? {
           ...section,
           pathType,
-          status: pathType === 'custom' ? 'custom' : 'idle',
+          status: pathType === 'custom' ? 'editing' : 'needs-calculation',
           plans: [],
           selectedPlanId: undefined,
           error: undefined,
@@ -280,6 +335,7 @@ export const setCustomRouteSection = (
       };
       return {
         ...section,
+        pathType: 'custom',
         customSettings: customRouteSettings(settings.pathShape, settings.controlPoints),
         plans: [plan],
         selectedPlanId: plan.id,
@@ -294,26 +350,38 @@ export const setCustomRoutePathShape = (
   draft: RoutePlannerDraft,
   sectionId: string,
   pathShape: CustomRoutePathShape,
-) => {
+): RoutePlannerDraft => {
   const section = draft.sections.find((candidate) => candidate.id === sectionId);
   if (!section?.customSettings) return draft;
   const settings = customRouteSettings(pathShape, section.customSettings.controlPoints);
-  return section.status === 'ready' && section.plans.length
-    ? setCustomRouteSection(draft, sectionId, settings)
-    : {
-        ...draft,
-        sections: draft.sections.map((candidate) =>
-          candidate.id === sectionId ? { ...candidate, customSettings: settings } : candidate,
-        ),
-      };
+  return {
+    ...draft,
+    status: 'idle',
+    sections: draft.sections.map((candidate) =>
+      candidate.id === sectionId
+        ? { ...candidate, customSettings: settings, status: 'editing' as const, error: undefined }
+        : candidate,
+    ),
+  };
 };
+
+export const setRoutePlannerPreference = (draft: RoutePlannerDraft, preference: RoutePreference) => ({
+  ...draft,
+  preference,
+  status: 'idle' as const,
+  sections: draft.sections.map((section) =>
+    section.pathType === 'custom'
+      ? section
+      : { ...section, status: 'needs-calculation' as const, error: undefined },
+  ),
+});
 
 /** Converts an already-calculated provider Section to an editable deterministic Custom path. */
 export const convertCalculatedSectionToCustom = (draft: RoutePlannerDraft, sectionId: string) => {
   const section = draft.sections.find((candidate) => candidate.id === sectionId);
   const plan =
     section?.plans.find((candidate) => candidate.id === section.selectedPlanId) ?? section?.plans[0];
-  if (!section || !['road', 'maritime'].includes(section.pathType) || !plan) return draft;
+  if (!section || section.status !== 'ready' || section.pathType === 'custom' || !plan) return draft;
   const converted = setRoutePlannerSectionPathType(draft, sectionId, 'custom');
   return setCustomRouteSection(converted, sectionId, customRouteSettingsFromGeometry(plan.geometry));
 };
@@ -381,6 +449,81 @@ export const replaceStopPoint = (
 
 export const addRoutePlannerStop = (draft: RoutePlannerDraft, point: RoutePoint) =>
   setRoutePlannerPoint(draft, { id: point.id, kind: 'stop' }, point);
+
+export interface RoutePathStopCandidate {
+  id: string;
+  sectionId: string;
+  sectionOrder: number;
+  localPointId: string;
+  localPointIndex: number;
+  displayNumber: number;
+  coordinate: [number, number];
+}
+
+export interface RoutePathStopCandidateGroup {
+  sectionId: string;
+  sectionOrder: number;
+  candidates: RoutePathStopCandidate[];
+}
+
+export const routePathStopCandidateId = (sectionId: string, localPointId: string) =>
+  `${sectionId}::${localPointId}`;
+
+const sameRouteCoordinate = (
+  first: { longitude: number; latitude: number },
+  second: { longitude: number; latitude: number },
+) => {
+  const longitudeDelta = Math.abs(((((first.longitude - second.longitude + 180) % 360) + 360) % 360) - 180);
+  return longitudeDelta < 1e-8 && Math.abs(first.latitude - second.latitude) < 1e-8;
+};
+
+const sameSnappedRouteSourceCoordinate = (
+  point: { longitude: number; latitude: number },
+  source: RoutePoint | undefined,
+) => {
+  if (!source) return false;
+  const longitudeDelta = Math.abs(((((point.longitude - source.longitude + 180) % 360) + 360) % 360) - 180);
+  return longitudeDelta < 2e-4 && Math.abs(point.latitude - source.latitude) < 2e-4;
+};
+
+export const routePathStopCandidateGroups = (draft: RoutePlannerDraft): RoutePathStopCandidateGroup[] => {
+  const existingRoutePoints = routePlannerPoints(draft);
+  return draft.sections.flatMap((section, sectionOrder) => {
+    if (
+      section.pathType !== 'custom' ||
+      section.status !== 'ready' ||
+      !section.customSettings?.controlPoints.length
+    )
+      return [];
+    const sourceNumberOffset =
+      section.startPointId === draft.source?.id &&
+      section.customSettings.controlPoints.some((point) => sameSnappedRouteSourceCoordinate(point, draft.source))
+        ? 1
+        : 0;
+    const candidates = section.customSettings.controlPoints.flatMap((point, localPointIndex) =>
+      existingRoutePoints.some((routePoint) => sameRouteCoordinate(point, routePoint)) ||
+      (section.startPointId === draft.source?.id && sameSnappedRouteSourceCoordinate(point, draft.source))
+        ? []
+        : [
+            {
+              id: routePathStopCandidateId(section.id, point.id),
+              sectionId: section.id,
+              sectionOrder,
+              localPointId: point.id,
+              localPointIndex,
+              displayNumber: localPointIndex + 1 - sourceNumberOffset,
+              coordinate: [point.longitude, point.latitude] as [number, number],
+            },
+          ],
+    );
+    return candidates.length ? [{ sectionId: section.id, sectionOrder, candidates }] : [];
+  });
+};
+
+export const toggleRoutePathStopCandidate = (selectedIds: readonly string[], candidateId: string) =>
+  selectedIds.includes(candidateId)
+    ? selectedIds.filter((id) => id !== candidateId)
+    : [...selectedIds, candidateId];
 
 export const promoteCustomControlsToStops = (
   draft: RoutePlannerDraft,
@@ -463,6 +606,21 @@ export const promoteCustomControlsToStops = (
   return next;
 };
 
+export const promoteSelectedCustomControlsToStops = (
+  draft: RoutePlannerDraft,
+  selectedCandidateIds: readonly string[],
+): RoutePlannerDraft => {
+  const selected = new Set(selectedCandidateIds);
+  let next = draft;
+  for (const group of routePathStopCandidateGroups(draft)) {
+    const localPointIds = group.candidates
+      .filter((candidate) => selected.has(candidate.id))
+      .map((candidate) => candidate.localPointId);
+    if (localPointIds.length) next = promoteCustomControlsToStops(next, group.sectionId, localPointIds);
+  }
+  return next;
+};
+
 export const setSectionAirModel = (
   draft: RoutePlannerDraft,
   sectionId: string,
@@ -471,7 +629,7 @@ export const setSectionAirModel = (
   ...draft,
   sections: draft.sections.map((section) =>
     section.id === sectionId
-      ? { ...section, airModel, status: 'idle', plans: [], selectedPlanId: undefined, error: undefined }
+      ? { ...section, airModel, status: 'needs-calculation', error: undefined }
       : section,
   ),
 });
@@ -536,6 +694,7 @@ export const routeLayerFromSections = (draft: RoutePlannerDraft, acceptedLayer?:
   const points = routePlannerPoints(draft);
   if (points.length < 2 || draft.sections.length !== points.length - 1)
     throw new Error('Route endpoints or sections are incomplete.');
+  if (!canUseRoutePlannerDraft(draft)) throw new Error('Every Route Section must be Ready before Use Route.');
   const layer = createRouteLayer(points);
   const segments: RouteSegment[] = draft.sections.map((section) => {
     const plan =
