@@ -38,11 +38,21 @@ assert.match(planner, /\['road', 'maritime'\]\.includes\(section\.pathType\)/);
 assert.match(app, /Turn to Custom/);
 assert.match(map, /editorOverlayRevision/, 'draft overlays are restored after style reload');
 assert.match(app, /routeCandidates=\{/);
+assert.match(app, /plannerRouteCandidate/);
+assert.match(app, /routePlannerDraftGeometries\(routePlanner\)/);
 assert.match(map, /candidates[\s\S]*sectionIndex/);
+const editorLayerBlockStart = app.indexOf('editingScene.layers');
+assert.ok(editorLayerBlockStart >= 0);
+const editorLayerBlock = app.slice(editorLayerBlockStart, editorLayerBlockStart + 500);
+assert.doesNotMatch(
+  editorLayerBlock,
+  /layer\.id === editingRouteLayerId/,
+  'Edit Route must neither remove nor dim the canonical accepted Route in editor rendering',
+);
 assert.match(
-  app,
-  /routePlanner && editingRouteLayerId && layer\.id === editingRouteLayerId/,
-  'accepted Route is suppressed only in the editor while its isolated draft is authoritative',
+  editorLayerBlock,
+  /\.filter\(\(layer\) => !eyeHidden\[layer\.id\]\)/,
+  'normal per-layer eye visibility remains the only editor-layer filter',
 );
 assert.match(planner, /id: `accepted-\$\{section\.id\}`/);
 assert.match(planner, /geometry: cloneGeometry\(accepted\.geometry\)/);

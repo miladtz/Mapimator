@@ -137,6 +137,87 @@ export const routeDraftFeatureCollection = (
     : [],
 });
 
+export const syncRouteDraftOverlay = (
+  map: MapLibreMap,
+  data: ReturnType<typeof routeDraftFeatureCollection>,
+) => {
+  if (!map.isStyleLoaded()) return false;
+  const id = 'mapmotion-route-draft';
+  const source = map.getSource(id) as import('maplibre-gl').GeoJSONSource | undefined;
+  if (source) source.setData(data as any);
+  else map.addSource(id, { type: 'geojson', data: data as any });
+  if (!map.getLayer(`${id}-casing`))
+    map.addLayer({
+      id: `${id}-casing`,
+      type: 'line',
+      source: id,
+      metadata: { 'mapmotion:editor-only': true },
+      filter: ['any', ['==', ['get', 'kind'], 'line'], ['==', ['get', 'kind'], 'candidate']],
+      paint: { 'line-color': '#17212b', 'line-width': 9, 'line-opacity': 0.82 },
+    });
+  if (!map.getLayer(`${id}-line`))
+    map.addLayer({
+      id: `${id}-line`,
+      type: 'line',
+      source: id,
+      metadata: { 'mapmotion:editor-only': true },
+      filter: ['any', ['==', ['get', 'kind'], 'line'], ['==', ['get', 'kind'], 'candidate']],
+      paint: { 'line-color': '#ffbd45', 'line-width': 5, 'line-opacity': 1 },
+    });
+  if (!map.getLayer(`${id}-points`))
+    map.addLayer({
+      id: `${id}-points`,
+      type: 'circle',
+      source: id,
+      metadata: { 'mapmotion:editor-only': true },
+      filter: ['==', ['get', 'kind'], 'vertex'],
+      paint: {
+        'circle-radius': 6,
+        'circle-color': ['case', ['get', 'selected'], '#ffbd45', '#ffffff'],
+        'circle-stroke-color': '#34bfa3',
+        'circle-stroke-width': 2,
+      },
+    });
+  if (!map.getLayer(`${id}-labels`))
+    map.addLayer({
+      id: `${id}-labels`,
+      type: 'symbol',
+      source: id,
+      metadata: { 'mapmotion:editor-only': true },
+      filter: ['==', ['get', 'kind'], 'vertex'],
+      layout: {
+        'text-field': ['get', 'index'],
+        'text-size': 12,
+        'text-font': ['Noto Sans Regular'],
+        'text-allow-overlap': true,
+      },
+      paint: { 'text-color': '#071018' },
+    });
+  for (const layerId of [`${id}-casing`, `${id}-line`, `${id}-points`, `${id}-labels`])
+    if (map.getLayer(layerId)) map.moveLayer(layerId);
+  map.triggerRepaint();
+  return true;
+};
+
+/** Retains only the newest editor draft until the live style can accept it. */
+export const createRouteDraftOverlaySynchronizer = () => {
+  let latest = routeDraftFeatureCollection([]);
+  let pending = false;
+  return {
+    setLatest(data: ReturnType<typeof routeDraftFeatureCollection>) {
+      latest = data;
+      pending = true;
+    },
+    flush(map: MapLibreMap, force = false) {
+      if (!pending && !force) return false;
+      const written = syncRouteDraftOverlay(map, latest);
+      if (written) pending = false;
+      return written;
+    },
+    hasPending: () => pending,
+  };
+};
+
 export const shapeDraftFeatureCollection = (
   draft: readonly [number, number][],
   kind?: ShapeKind,
@@ -308,6 +389,10 @@ export function OnlineOpenFreeMap({
   const regionDraftRef = useRef(regionDraft);
   const onRoutePointRef = useRef(onRoutePoint);
   const routeDraftRef = useRef(routeDraft);
+  const routeCandidateRef = useRef(routeCandidate);
+  const routeCandidatesRef = useRef(routeCandidates);
+  const customRouteControlPointIdsRef = useRef(customRouteControlPointIds);
+  const selectedCustomRouteControlPointIdRef = useRef(selectedCustomRouteControlPointId);
   const shapeDraftKindRef = useRef(shapeDraftKind);
   const shapeDraftRef = useRef(shapeDraft);
   const onCustomRoutePointRef = useRef(onCustomRoutePoint);
@@ -315,6 +400,7 @@ export function OnlineOpenFreeMap({
   const onSelectCustomRouteControlPointRef = useRef(onSelectCustomRouteControlPoint);
   const assetUrlsRef = useRef(assetUrls);
   const mapServiceSettingsRef = useRef(mapServiceSettings);
+  const routeDraftSynchronizerRef = useRef(createRouteDraftOverlaySynchronizer());
   const applyingCanonicalCamera = useRef(false);
   const nativeCameraSignaturesRef = useRef(new Set<string>());
   const diagnosticsRef = useRef({ nativeSyncs: 0, externalApplications: 0 });
@@ -347,6 +433,10 @@ export function OnlineOpenFreeMap({
   regionDraftRef.current = regionDraft;
   onRoutePointRef.current = onRoutePoint;
   routeDraftRef.current = routeDraft;
+  routeCandidateRef.current = routeCandidate;
+  routeCandidatesRef.current = routeCandidates;
+  customRouteControlPointIdsRef.current = customRouteControlPointIds;
+  selectedCustomRouteControlPointIdRef.current = selectedCustomRouteControlPointId;
   shapeDraftKindRef.current = shapeDraftKind;
   shapeDraftRef.current = shapeDraft;
   onCustomRoutePointRef.current = onCustomRoutePoint;
@@ -553,6 +643,15 @@ export function OnlineOpenFreeMap({
     map.on('style.load', () => {
       const generation = styleGenerationRef.current.begin();
       setEditorOverlayRevision((revision) => revision + 1);
+      const currentDraftData = routeDraftFeatureCollection(
+        routeDraftRef.current,
+        routeCandidateRef.current,
+        routeCandidatesRef.current,
+        customRouteControlPointIdsRef.current,
+        selectedCustomRouteControlPointIdRef.current,
+      );
+      routeDraftSynchronizerRef.current.setLatest(currentDraftData);
+      routeDraftSynchronizerRef.current.flush(map!, true);
       const activeDefinition = basemapById(loadedStyleRef.current ?? 'liberty');
       applyBasemapBoundaryPolicy(map!, activeDefinition);
       applyBasemapLabelLanguage(map!, activeDefinition, labelLanguageRef.current, true);
@@ -565,6 +664,10 @@ export function OnlineOpenFreeMap({
         container.style.visibility = 'visible';
         setStatus(`${activeDefinition.displayName} ready`);
       });
+    });
+    map.on('idle', () => {
+      if (!routeDraftSynchronizerRef.current.hasPending()) return;
+      routeDraftSynchronizerRef.current.flush(map!);
     });
     let movingPinId: string | null = null;
     let movingPinLabelId: string | null = null;
@@ -1087,8 +1190,6 @@ export function OnlineOpenFreeMap({
 
   useLayoutEffect(() => {
     const map = mapRef.current;
-    if (!map?.isStyleLoaded()) return;
-    const id = 'mapmotion-route-draft';
     const data = routeDraftFeatureCollection(
       routeDraft,
       routeCandidate,
@@ -1096,49 +1197,8 @@ export function OnlineOpenFreeMap({
       customRouteControlPointIds,
       selectedCustomRouteControlPointId,
     );
-    const source = map.getSource(id) as import('maplibre-gl').GeoJSONSource | undefined;
-    if (source) source.setData(data as any);
-    else map.addSource(id, { type: 'geojson', data: data as any });
-    if (!map.getLayer(`${id}-line`))
-      map.addLayer({
-        id: `${id}-line`,
-        type: 'line',
-        source: id,
-        metadata: { 'mapmotion:editor-only': true },
-        filter: ['in', ['get', 'kind'], ['literal', ['line', 'candidate']]],
-        paint: { 'line-color': '#ffbd45', 'line-width': 5, 'line-opacity': 0.9 },
-      });
-    if (!map.getLayer(`${id}-points`))
-      map.addLayer({
-        id: `${id}-points`,
-        type: 'circle',
-        source: id,
-        metadata: { 'mapmotion:editor-only': true },
-        filter: ['==', ['get', 'kind'], 'vertex'],
-        paint: {
-          'circle-radius': 6,
-          'circle-color': ['case', ['get', 'selected'], '#ffbd45', '#ffffff'],
-          'circle-stroke-color': '#34bfa3',
-          'circle-stroke-width': 2,
-        },
-      });
-    if (!map.getLayer(`${id}-labels`))
-      map.addLayer({
-        id: `${id}-labels`,
-        type: 'symbol',
-        source: id,
-        metadata: { 'mapmotion:editor-only': true },
-        filter: ['==', ['get', 'kind'], 'vertex'],
-        layout: {
-          'text-field': ['get', 'index'],
-          'text-size': 12,
-          'text-font': ['Noto Sans Regular'],
-          'text-allow-overlap': true,
-        },
-        paint: { 'text-color': '#071018' },
-      });
-    for (const layerId of [`${id}-line`, `${id}-points`, `${id}-labels`])
-      if (map.getLayer(layerId)) map.moveLayer(layerId);
+    routeDraftSynchronizerRef.current.setLatest(data);
+    if (map) routeDraftSynchronizerRef.current.flush(map);
   }, [
     customRouteControlPointIds,
     editorOverlayRevision,

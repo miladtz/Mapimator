@@ -66,6 +66,16 @@ export interface RoutePlannerDraft {
 
 export const routePlannerPoints = (draft: RoutePlannerDraft) =>
   [draft.source, ...draft.stops, draft.destination].filter((point): point is RoutePoint => Boolean(point));
+
+/** Stored, selected planner geometry for the editor-only draft renderer. */
+export const routePlannerDraftGeometries = (draft: RoutePlannerDraft): [number, number][][] =>
+  draft.sections.flatMap((section) => {
+    const plan =
+      section.plans.find((candidate) => candidate.id === section.selectedPlanId) ?? section.plans[0];
+    return plan?.geometry?.length && plan.geometry.length > 1
+      ? [plan.geometry.map((coordinate) => [...coordinate] as [number, number])]
+      : [];
+  });
 const sectionIdentity = (startPointId: string, endPointId: string) =>
   `route-section-${startPointId}-${endPointId}`;
 

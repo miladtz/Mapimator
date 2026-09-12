@@ -16,6 +16,8 @@ writeFileSync(
     `export * from '${modulePath('src/core/project')}';`,
     `export * from '${modulePath('src/core/viewCompiler')}';`,
     `export * from '${modulePath('src/core/onlineProjectOverlays')}';`,
+    `export * from '${modulePath('src/core/routePlanner')}';`,
+    `export { createRouteDraftOverlaySynchronizer, routeDraftFeatureCollection, syncRouteDraftOverlay } from '${modulePath('src/components/OnlineOpenFreeMap')}';`,
   ].join('\n'),
 );
 let core;
@@ -34,6 +36,75 @@ try {
 } finally {
   rmSync(out, { recursive: true, force: true });
 }
+
+const plannerGeometry = (pathType, geometry, id = pathType) => ({
+  id,
+  startPointId: `${id}-start`,
+  endPointId: `${id}-end`,
+  pathType,
+  airModel: 'great-circle',
+  status: 'ready',
+  selectedPlanId: `${id}-plan`,
+  plans: [
+    {
+      id: `${id}-plan`,
+      pathType,
+      geometry,
+      provider: 'test',
+      providerVersion: '1',
+      distanceMeters: 1,
+      estimatedDurationSeconds: 1,
+      routeSummary: id,
+      legs: [],
+      alternativeRank: 0,
+    },
+  ],
+});
+const plannerDraft = (sections) => ({ sections, stops: [], preference: 'fastest', status: 'ready' });
+for (const pathType of ['road', 'maritime', 'air', 'custom']) {
+  const geometry = [
+    [40, 30],
+    [41, 31],
+  ];
+  assert.deepEqual(core.routePlannerDraftGeometries(plannerDraft([plannerGeometry(pathType, geometry)])), [
+    geometry,
+  ]);
+}
+const partial = core.routePlannerDraftGeometries(
+  plannerDraft([
+    plannerGeometry(
+      'road',
+      [
+        [0, 0],
+        [1, 1],
+      ],
+      'one',
+    ),
+    { ...plannerGeometry('maritime', [], 'missing'), plans: [], status: 'idle' },
+    plannerGeometry(
+      'air',
+      [
+        [3, 3],
+        [4, 4],
+      ],
+      'three',
+    ),
+  ]),
+);
+assert.deepEqual(
+  partial,
+  [
+    [
+      [0, 0],
+      [1, 1],
+    ],
+    [
+      [3, 3],
+      [4, 4],
+    ],
+  ],
+  'partial Sections remain independent',
+);
 
 const tehran = core.createRoutePoint(51.389, 35.6892, 'Tehran');
 const dubai = core.createRoutePoint(55.2708, 25.2048, 'Dubai');
@@ -156,15 +227,141 @@ const map = {
   addSource: (id, definition) => sources.set(id, makeSource(definition.data)),
   getLayer: (id) => mapLayers.get(id),
   addLayer: (layer) => mapLayers.set(layer.id, layer),
+  moveLayer: (id) => {
+    const layer = mapLayers.get(id);
+    if (layer) {
+      mapLayers.delete(id);
+      mapLayers.set(id, layer);
+    }
+  },
   removeLayer: (id) => mapLayers.delete(id),
   hasImage: (id) => images.has(id),
   addImage: (id) => images.add(id),
   setLayoutProperty() {},
+  triggerRepaint() {},
   once: (event, callback) => {
     assert.equal(event, 'idle');
     idleCallback = callback;
   },
 };
+
+const draftData = core.routeDraftFeatureCollection(
+  [
+    [0, 0],
+    [1, 1],
+    [2, 2],
+    [3, 3],
+    [4, 4],
+  ],
+  undefined,
+  [
+    [
+      [0, 0],
+      [1, 1],
+    ],
+    [],
+    [
+      [2, 2],
+      [3, 3],
+    ],
+    [
+      [3, 3],
+      [4, 4],
+    ],
+  ],
+);
+assert.equal(draftData.features.filter((feature) => feature.properties.kind === 'candidate').length, 3);
+assert.equal(core.syncRouteDraftOverlay(map, draftData), false, 'unsettled style defers attachment');
+styleLoaded = true;
+assert.equal(core.syncRouteDraftOverlay(map, draftData), true);
+assert.equal(sources.get('mapmotion-route-draft').data, draftData);
+assert.ok(mapLayers.has('mapmotion-route-draft-casing'));
+assert.deepEqual(mapLayers.get('mapmotion-route-draft-line').filter, [
+  'any',
+  ['==', ['get', 'kind'], 'line'],
+  ['==', ['get', 'kind'], 'candidate'],
+]);
+
+const pendingSources = new Map();
+const pendingLayers = new Map();
+let pendingStyleLoaded = false;
+const pendingMap = {
+  isStyleLoaded: () => pendingStyleLoaded,
+  getSource: (id) => pendingSources.get(id),
+  addSource: (id, definition) => pendingSources.set(id, makeSource(definition.data)),
+  getLayer: (id) => pendingLayers.get(id),
+  addLayer: (layer) => pendingLayers.set(layer.id, layer),
+  moveLayer: (id) => {
+    const layer = pendingLayers.get(id);
+    if (layer) {
+      pendingLayers.delete(id);
+      pendingLayers.set(id, layer);
+    }
+  },
+  triggerRepaint() {},
+};
+const latestSynchronizer = core.createRouteDraftOverlaySynchronizer();
+const pendingA = core.routeDraftFeatureCollection(
+  [
+    [0, 0],
+    [1, 1],
+  ],
+  [
+    [0, 0],
+    [10, 10],
+  ],
+);
+const pendingB = core.routeDraftFeatureCollection(
+  [
+    [0, 0],
+    [2, 2],
+  ],
+  [
+    [0, 0],
+    [20, 20],
+  ],
+);
+const pendingC = core.routeDraftFeatureCollection(
+  [
+    [0, 0],
+    [3, 3],
+  ],
+  [
+    [0, 0],
+    [30, 30],
+  ],
+);
+latestSynchronizer.setLatest(pendingA);
+assert.equal(latestSynchronizer.flush(pendingMap), false, 'unready style retains A');
+latestSynchronizer.setLatest(pendingB);
+latestSynchronizer.setLatest(pendingC);
+assert.equal(latestSynchronizer.hasPending(), true, 'latest draft remains pending while unavailable');
+pendingStyleLoaded = true;
+assert.equal(latestSynchronizer.flush(pendingMap), true, 'style readiness flushes the pending draft');
+assert.equal(
+  pendingSources.get('mapmotion-route-draft').data,
+  pendingC,
+  'rapid unavailable updates write latest C only',
+);
+assert.equal(latestSynchronizer.hasPending(), false);
+
+pendingSources.delete('mapmotion-route-draft');
+pendingLayers.clear();
+assert.equal(latestSynchronizer.flush(pendingMap, true), true, 'style reload forces source restoration');
+assert.equal(
+  pendingSources.get('mapmotion-route-draft').data,
+  pendingC,
+  'style reload restores the latest current draft rather than stale data',
+);
+mapLayers.clear();
+sources.clear();
+styleLoaded = false;
+for (const id of [
+  core.ONLINE_PROJECT_REGION_SOURCE_ID,
+  core.ONLINE_PROJECT_ROUTE_SOURCE_ID,
+  core.ONLINE_PROJECT_PIN_SOURCE_ID,
+])
+  sources.set(id, makeSource());
 
 const updated = core.updateOnlineProjectOverlays(map, [route], route.id);
 const earlyRouteData = sources.get(core.ONLINE_PROJECT_ROUTE_SOURCE_ID).data;

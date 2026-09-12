@@ -127,6 +127,7 @@ import {
   planLocalSection,
   routeLayerFromSections,
   routePlannerDraftFromLayer,
+  routePlannerDraftGeometries,
   replaceAcceptedRouteLayer,
   routePlannerPoints,
   setRoutePlannerSectionPathType,
@@ -2031,6 +2032,8 @@ export function App() {
     customRouteSession && customRouteStart && customRouteEnd
       ? generateCustomRouteGeometry(customRouteStart, customRouteEnd, customRouteSession.draft)
       : undefined;
+  const plannerRouteCandidates = routePlanner ? routePlannerDraftGeometries(routePlanner) : [];
+  const plannerRouteCandidate = plannerRouteCandidates.length === 1 ? plannerRouteCandidates[0] : undefined;
   const pathStopSection = pathStopDrawer
     ? routePlanner?.sections.find((section) => section.id === pathStopDrawer.sectionId)
     : undefined;
@@ -2607,16 +2610,11 @@ export function App() {
                     allEyesHidden
                       ? []
                       : editingScene.layers
-                          .filter(
-                            (layer) =>
-                              !eyeHidden[layer.id] &&
-                              !(routePlanner && editingRouteLayerId && layer.id === editingRouteLayerId),
-                          )
+                          .filter((layer) => !eyeHidden[layer.id])
                           .map((layer) => ({
                             ...layer,
                             visible: true,
-                            opacity:
-                              layer.id === editingRouteLayerId ? (layer.opacity ?? 1) * 0.35 : layer.opacity,
+                            opacity: layer.opacity,
                           }))
                   }
                   editingCamera={
@@ -2765,16 +2763,13 @@ export function App() {
                       ? [...shapeDraft, shapeDraft[0]].map((point) =>
                           mapMotionWorldToLngLat(point.x, point.y),
                         )
-                      : undefined) ?? customRouteCandidate
+                      : undefined) ??
+                    customRouteCandidate ??
+                    plannerRouteCandidate
                   }
                   routeCandidates={
-                    routePlanner
-                      ? routePlanner.sections.flatMap((section) => {
-                          const plan =
-                            section.plans.find((item) => item.id === section.selectedPlanId) ??
-                            section.plans[0];
-                          return plan?.geometry?.length ? [plan.geometry] : [];
-                        })
+                    routePlanner && !customRouteCandidate && plannerRouteCandidates.length > 1
+                      ? plannerRouteCandidates
                       : []
                   }
                   customRouteControlPointIds={(
