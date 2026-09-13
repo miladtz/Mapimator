@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { LocationSearchController, type SearchResult } from '../core/locationSearch';
+import { PhotonGeoSearchProvider } from '../core/geoSearch';
 
 export function SearchPanel({
   focusRequest,
@@ -24,9 +25,9 @@ export function SearchPanel({
   const [results, setResults] = useState<SearchResult[]>([]);
   const [highlighted, setHighlighted] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [onlineUnavailable, setOnlineUnavailable] = useState(true);
+  const [onlineUnavailable, setOnlineUnavailable] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const controllerRef = useRef(new LocationSearchController());
+  const controllerRef = useRef(new LocationSearchController(new PhotonGeoSearchProvider()));
   useEffect(() => {
     requestAnimationFrame(() => {
       inputRef.current?.focus();
@@ -41,12 +42,17 @@ export function SearchPanel({
     }
     setLoading(true);
     const timer = window.setTimeout(() => {
-      void controllerRef.current.search(query).then((response) => {
-        setResults(response.results);
-        setOnlineUnavailable(response.onlineUnavailable);
-        setHighlighted(0);
-        setLoading(false);
-      });
+      void controllerRef.current
+        .search(query)
+        .then((response) => {
+          setResults(response.results);
+          setOnlineUnavailable(response.onlineUnavailable);
+          setHighlighted(0);
+          setLoading(false);
+        })
+        .catch((error) => {
+          if (!(error instanceof DOMException && error.name === 'AbortError')) setLoading(false);
+        });
     }, 250);
     return () => {
       window.clearTimeout(timer);
@@ -71,8 +77,8 @@ export function SearchPanel({
         <input
           ref={inputRef}
           value={query}
-          placeholder="Search city, region, sea, coordinates…"
-          aria-label="Search city, landmark, address, or coordinates"
+          placeholder="Search cities, regions, countries, geography…"
+          aria-label="Search cities, regions, countries, or coordinates"
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Escape') {
@@ -101,12 +107,12 @@ export function SearchPanel({
       </div>
       <div className="location-search-body">
         {!query.trim() && <small className="location-search-section">Recent</small>}
-        {loading && <div className="location-search-state">Searching local geography…</div>}
+        {loading && <div className="location-search-state">Searching worldwide geography…</div>}
         {!loading && query.trim() && visible.length === 0 && (
           <div className="location-search-state">
-            No local places found for “{query}”
+            No geographic places found for “{query}”
             {onlineUnavailable && (
-              <small>Online POI/address search requires a configured production geocoder.</small>
+              <small>Global search is unavailable. Local geography remains available.</small>
             )}
           </div>
         )}
@@ -158,7 +164,11 @@ export function SearchPanel({
       </div>
       <footer>
         Local geography and coordinates
-        <span>Online POI/address search not configured</span>
+        <span>
+          {onlineUnavailable
+            ? 'Photon unavailable · local results only'
+            : 'Worldwide · Photon / OpenStreetMap'}
+        </span>
       </footer>
     </aside>
   );

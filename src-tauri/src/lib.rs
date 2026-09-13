@@ -188,7 +188,8 @@ pub fn run() {
             write_routing_service_settings,
             read_map_service_settings,
             write_map_service_settings,
-            plan_open_route_service_route
+            plan_open_route_service_route,
+            search_photon
         ])
         .run(tauri::generate_context!())
         .expect("error while running MapMotion Studio");
@@ -279,6 +280,44 @@ fn write_routing_service_settings(
 }
 
 const OPEN_ROUTE_SERVICE_BASE_URL: &str = "https://api.heigit.org/openrouteservice";
+const PHOTON_BASE_URL: &str = "https://photon.komoot.io/api/";
+
+#[tauri::command]
+async fn search_photon(query: String, limit: u8) -> Result<serde_json::Value, String> {
+    let query = query.trim();
+    if query.is_empty() || query.chars().count() > 200 || !(1..=20).contains(&limit) {
+        return Err("Invalid geographic search request.".into());
+    }
+    let response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(12))
+        .user_agent("MapMotion Studio geographic authoring search")
+        .build()
+        .map_err(|_| "Geographic search unavailable.".to_string())?
+        .get(PHOTON_BASE_URL)
+        .query(&[("q", query.to_string()), ("limit", limit.to_string())])
+        .send()
+        .await
+        .map_err(|error| {
+            if error.is_timeout() {
+                "Geographic search timed out.".to_string()
+            } else if error.is_connect() {
+                "Geographic search requires an internet connection.".to_string()
+            } else {
+                "Geographic search unavailable.".to_string()
+            }
+        })?;
+    if !response.status().is_success() {
+        return Err("Geographic search provider unavailable.".into());
+    }
+    let body = response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|_| "Geographic search provider returned malformed data.".to_string())?;
+    if !body.get("features").is_some_and(|value| value.is_array()) {
+        return Err("Geographic search provider returned malformed data.".into());
+    }
+    Ok(body)
+}
 
 fn validate_ors_request(request: &OpenRouteServiceRequest) -> Result<(), String> {
     let coordinates_valid = request.coordinates.iter().all(|[longitude, latitude]| {

@@ -12,6 +12,12 @@ export type SearchResultCategory =
   | 'Continent'
   | 'Macro Region'
   | 'City'
+  | 'Town'
+  | 'Village'
+  | 'Locality'
+  | 'Island'
+  | 'Mountain'
+  | 'Lake'
   | 'Sea'
   | 'Coordinates'
   | 'Landmark'
@@ -30,7 +36,9 @@ export interface SearchBounds {
 export interface SearchResult {
   id: string;
   source: 'local' | 'geocoder' | 'coordinates';
+  sourceId?: string;
   name: string;
+  displayName?: string;
   localizedName?: string;
   secondaryText?: string;
   category: SearchResultCategory;
@@ -38,6 +46,10 @@ export interface SearchResult {
   bounds?: SearchBounds;
   countryCode?: string;
   adminCode?: string;
+  country?: string;
+  admin1?: string;
+  admin2?: string;
+  sourceMetadata?: Readonly<Record<string, string | number>>;
   geographicFeatureId?: string;
   capabilities: { addPin: boolean; addRegion: boolean };
 }
@@ -71,11 +83,11 @@ export class LocationSearchController {
     this.active?.abort();
     const coordinate = parseCoordinateQuery(query);
     if (coordinate) return { results: [coordinate], onlineUnavailable: !this.provider };
-    const local = searchLocalLocations(query);
+    const local = searchLocalLocations(query, this.provider ? 10 : 20);
     if (!this.provider || !query.trim()) return { results: local, onlineUnavailable: !this.provider };
     const key = normalizeSearchText(query);
     const cached = this.cache.get(key);
-    if (cached) return { results: mergeSearchResults(local, cached), onlineUnavailable: false };
+    if (cached) return { results: mergeSearchResults(local, cached, 10), onlineUnavailable: false };
     const controller = new AbortController();
     this.active = controller;
     try {
@@ -83,7 +95,7 @@ export class LocationSearchController {
       if (id !== this.requestId) throw new DOMException('Superseded search.', 'AbortError');
       this.cache.set(key, online);
       while (this.cache.size > this.cacheLimit) this.cache.delete(this.cache.keys().next().value!);
-      return { results: mergeSearchResults(local, online), onlineUnavailable: false };
+      return { results: mergeSearchResults(local, online, 10), onlineUnavailable: false };
     } catch (error) {
       if (controller.signal.aborted || id !== this.requestId) throw error;
       return { results: local, onlineUnavailable: true };
@@ -91,7 +103,7 @@ export class LocationSearchController {
   }
 }
 
-const normalizeSearchText = (value: string) =>
+export const normalizeSearchText = (value: string) =>
   value
     .normalize('NFKD')
     .replace(/[\u064B-\u065F\u0670\u06D6-\u06ED]/g, '')
@@ -249,15 +261,13 @@ export const mergeSearchResults = (local: SearchResult[], online: SearchResult[]
   for (const candidate of online) {
     const duplicate = result.some(
       (current) =>
-        (candidate.countryCode &&
-          current.countryCode === candidate.countryCode &&
-          current.category === candidate.category) ||
-        (normalizeSearchText(current.name) === normalizeSearchText(candidate.name) &&
-          current.category === candidate.category &&
-          Math.hypot(
-            current.coordinates.longitude - candidate.coordinates.longitude,
-            current.coordinates.latitude - candidate.coordinates.latitude,
-          ) < 0.1),
+        normalizeSearchText(current.name) === normalizeSearchText(candidate.name) &&
+        current.countryCode === candidate.countryCode &&
+        current.category === candidate.category &&
+        Math.hypot(
+          current.coordinates.longitude - candidate.coordinates.longitude,
+          current.coordinates.latitude - candidate.coordinates.latitude,
+        ) < 0.1,
     );
     if (!duplicate) result.push(candidate);
   }
@@ -342,16 +352,46 @@ export const normalizePhotonResults = (features: readonly PhotonFeature[]): Sear
     )
       return [];
     const properties = feature.properties ?? {};
-    const osmValue = String(properties.osm_value ?? properties.type ?? '');
+    const osmValue = String(properties.osm_value ?? properties.type ?? '').toLocaleLowerCase();
+    const osmKey = String(properties.osm_key ?? '').toLocaleLowerCase();
+    const geographicValues = new Set([
+      'country',
+      'state',
+      'province',
+      'county',
+      'district',
+      'city',
+      'town',
+      'village',
+      'locality',
+      'island',
+      'peak',
+      'mountain',
+      'lake',
+      'reservoir',
+      'water',
+    ]);
+    if (!geographicValues.has(osmValue) && !['place', 'boundary', 'natural', 'water'].includes(osmKey))
+      return [];
     const category: SearchResultCategory =
-      osmValue === 'city'
-        ? 'City'
-        : osmValue === 'airport'
-          ? 'Airport'
-          : osmValue === 'house'
-            ? 'Address'
-            : 'POI';
-    const rawBounds = feature.bbox;
+      osmValue === 'country'
+        ? 'Country'
+        : ['state', 'province', 'county', 'district'].includes(osmValue)
+          ? 'Administrative Region'
+          : osmValue === 'city'
+            ? 'City'
+            : osmValue === 'town'
+              ? 'Town'
+              : osmValue === 'village'
+                ? 'Village'
+                : osmValue === 'island'
+                  ? 'Island'
+                  : ['peak', 'mountain'].includes(osmValue)
+                    ? 'Mountain'
+                    : ['lake', 'reservoir', 'water'].includes(osmValue)
+                      ? 'Lake'
+                      : 'Locality';
+    const rawBounds = feature.bbox ?? properties.extent;
     const bounds =
       Array.isArray(rawBounds) &&
       rawBounds.length === 4 &&
@@ -363,22 +403,74 @@ export const normalizePhotonResults = (features: readonly PhotonFeature[]): Sear
             north: Number(rawBounds[3]),
           }
         : undefined;
+    const sourceId = `${String(properties.osm_type ?? 'feature')}:${String(properties.osm_id ?? index)}`;
+    const name = String(properties.name ?? properties.locality ?? 'Unnamed place');
+    const country = typeof properties.country === 'string' ? properties.country : undefined;
+    const admin1 = typeof properties.state === 'string' ? properties.state : undefined;
+    const admin2 = typeof properties.county === 'string' ? properties.county : undefined;
+    const result: SearchResult = {
+      id: `geocoder:photon:${sourceId}`,
+      source: 'geocoder' as const,
+      sourceId,
+      name,
+      displayName: name,
+      localizedName:
+        typeof properties.name_fa === 'string'
+          ? properties.name_fa
+          : typeof properties['name:fa'] === 'string'
+            ? properties['name:fa']
+            : undefined,
+      secondaryText: [admin2, admin1, country].filter(Boolean).join(' · '),
+      category,
+      coordinates: { longitude, latitude: clamp(latitude, -85.05112878, 85.05112878) },
+      bounds,
+      countryCode:
+        typeof properties.countrycode === 'string' ? properties.countrycode.toUpperCase() : undefined,
+      country,
+      admin1,
+      admin2,
+      sourceMetadata: {
+        osmType: String(properties.osm_type ?? ''),
+        osmId: String(properties.osm_id ?? ''),
+        osmKey,
+        osmValue,
+      },
+      capabilities: { addPin: true, addRegion: false },
+    };
+    const boundary = resolveGeoEntityRegion(result);
     return [
       {
-        id: `geocoder:photon:${String(properties.osm_id ?? index)}`,
-        source: 'geocoder' as const,
-        name: String(properties.name ?? properties.street ?? 'Unnamed place'),
-        localizedName: typeof properties.name_fa === 'string' ? properties.name_fa : undefined,
-        secondaryText: [properties.state, properties.country].filter(Boolean).join(', '),
-        category,
-        coordinates: { longitude, latitude: clamp(latitude, -85.05112878, 85.05112878) },
-        bounds,
-        countryCode:
-          typeof properties.countrycode === 'string' ? properties.countrycode.toUpperCase() : undefined,
-        capabilities: { addPin: true, addRegion: false },
+        ...result,
+        geographicFeatureId: boundary?.id,
+        capabilities: { ...result.capabilities, addRegion: Boolean(boundary) },
       },
     ];
   });
+
+/** Strict local-boundary resolver: exact identity/name plus country context, never fuzzy geometry guessing. */
+export const resolveGeoEntityRegion = (entity: SearchResult) => {
+  if (entity.geographicFeatureId)
+    return GEOGRAPHIC_REGIONS.find((candidate) => candidate.id === entity.geographicFeatureId);
+  if (entity.category !== 'Country' && entity.category !== 'Administrative Region') return undefined;
+  const name = normalizeSearchText(entity.name);
+  const countryCode2 = entity.countryCode?.toLocaleLowerCase();
+  const candidates = GEOGRAPHIC_REGIONS.filter((region) => {
+    if (entity.category === 'Country' && region.kind !== 'country') return false;
+    if (entity.category === 'Administrative Region' && region.kind !== 'admin1') return false;
+    if (
+      entity.category === 'Country' &&
+      countryCode2 &&
+      region.countryCode2.toLocaleLowerCase() === countryCode2
+    )
+      return true;
+    const identityMatches = [region.name, region.localName].some(
+      (candidate) => normalizeSearchText(candidate) === name,
+    );
+    if (!identityMatches) return false;
+    return !countryCode2 || region.countryCode2.toLocaleLowerCase() === countryCode2;
+  });
+  return candidates.length === 1 ? candidates[0] : undefined;
+};
 
 export const trimRecentSearches = (results: readonly SearchResult[], limit = 8) =>
   results

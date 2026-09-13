@@ -94,7 +94,14 @@ import {
   GEOGRAPHIC_REGIONS,
   type LngLat,
 } from '../core/regions';
-import { cameraForSearchResult, trimRecentSearches, type SearchResult } from '../core/locationSearch';
+import {
+  cameraForSearchResult,
+  LocationSearchController,
+  resolveGeoEntityRegion,
+  trimRecentSearches,
+  type SearchResult,
+} from '../core/locationSearch';
+import { PhotonGeoSearchProvider } from '../core/geoSearch';
 import { lngLatToMapMotionWorld } from '../core/openFreeMapAdapter';
 import {
   appendRoutePoint,
@@ -390,6 +397,10 @@ export function App() {
   const [mapServiceSettingsOpen, setMapServiceSettingsOpen] = useState(false);
   const [regionToolOpen, setRegionToolOpen] = useState(false);
   const [regionSearch, setRegionSearch] = useState('');
+  const [regionSearchResults, setRegionSearchResults] = useState<SearchResult[]>([]);
+  const [regionSearchLoading, setRegionSearchLoading] = useState(false);
+  const [regionSearchOnlineUnavailable, setRegionSearchOnlineUnavailable] = useState(false);
+  const regionSearchControllerRef = useRef(new LocationSearchController(new PhotonGeoSearchProvider()));
   const [locationSearchOpen, setLocationSearchOpen] = useState(false);
   const [locationSearchFocusRequest, setLocationSearchFocusRequest] = useState(0);
   const [recentLocations, setRecentLocations] = useState<SearchResult[]>([]);
@@ -434,6 +445,31 @@ export function App() {
     void loadRoutingServiceSettings().then(setRoutingSettings);
     void loadMapServiceSettings().then(setMapServiceSettings);
   }, []);
+  useEffect(() => {
+    if (!regionToolOpen || !regionSearch.trim()) {
+      regionSearchControllerRef.current.cancel();
+      setRegionSearchResults([]);
+      setRegionSearchLoading(false);
+      return;
+    }
+    setRegionSearchLoading(true);
+    const timer = window.setTimeout(() => {
+      void regionSearchControllerRef.current
+        .search(regionSearch)
+        .then((response) => {
+          setRegionSearchResults(response.results);
+          setRegionSearchOnlineUnavailable(response.onlineUnavailable);
+          setRegionSearchLoading(false);
+        })
+        .catch((error) => {
+          if (!(error instanceof DOMException && error.name === 'AbortError')) setRegionSearchLoading(false);
+        });
+    }, 250);
+    return () => {
+      window.clearTimeout(timer);
+      regionSearchControllerRef.current.cancel();
+    };
+  }, [regionSearch, regionToolOpen]);
   const style = MAP_STYLES.find((item) => item.id === project.mapSettings.styleId)!;
   const selectedBasemap = basemapById(project.mapSettings.onlineStyleId);
   const selected = project.layers.find((l) => l.id === selectedId && l.type !== 'geo-effect') ?? null;
@@ -1772,9 +1808,11 @@ export function App() {
     setNotice(`${result.name} Pin added`);
   };
   const addRegionFromSearch = (result: SearchResult) => {
-    if (!result.geographicFeatureId) return;
-    const region = GEOGRAPHIC_REGIONS.find((candidate) => candidate.id === result.geographicFeatureId);
-    if (!region) return;
+    const region = resolveGeoEntityRegion(result);
+    if (!region) {
+      setNotice(`Boundary geometry is unavailable for ${result.name}. No Region was created.`);
+      return false;
+    }
     const key = `${region.kind}:${region.id}`;
     const existing = findAdministrativeRegion(projectRef.current.layers, key);
     if (existing) {
@@ -1788,6 +1826,7 @@ export function App() {
       setNotice(`${layer.name} Region added`);
     }
     rememberLocation(result);
+    return true;
   };
   const addRoutePointFromSearch = (result: SearchResult) => {
     const waypoint = createRoutePoint(
@@ -3004,30 +3043,62 @@ export function App() {
                   onChange={(event) => setRegionSearch(event.target.value)}
                 />
                 <div className="region-picker-results">
-                  {searchAdministrativeRegions(regionSearch).map((region) => (
-                    <button
-                      key={`${region.kind}:${region.id}`}
-                      type="button"
-                      onClick={() => {
-                        const key = `${region.kind}:${region.id}`;
-                        const existing = findAdministrativeRegion(project.layers, key);
-                        if (existing) {
-                          selectLayer(existing.id);
-                          setNotice(`${existing.name} is already a Region layer`);
-                        } else {
-                          const layer = createGeographicRegionLayer(region);
-                          updateProject((current) => addProjectLayer(current, layer));
-                          selectLayer(layer.id);
-                          setNotice(`${layer.name} added as a geographic Region`);
-                        }
-                        setRegionToolOpen(false);
-                        setRegionSearch('');
-                      }}
-                    >
-                      <span>{region.name}</span>
-                      <small>{region.kind === 'country' ? 'Country' : region.countryCode}</small>
-                    </button>
-                  ))}
+                  {!regionSearch.trim() &&
+                    searchAdministrativeRegions('').map((region) => (
+                      <button
+                        key={`${region.kind}:${region.id}`}
+                        type="button"
+                        onClick={() => {
+                          const key = `${region.kind}:${region.id}`;
+                          const existing = findAdministrativeRegion(project.layers, key);
+                          if (existing) {
+                            selectLayer(existing.id);
+                            setNotice(`${existing.name} is already a Region layer`);
+                          } else {
+                            const layer = createGeographicRegionLayer(region);
+                            updateProject((current) => addProjectLayer(current, layer));
+                            selectLayer(layer.id);
+                            setNotice(`${layer.name} added as a geographic Region`);
+                          }
+                          setRegionToolOpen(false);
+                          setRegionSearch('');
+                        }}
+                      >
+                        <span>{region.name}</span>
+                        <small>{region.kind === 'country' ? 'Country' : region.countryCode}</small>
+                      </button>
+                    ))}
+                  {regionSearchLoading && <small>Searching worldwide geography…</small>}
+                  {!regionSearchLoading &&
+                    regionSearch.trim() &&
+                    regionSearchResults.map((result) => {
+                      const boundary = resolveGeoEntityRegion(result);
+                      return (
+                        <button
+                          key={result.id}
+                          type="button"
+                          onClick={() => {
+                            if (!addRegionFromSearch(result)) return;
+                            setRegionToolOpen(false);
+                            setRegionSearch('');
+                          }}
+                        >
+                          <span>{result.name}</span>
+                          <small>
+                            {result.category}
+                            {result.secondaryText ? ` · ${result.secondaryText}` : ''}
+                            {!boundary ? ' · Boundary unavailable' : ''}
+                          </small>
+                        </button>
+                      );
+                    })}
+                  {!regionSearchLoading && regionSearch.trim() && regionSearchResults.length === 0 && (
+                    <small>
+                      {regionSearchOnlineUnavailable
+                        ? 'Photon unavailable. No matching local boundary found.'
+                        : 'No matching geographic entities found.'}
+                    </small>
+                  )}
                 </div>
               </div>
             )}
@@ -7860,7 +7931,7 @@ function Inspector({
                       onBegin={onBeginImageMovementPath}
                       onEnd={onEndImageMovementPath}
                     />
-                  )}
+                    )}
                 </>
               )}
               <span className="pin-section-sub">Layer Hold</span>
