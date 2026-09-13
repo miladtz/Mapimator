@@ -18,7 +18,7 @@ import {
   viewLayersOf,
   viewMemberIds,
 } from './project';
-import { applyRouteEvaluation, evaluateRouteVehicleInstances } from './routes';
+import { applyRouteEvaluation, evaluateRouteVehicleInstances, routePositionAtProgress } from './routes';
 import {
   animatedMediaIntervalsForRun,
   evaluateAnimatedMediaTime,
@@ -31,6 +31,7 @@ import { interpolateCameraChainTransition } from './cameraContinuity';
 import { textMapZoomScale } from './textLayers';
 import { imageMapZoomScale, imageWipeVisibility } from './imageLayers';
 import { supportsDrawShape } from './shapes';
+import { lngLatToMapMotionWorld } from './openFreeMapAdapter';
 
 export type CompiledSegment =
   | { kind: 'view'; id: string; view: View; start: number; end: number; duration: number }
@@ -234,6 +235,8 @@ const layerLifecycle = (
     const eased =
       type === 'fade' || type === 'draw-shape' || type === 'draw-route'
         ? progress
+        : type === 'movement'
+          ? 1
         : easeCameraProgress(progress, 'ease-out');
     return {
       opacityMul: eased,
@@ -306,13 +309,31 @@ const applyPhaseToLayer = (
     if (drawing || (pathWipe && animation?.wipeEnabled)) layer.opacity = authoredOpacity;
   }
   if (layer.type === 'image') {
+    const movementPath = animation?.imageMovementPath;
+    const movement = animation?.appearEnabled && animation.appearType === 'movement';
+    if (
+      movement &&
+      movementPath &&
+      movementPath.length >= 2
+    ) {
+      const delay = Math.max(0, animation.appearDelay ?? 0);
+      const duration = Math.max(0.05, animation.appearDuration ?? 0.6);
+      const progress = Math.max(0, Math.min(1, (phase.segmentLocalTime - delay) / duration));
+      const [longitude, latitude] = routePositionAtProgress(movementPath, progress).coordinate;
+      const center = lngLatToMapMotionWorld(longitude, latitude);
+      layer.x = center.x - (layer.width ?? 160) / 2;
+      layer.y = center.y - (layer.height ?? 90) / 2;
+    }
     layer.imageRenderScale = imageMapZoomScale(animation, cameraZoom);
     layer.imageAnimationScale = phase.popScale ?? 1;
     layer.imageDropOffsetY = phase.dropY ?? 0;
-    layer.imageWipeProgress = imageWipeVisibility(animation, phase.segmentLocalTime);
+    layer.imageWipeProgress = movement ? 1 : imageWipeVisibility(animation, phase.segmentLocalTime);
     layer.imageOrientation = animation?.imageOrientation ?? 'flat-on-map';
     layer.imageScaleWithMapZoom = Boolean(animation?.imageScaleWithMapZoom);
-    if (animation?.wipeEnabled) {
+    if (movement && animation?.wipeEnabled) {
+      layer.opacity = authoredOpacity * phase.opacityMul;
+      layer.visible = phase.visible;
+    } else if (animation?.wipeEnabled) {
       const appearPhase = layerLifecycle(
         layer,
         { ...animation, wipeEnabled: false },
@@ -463,7 +484,13 @@ const applyActiveAppearEvents = (
       const uninterrupted = segments
         .slice(eventIndex, currentIndex + 1)
         .every((candidate) => segmentMemberIds(candidate).has(layer.id));
-      if (uninterrupted && time < eventSegment.start + wholeAppearanceCompleteTime(anim)) {
+      // Movement owns its evaluated position (and existing Hold/Wipe lifecycle)
+      // beyond the originating segment until membership is interrupted or a
+      // newer explicit Appear event takes priority.
+      const eventStillApplies =
+        (layer.type === 'image' && anim.appearType === 'movement') ||
+        time < eventSegment.start + wholeAppearanceCompleteTime(anim);
+      if (uninterrupted && eventStillApplies) {
         const effectiveAnimation =
           layer.type === 'route'
             ? {

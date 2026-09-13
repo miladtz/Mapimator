@@ -495,7 +495,7 @@ const validateSegmentLayerAnimation = (value: unknown, path: string): SegmentLay
     throw new Error(`${path}.animatedMediaRepeatCount must be positive.`);
   if (
     value.appearType !== undefined &&
-    !oneOf(value.appearType, ['fade', 'pop', 'drop', 'draw-shape', 'draw-route'] as const)
+    !oneOf(value.appearType, ['fade', 'pop', 'drop', 'draw-shape', 'draw-route', 'movement'] as const)
   )
     throw new Error(`${path}.appearType is unsupported.`);
   if (value.wipeType !== undefined && !oneOf(value.wipeType, ['fade-out'] as const))
@@ -504,6 +504,18 @@ const validateSegmentLayerAnimation = (value: unknown, path: string): SegmentLay
     throw new Error(`${path}.textScaleWithMapZoom must be a boolean.`);
   if (value.imageScaleWithMapZoom !== undefined && !isBoolean(value.imageScaleWithMapZoom))
     throw new Error(`${path}.imageScaleWithMapZoom must be a boolean.`);
+  if (value.imageMovementPath !== undefined) {
+    if (!Array.isArray(value.imageMovementPath))
+      throw new Error(`${path}.imageMovementPath must be an array.`);
+    for (const [index, coordinate] of value.imageMovementPath.entries())
+      if (
+        !Array.isArray(coordinate) ||
+        coordinate.length !== 2 ||
+        !isFiniteNumber(coordinate[0]) ||
+        !isFiniteNumber(coordinate[1])
+      )
+        throw new Error(`${path}.imageMovementPath[${index}] must be a finite [longitude, latitude].`);
+  }
   if (
     value.animatedMediaPlayback !== undefined &&
     !oneOf(value.animatedMediaPlayback, ['loop', 'once'] as const)

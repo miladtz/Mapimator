@@ -19,6 +19,7 @@ const STANDARD_APPEAR_OPTIONS: readonly ShapeAppearOption[] = [
 ];
 
 const DRAW_SHAPE_OPTION: ShapeAppearOption = { value: 'draw-shape', label: 'Draw Shape' };
+const IMAGE_MOVEMENT_OPTION: ShapeAppearOption = { value: 'movement', label: 'Movement' };
 
 /** Final option list consumed by the real View/Transition Inspector selectors. */
 export const getAppearOptionsForLayer = (
@@ -26,6 +27,8 @@ export const getAppearOptionsForLayer = (
 ): readonly ShapeAppearOption[] =>
   layer.type === 'shape' && supportsDrawShape(layer.shapeKind)
     ? [...STANDARD_APPEAR_OPTIONS, DRAW_SHAPE_OPTION]
+    : layer.type === 'image'
+      ? [...STANDARD_APPEAR_OPTIONS, IMAGE_MOVEMENT_OPTION]
     : STANDARD_APPEAR_OPTIONS;
 
 export const shapeWorldToMercatorMeters = (x: number, y: number): ShapeCoordinate => {

@@ -338,6 +338,11 @@ const icons: Record<LayerType, string> = {
   'geo-effect': '✦',
 };
 type PlaybackState = 'stopped' | 'playing' | 'paused';
+interface ImageMovementAuthoringSession {
+  eventKey: string;
+  draft: ShapePoint[];
+  replaceOnNextStroke: boolean;
+}
 
 export function App() {
   const [project, setProject] = useState<Project>(() => createProject('Untitled documentary'));
@@ -362,6 +367,10 @@ export function App() {
   const [shapeDraft, setShapeDraft] = useState<ShapePoint[]>([]);
   const shapeDraftRef = useRef<ShapePoint[]>([]);
   shapeDraftRef.current = shapeDraft;
+  const [imageMovementAuthoring, setImageMovementAuthoring] =
+    useState<ImageMovementAuthoringSession | null>(null);
+  const imageMovementAuthoringRef = useRef<ImageMovementAuthoringSession | null>(null);
+  imageMovementAuthoringRef.current = imageMovementAuthoring;
   const [regionDraft, setRegionDraft] = useState<LngLat[]>([]);
   const [routeDraft, setRouteDraft] = useState<RoutePoint[]>([]);
   const [routePlanner, setRoutePlanner] = useState<RoutePlannerDraft | null>(null);
@@ -1054,6 +1063,37 @@ export function App() {
     selectLayer(layer.id);
     setPlacing(null);
     setNotice(`${layer.name} added`);
+  };
+  const beginImageMovementPath = (eventKey: string, path: readonly [number, number][]) => {
+    const session: ImageMovementAuthoringSession = {
+      eventKey,
+      draft: path.map(([longitude, latitude]) => {
+        const world = lngLatToMapMotionWorld(longitude, latitude);
+        return { id: `image-movement-point-${crypto.randomUUID()}`, ...world };
+      }),
+      replaceOnNextStroke: path.length > 0,
+    };
+    imageMovementAuthoringRef.current = session;
+    setImageMovementAuthoring(session);
+    setNotice(path.length ? 'Redraw the Image movement path, then choose Finish' : 'Draw the Image movement path');
+  };
+  const updateImageMovementDraft = (point: { x: number; y: number }) => {
+    const current = imageMovementAuthoringRef.current;
+    if (!current) return;
+    const authored = { id: `image-movement-point-${crypto.randomUUID()}`, x: point.x, y: point.y };
+    const previous = current.draft.at(-1);
+    const draft = current.replaceOnNextStroke
+      ? [authored]
+      : previous && Math.hypot(previous.x - point.x, previous.y - point.y) < 1
+        ? current.draft
+        : [...current.draft, authored];
+    const next = { ...current, draft, replaceOnNextStroke: false };
+    imageMovementAuthoringRef.current = next;
+    setImageMovementAuthoring(next);
+  };
+  const endImageMovementAuthoring = () => {
+    imageMovementAuthoringRef.current = null;
+    setImageMovementAuthoring(null);
   };
   const addLayer = async (type: LayerType) => {
     setPlacing(null);
@@ -2661,12 +2701,16 @@ export function App() {
                   }}
                   onChangeImage={(layerId, patch) => updateLayer(layerId, patch)}
                   onShapeDrawPoint={
-                    placing === 'shape' && !['polyline', 'polygon'].includes(shapeKindToPlace)
+                    imageMovementAuthoring
+                      ? updateImageMovementDraft
+                      : placing === 'shape' && !['polyline', 'polygon'].includes(shapeKindToPlace)
                       ? updateDraggedShapeDraft
                       : undefined
                   }
                   onShapeDrawFinish={
-                    placing === 'shape' && !['polyline', 'polygon'].includes(shapeKindToPlace)
+                    imageMovementAuthoring
+                      ? () => setNotice('Movement path captured — choose Finish to accept it')
+                      : placing === 'shape' && !['polyline', 'polygon'].includes(shapeKindToPlace)
                       ? finishDraggedShape
                       : undefined
                   }
@@ -2750,9 +2794,15 @@ export function App() {
                             }
                           : undefined
                   }
-                  shapeDraftKind={placing === 'shape' ? shapeKindToPlace : undefined}
+                  shapeDraftKind={
+                    imageMovementAuthoring ? 'free-draw' : placing === 'shape' ? shapeKindToPlace : undefined
+                  }
                   shapeDraft={
-                    placing === 'shape'
+                    imageMovementAuthoring
+                      ? imageMovementAuthoring.draft.map((point) =>
+                          mapMotionWorldToLngLat(point.x, point.y),
+                        )
+                      : placing === 'shape'
                       ? shapeDraft.map((point) => mapMotionWorldToLngLat(point.x, point.y))
                       : []
                   }
@@ -3191,6 +3241,9 @@ export function App() {
                   assets: p.assets.some((a) => a.id === asset.id) ? p.assets : [...p.assets, asset],
                 }))
               }
+              imageMovementAuthoring={imageMovementAuthoring}
+              onBeginImageMovementPath={beginImageMovementPath}
+              onEndImageMovementPath={endImageMovementAuthoring}
               transitionContext={
                 !projectMode && editingTransitionIndex !== null && project.transitions[editingTransitionIndex]
                   ? (() => {
@@ -3209,6 +3262,7 @@ export function App() {
                       const sourceMembers = memberIds(sequence.segments[compiledIndex - 1]);
                       const destMembers = memberIds(sequence.segments[compiledIndex + 1]);
                       return {
+                        segmentId: transition.id,
                         transitionIndex: editingTransitionIndex,
                         fromName: sourceView.name,
                         toName: destView?.name ?? '',
@@ -3242,6 +3296,7 @@ export function App() {
                   ? (() => {
                       const activeView = project.views[editingViewIndex];
                       return {
+                        segmentId: activeView.id,
                         viewIndex: editingViewIndex,
                         viewName: activeView.name,
                         holdDuration: activeView.holdDuration,
@@ -4475,6 +4530,7 @@ function TransitionInspector({
 }
 
 interface TransitionLayerContext {
+  segmentId: string;
   transitionIndex: number;
   fromName: string;
   toName: string;
@@ -4489,6 +4545,7 @@ interface TransitionLayerContext {
 }
 
 interface ViewLayerContext {
+  segmentId: string;
   viewIndex: number;
   viewName: string;
   holdDuration: number;
@@ -6500,6 +6557,92 @@ function MapServicesPanel({
   );
 }
 
+function ImageMovementPathControls({
+  eventKey,
+  layer,
+  animation,
+  onPatchAnimation,
+  onChangeLayer,
+  authoring,
+  onBegin,
+  onEnd,
+}: {
+  eventKey: string;
+  layer: Layer;
+  animation: import('../core/project').SegmentLayerAnimation;
+  onPatchAnimation: (patch: Partial<import('../core/project').SegmentLayerAnimation>) => void;
+  onChangeLayer: (patch: Partial<Layer>) => void;
+  authoring: ImageMovementAuthoringSession | null;
+  onBegin: (eventKey: string, path: readonly [number, number][]) => void;
+  onEnd: () => void;
+}) {
+  const path = animation.imageMovementPath ?? [];
+  const active = authoring?.eventKey === eventKey;
+  const acceptDraft = () => {
+    if (!active || !authoring) return;
+    if (authoring.draft.length < 2) return;
+    const movementPath = authoring.draft.map((point) => mapMotionWorldToLngLat(point.x, point.y));
+    const first = authoring.draft[0];
+    onPatchAnimation({ imageMovementPath: movementPath });
+    onChangeLayer({
+      x: first.x - (layer.width ?? 160) / 2,
+      y: first.y - (layer.height ?? 90) / 2,
+    });
+    onEnd();
+  };
+  useEffect(() => {
+    if (!active) return;
+    const finishOnEnter = (event: KeyboardEvent) => {
+      if (event.key !== 'Enter') return;
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      )
+        return;
+      event.preventDefault();
+      acceptDraft();
+    };
+    window.addEventListener('keydown', finishOnEnter);
+    return () => window.removeEventListener('keydown', finishOnEnter);
+  });
+  const clear = () => {
+    onPatchAnimation({ imageMovementPath: undefined });
+    if (active) onEnd();
+  };
+  return (
+    <div className="image-movement-controls">
+      <span className="pin-section-sub">Movement Path</span>
+      <small>{path.length >= 2 ? `${path.length} path points` : 'No usable path authored.'}</small>
+      <div className="button-row">
+        {!active && path.length < 2 && (
+          <button type="button" onClick={() => onBegin(eventKey, [])}>
+            Draw Path
+          </button>
+        )}
+        {!active && path.length >= 2 && (
+          <button type="button" onClick={() => onBegin(eventKey, path)}>
+            Edit Path
+          </button>
+        )}
+        {(active || path.length >= 2) && (
+          <button type="button" className="quiet" onClick={clear}>
+            Clear Path
+          </button>
+        )}
+        {active && (
+          <button type="button" disabled={authoring.draft.length < 2} onClick={acceptDraft}>
+            Finish
+          </button>
+        )}
+      </div>
+      {active && <small>Draw on the map. Editing replaces the prior path when a new stroke begins.</small>}
+    </div>
+  );
+}
+
 function Inspector({
   layer,
   onChange,
@@ -6510,6 +6653,9 @@ function Inspector({
   onEditRoute,
   assetUrls = {},
   onAddAsset,
+  imageMovementAuthoring,
+  onBeginImageMovementPath,
+  onEndImageMovementPath,
   transitionContext,
   viewContext,
 }: {
@@ -6522,6 +6668,9 @@ function Inspector({
   onEditRoute?: () => void;
   assetUrls?: Record<string, string>;
   onAddAsset?: (asset: import('../core/project').ProjectAsset) => void;
+  imageMovementAuthoring: ImageMovementAuthoringSession | null;
+  onBeginImageMovementPath: (eventKey: string, path: readonly [number, number][]) => void;
+  onEndImageMovementPath: () => void;
   transitionContext?: TransitionLayerContext;
   viewContext?: ViewLayerContext;
 }) {
@@ -7687,6 +7836,18 @@ function Inspector({
                       />
                     </label>
                   </div>
+                  {isImage && transitionContext.anim.appearType === 'movement' && (
+                    <ImageMovementPathControls
+                      eventKey={`transition:${transitionContext.segmentId}:${layer.id}`}
+                      layer={layer}
+                      animation={transitionContext.anim}
+                      onPatchAnimation={transitionContext.onPatchAnim}
+                      onChangeLayer={onChange}
+                      authoring={imageMovementAuthoring}
+                      onBegin={onBeginImageMovementPath}
+                      onEnd={onEndImageMovementPath}
+                    />
+                  )}
                 </>
               )}
               <span className="pin-section-sub">Layer Hold</span>
@@ -7892,6 +8053,18 @@ function Inspector({
                       />
                     </label>
                   </div>
+                  {isImage && viewContext.anim.appearType === 'movement' && (
+                    <ImageMovementPathControls
+                      eventKey={`view:${viewContext.segmentId}:${layer.id}`}
+                      layer={layer}
+                      animation={viewContext.anim}
+                      onPatchAnimation={viewContext.onPatchAnim}
+                      onChangeLayer={onChange}
+                      authoring={imageMovementAuthoring}
+                      onBegin={onBeginImageMovementPath}
+                      onEnd={onEndImageMovementPath}
+                    />
+                  )}
                 </>
               )}
               <span className="pin-section-sub">Layer Hold</span>

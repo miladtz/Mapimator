@@ -259,8 +259,8 @@ export interface SegmentLayerAnimation {
    *  is entering this segment (absent from the previous segment); a layer
    *  that is continuously present never replays appear. */
   appearEnabled?: boolean;
-  /** Appear animation type (fade/pop/drop). */
-  appearType?: PinAppearType | 'draw-shape' | 'draw-route';
+  /** Appear animation type. Movement is Image-only and uses this event's existing timing. */
+  appearType?: PinAppearType | 'draw-shape' | 'draw-route' | 'movement';
   /** Delay in seconds before the appear animation starts. */
   appearDelay?: number;
   /** Duration in seconds of the appear animation. */
@@ -285,6 +285,8 @@ export interface SegmentLayerAnimation {
   imageReferenceZoom?: number;
   /** Image-only timeline orientation; deliberately not globally propagated. */
   imageOrientation?: TextOrientation;
+  /** Image-only, event-owned geographic center path in authored order. */
+  imageMovementPath?: [number, number][];
   /** Animated Media-only deterministic active window and source-cycle policy. */
   animatedMediaStartDelay?: number;
   animatedMediaDuration?: number;
