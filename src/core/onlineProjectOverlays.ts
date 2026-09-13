@@ -674,6 +674,16 @@ export const onlineRouteFeatureCollection = (
               render.vehicleAccentColor,
             );
         for (const instance of instances) {
+          const instanceType = instance.vehicleType ?? vehicleType;
+          const instanceCustomReady =
+            instanceType === 'custom' && instance.vehicleAssetId && assetUrls[instance.vehicleAssetId];
+          const instanceIconId = instanceCustomReady
+            ? routeCustomImageId(instance.vehicleAssetId!)
+            : routeImageId(
+                instanceType === 'custom' ? 'directional-capsule' : instanceType,
+                instance.vehicleColor ?? render.vehicleColor,
+                instance.vehicleAccentColor ?? render.vehicleAccentColor,
+              );
           const vehicle = routePositionAtProgress(segment.geometry, instance.progress);
           features.push({
             type: 'Feature',
@@ -684,12 +694,17 @@ export const onlineRouteFeatureCollection = (
               layerId: layer.id,
               segmentId: segment.id,
               vehicleInstanceId: instance.id,
-              iconId,
-              size: render.vehicleSize,
-              opacity: layer.opacity * render.vehicleOpacity * (render.opacityMultiplier ?? 1),
+              iconId: instance.vehicleType ? instanceIconId : iconId,
+              size: instance.vehicleSize ?? render.vehicleSize,
+              opacity:
+                layer.opacity *
+                (instance.vehicleOpacity ?? render.vehicleOpacity) *
+                (instance.vehicleSceneOpacity ?? render.opacityMultiplier ?? 1),
               bearing:
-                ((render.vehicleFollowDirection ?? true) ? vehicle.bearing : 0) +
-                render.vehicleOrientationOffset,
+                ((instance.vehicleFollowDirection ?? render.vehicleFollowDirection ?? true)
+                  ? vehicle.bearing
+                  : 0) +
+                (instance.vehicleOrientationOffset ?? render.vehicleOrientationOffset),
             },
           });
         }
@@ -721,6 +736,13 @@ const ensureRouteImages = (
         if (kind === 'none' || kind === 'custom') continue;
         const color = kind === 'arrow' ? appearance.lineColor : (render?.vehicleColor ?? '#ffffff');
         const accent = kind === 'arrow' ? appearance.lineColor : (render?.vehicleAccentColor ?? '#64d5ba');
+        requested.set(routeImageId(kind, color, accent), [kind, color, accent]);
+      }
+      for (const instance of render?.vehicleInstances ?? []) {
+        const kind = instance.vehicleType;
+        if (!kind || kind === 'none' || kind === 'custom') continue;
+        const color = instance.vehicleColor ?? render?.vehicleColor ?? '#ffffff';
+        const accent = instance.vehicleAccentColor ?? render?.vehicleAccentColor ?? '#64d5ba';
         requested.set(routeImageId(kind, color, accent), [kind, color, accent]);
       }
     }
@@ -1528,22 +1550,26 @@ export const loadOnlineProjectOverlayAssets = async (
   for (const layer of layers) {
     if (layer.type !== 'route') continue;
     for (const render of layer.routeRenderState ?? []) {
-      if (render.vehicleType !== 'custom' || !render.vehicleAssetId) continue;
-      const url = assetUrls[render.vehicleAssetId];
-      const id = routeCustomImageId(render.vehicleAssetId);
-      if (!url || map.hasImage(id)) continue;
-      try {
-        const response = await map.loadImage(url);
-        if (map.hasImage(id)) continue;
-        const width = 'width' in response.data ? response.data.width : 96;
-        const height = 'height' in response.data ? response.data.height : 96;
-        map.addImage(id, response.data, { pixelRatio: Math.max(width, height) / 48 });
-        loaded += 1;
-      } catch (error) {
-        console.warn(
-          `[MapMotion Route] Unable to load custom vehicle asset ${render.vehicleAssetId}.`,
-          error,
-        );
+      const assetIds = [
+        ...(render.vehicleType === 'custom' && render.vehicleAssetId ? [render.vehicleAssetId] : []),
+        ...render.vehicleInstances.flatMap((instance) =>
+          instance.vehicleType === 'custom' && instance.vehicleAssetId ? [instance.vehicleAssetId] : [],
+        ),
+      ];
+      for (const assetId of new Set(assetIds)) {
+        const url = assetUrls[assetId];
+        const id = routeCustomImageId(assetId);
+        if (!url || map.hasImage(id)) continue;
+        try {
+          const response = await map.loadImage(url);
+          if (map.hasImage(id)) continue;
+          const width = 'width' in response.data ? response.data.width : 96;
+          const height = 'height' in response.data ? response.data.height : 96;
+          map.addImage(id, response.data, { pixelRatio: Math.max(width, height) / 48 });
+          loaded += 1;
+        } catch (error) {
+          console.warn(`[MapMotion Route] Unable to load custom vehicle asset ${assetId}.`, error);
+        }
       }
     }
   }

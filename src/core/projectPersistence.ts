@@ -559,6 +559,7 @@ const validateSegmentLayerAnimation = (value: unknown, path: string): SegmentLay
         'vehicleFollowsDraw',
         'vehicleFollowDirection',
         'vehicleRepetitive',
+        'vehicleWipeOut',
       ] as const)
         if (timing[key] !== undefined && !isBoolean(timing[key]))
           throw new Error(`${path}.routeSegmentAnimations[${segmentId}].${key} must be a boolean.`);

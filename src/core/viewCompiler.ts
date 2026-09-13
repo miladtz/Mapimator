@@ -18,7 +18,7 @@ import {
   viewLayersOf,
   viewMemberIds,
 } from './project';
-import { applyRouteEvaluation } from './routes';
+import { applyRouteEvaluation, evaluateRouteVehicleInstances } from './routes';
 import {
   animatedMediaIntervalsForRun,
   evaluateAnimatedMediaTime,
@@ -376,6 +376,7 @@ const absoluteRouteVehicleTiming = (
   vehicleAssetId: timing.vehicleAssetId,
   vehicleRepetitive: timing.vehicleRepetitive,
   vehicleInterval: timing.vehicleInterval,
+  vehicleWipeOut: timing.vehicleWipeOut,
 });
 
 /** Derive playback windows from stable segment membership and authored project-time events. */
@@ -490,6 +491,41 @@ const applyActiveAppearEvents = (
     const routeSegmentAnimations = { ...(currentAnimation.routeSegmentAnimations ?? {}) };
     let routeVehicle = currentAnimation.routeVehicle;
     let hasActiveRouteEvent = false;
+    const parkedVehicles = new Map<string, import('./project').RouteVehicleRenderInstance[]>();
+    for (const section of layer.routeSegments ?? []) {
+      for (let index = 0; index < currentIndex; index += 1) {
+        const candidate = segments[index];
+        const timing = segmentAnimation(candidate, layer.id)?.routeSegmentAnimations?.[section.id];
+        if (!timing?.vehicleEnabled || (timing.vehicleWipeOut ?? true)) continue;
+        const uninterrupted = segments
+          .slice(index, currentIndex + 1)
+          .every((part) => routeSectionIncluded(part, layer.id, section.id));
+        const completion =
+          candidate.start +
+          Math.max(0, timing.vehicleDelay ?? 0) +
+          Math.max(0, timing.vehicleDuration ?? 1.5);
+        if (!uninterrupted || time <= completion) continue;
+        const absolute = absoluteRouteVehicleTiming(timing, candidate.start);
+        const completed = evaluateRouteVehicleInstances(section.id, absolute, time)
+          .filter((instance) => instance.progress >= 1)
+          .map((instance) => ({
+            ...instance,
+            id: `${instance.id}-parked-${candidate.id}`,
+            vehicleType: timing.vehicleType,
+            vehicleSize: timing.vehicleSize,
+            vehicleOpacity: timing.vehicleOpacity,
+            vehicleColor: timing.vehicleColor,
+            vehicleAccentColor: timing.vehicleAccentColor,
+            vehicleOrientationOffset: timing.vehicleOrientationOffset,
+            vehicleFollowDirection: timing.vehicleFollowDirection,
+            vehicleAssetId: timing.vehicleAssetId,
+            vehicleSceneOpacity: 1,
+          }));
+        if (completed.length)
+          parkedVehicles.set(section.id, [...(parkedVehicles.get(section.id) ?? []), ...completed]);
+      }
+    }
+    if (parkedVehicles.size) hasActiveRouteEvent = true;
     for (const section of layer.routeSegments ?? []) {
       // Oldest still-active Section event owns the Section until completion.
       // Walking forward makes direct/reverse seek independent of playback history
@@ -566,6 +602,12 @@ const applyActiveAppearEvents = (
         );
       }
       applyRouteEvaluation(layer, { ...currentAnimation, routeSegmentAnimations, routeVehicle }, time);
+      for (const render of layer.routeRenderState ?? []) {
+        const parked = parkedVehicles.get(render.segmentId) ?? [];
+        if (!parked.length) continue;
+        render.vehicleInstances = [...parked, ...render.vehicleInstances];
+        render.vehicleVisible = true;
+      }
       continued.add(layer.id);
     }
   }

@@ -465,17 +465,22 @@ export const evaluateRouteVehicleInstances = (
   const delay = Math.max(0, timing.vehicleDelay ?? 0);
   if (segmentLocalTime < delay) return [];
   const duration = Math.max(0, timing.vehicleDuration ?? 1.5);
-  if (!timing.vehicleRepetitive)
+  const wipeOut = timing.vehicleWipeOut ?? true;
+  if (!timing.vehicleRepetitive) {
+    if (wipeOut && segmentLocalTime - delay > duration) return [];
     return [
       {
         id: `${sectionId}-vehicle-0`,
         progress: duration === 0 ? 1 : clamp((segmentLocalTime - delay) / duration),
       },
     ];
+  }
   const interval = Math.max(0.05, timing.vehicleInterval ?? 1);
   const traversalDuration = Math.max(0.05, duration);
   const latest = Math.floor((segmentLocalTime - delay) / interval);
-  const earliest = Math.max(0, Math.floor((segmentLocalTime - delay - traversalDuration) / interval) + 1);
+  const earliest = wipeOut
+    ? Math.max(0, Math.floor((segmentLocalTime - delay - traversalDuration) / interval) + 1)
+    : 0;
   const boundedEarliest = Math.max(earliest, latest - MAX_SIMULTANEOUS_ROUTE_VEHICLES + 1);
   return Array.from({ length: Math.max(0, latest - boundedEarliest + 1) }, (_, offset) => {
     const launchIndex = boundedEarliest + offset;

@@ -203,6 +203,8 @@ export interface RouteSegmentAnimation {
   vehicleAssetId?: string;
   vehicleRepetitive?: boolean;
   vehicleInterval?: number;
+  /** Remove this Section's vehicle occurrence after its movement duration. Legacy/default: true. */
+  vehicleWipeOut?: boolean;
   routeWipeEnabled?: boolean;
   routeWipeDelay?: number;
   routeWipeDuration?: number;
@@ -228,6 +230,16 @@ export interface RouteRenderSegmentState {
 export interface RouteVehicleRenderInstance {
   id: string;
   progress: number;
+  vehicleType?: RouteVehicleType;
+  vehicleSize?: number;
+  vehicleOpacity?: number;
+  vehicleColor?: string;
+  vehicleAccentColor?: string;
+  vehicleOrientationOffset?: number;
+  vehicleFollowDirection?: boolean;
+  vehicleAssetId?: string;
+  /** Evaluator-owned multiplier for an occurrence retained across later timeline events. */
+  vehicleSceneOpacity?: number;
 }
 /**
  * Per-layer animation configuration owned by a View OR Transition segment.

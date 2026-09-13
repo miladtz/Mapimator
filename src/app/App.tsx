@@ -5804,6 +5804,17 @@ function RouteSettings({
                     />
                   </label>
                 </div>
+                <label className="toggle">
+                  <span>Vehicle Wipe Out</span>
+                  <input
+                    type="checkbox"
+                    disabled={!timing.included || !timing.vehicleEnabled || !canAnimate}
+                    checked={timing.vehicleWipeOut ?? true}
+                    onChange={(event) =>
+                      patchSegmentTiming(segment.id, { vehicleWipeOut: event.target.checked })
+                    }
+                  />
+                </label>
                 <div className="two-col">
                   <label className="toggle">
                     <span>Follow Path Direction</span>
