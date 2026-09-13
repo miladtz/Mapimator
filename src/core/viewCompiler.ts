@@ -30,7 +30,7 @@ import { interpolateGlobeCamera } from './globeMath';
 import { interpolateCameraChainTransition } from './cameraContinuity';
 import { textMapZoomScale } from './textLayers';
 import { imageMapZoomScale, imageWipeVisibility } from './imageLayers';
-import { supportsDrawShape } from './shapes';
+import { moveShape, supportsDrawShape } from './shapes';
 import { lngLatToMapMotionWorld } from './openFreeMapAdapter';
 
 export type CompiledSegment =
@@ -233,7 +233,7 @@ const layerLifecycle = (
     if (time >= appearEnd) return evalWipe();
     const progress = (time - appearStart) / appearDuration;
     const eased =
-      type === 'fade' || type === 'draw-shape' || type === 'draw-route'
+      type === 'fade' || type === 'draw-shape' || type === 'draw-border' || type === 'draw-route'
         ? progress
         : type === 'movement'
           ? 1
@@ -299,14 +299,27 @@ const applyPhaseToLayer = (
   }
   if (layer.type === 'shape') {
     const drawing =
-      supportsDrawShape(layer.shapeKind) && animation?.appearEnabled && animation.appearType === 'draw-shape';
+      supportsDrawShape(layer.shapeKind) &&
+      animation?.appearEnabled &&
+      (animation.appearType === 'draw-border' || animation.appearType === 'draw-shape');
+    const movement = animation?.appearEnabled && animation.appearType === 'movement';
+    const movementPath = animation?.shapeMovementPath;
+    if (movement && movementPath && movementPath.length >= 2) {
+      const delay = Math.max(0, animation.appearDelay ?? 0);
+      const duration = Math.max(0.05, animation.appearDuration ?? 0.6);
+      const progress = Math.max(0, Math.min(1, (phase.segmentLocalTime - delay) / duration));
+      const [longitude, latitude] = routePositionAtProgress(movementPath, progress).coordinate;
+      const center = lngLatToMapMotionWorld(longitude, latitude);
+      Object.assign(layer, moveShape(layer, center.x - layer.x, center.y - layer.y));
+    }
     const pathWipe = ['polyline', 'polygon', 'free-draw', 'arrow'].includes(layer.shapeKind ?? '');
-    layer.shapePathProgress = drawing ? phase.opacityMul : pathWipe ? (phase.wipeOpacityMul ?? 1) : 1;
+    layer.shapePathProgress = drawing ? phase.opacityMul : !movement && pathWipe ? (phase.wipeOpacityMul ?? 1) : 1;
     layer.shapeAnimationScale = phase.popScale ?? 1;
     layer.shapeDropOffsetY = phase.dropY ?? 0;
     layer.shapeOrientation =
       layer.shapeKind === 'arrow' ? (animation?.shapeOrientation ?? 'flat-on-map') : 'flat-on-map';
-    if (drawing || (pathWipe && animation?.wipeEnabled)) layer.opacity = authoredOpacity;
+    if (movement && animation?.wipeEnabled) layer.opacity = authoredOpacity * phase.opacityMul;
+    else if (drawing || (pathWipe && animation?.wipeEnabled)) layer.opacity = authoredOpacity;
   }
   if (layer.type === 'image') {
     const movementPath = animation?.imageMovementPath;
@@ -488,7 +501,7 @@ const applyActiveAppearEvents = (
       // beyond the originating segment until membership is interrupted or a
       // newer explicit Appear event takes priority.
       const eventStillApplies =
-        (layer.type === 'image' && anim.appearType === 'movement') ||
+        ((layer.type === 'image' || layer.type === 'shape') && anim.appearType === 'movement') ||
         time < eventSegment.start + wholeAppearanceCompleteTime(anim);
       if (uninterrupted && eventStillApplies) {
         const effectiveAnimation =

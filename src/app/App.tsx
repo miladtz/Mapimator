@@ -1075,7 +1075,7 @@ export function App() {
     };
     imageMovementAuthoringRef.current = session;
     setImageMovementAuthoring(session);
-    setNotice(path.length ? 'Redraw the Image movement path, then choose Finish' : 'Draw the Image movement path');
+    setNotice(path.length ? 'Redraw the movement path, then choose Finish' : 'Draw the movement path');
   };
   const updateImageMovementDraft = (point: { x: number; y: number }) => {
     const current = imageMovementAuthoringRef.current;
@@ -6557,7 +6557,7 @@ function MapServicesPanel({
   );
 }
 
-function ImageMovementPathControls({
+function MovementPathControls({
   eventKey,
   layer,
   animation,
@@ -6576,18 +6576,24 @@ function ImageMovementPathControls({
   onBegin: (eventKey: string, path: readonly [number, number][]) => void;
   onEnd: () => void;
 }) {
-  const path = animation.imageMovementPath ?? [];
+  const path =
+    layer.type === 'shape' ? (animation.shapeMovementPath ?? []) : (animation.imageMovementPath ?? []);
   const active = authoring?.eventKey === eventKey;
   const acceptDraft = () => {
     if (!active || !authoring) return;
     if (authoring.draft.length < 2) return;
     const movementPath = authoring.draft.map((point) => mapMotionWorldToLngLat(point.x, point.y));
     const first = authoring.draft[0];
-    onPatchAnimation({ imageMovementPath: movementPath });
-    onChangeLayer({
-      x: first.x - (layer.width ?? 160) / 2,
-      y: first.y - (layer.height ?? 90) / 2,
-    });
+    if (layer.type === 'shape') {
+      onPatchAnimation({ shapeMovementPath: movementPath });
+      onChangeLayer(moveShape(layer, first.x - layer.x, first.y - layer.y));
+    } else {
+      onPatchAnimation({ imageMovementPath: movementPath });
+      onChangeLayer({
+        x: first.x - (layer.width ?? 160) / 2,
+        y: first.y - (layer.height ?? 90) / 2,
+      });
+    }
     onEnd();
   };
   useEffect(() => {
@@ -6609,7 +6615,9 @@ function ImageMovementPathControls({
     return () => window.removeEventListener('keydown', finishOnEnter);
   });
   const clear = () => {
-    onPatchAnimation({ imageMovementPath: undefined });
+    onPatchAnimation(
+      layer.type === 'shape' ? { shapeMovementPath: undefined } : { imageMovementPath: undefined },
+    );
     if (active) onEnd();
   };
   return (
@@ -6678,8 +6686,12 @@ function Inspector({
   const isImage = layer.type === 'image';
   const isAnimatedMedia = layer.type === 'animated-media';
   const appearOptions = getAppearOptionsForLayer(layer);
-  const appearTypeForLayer = (animation: import('../core/project').SegmentLayerAnimation | undefined) =>
-    appearOptions.some((option) => option.value === animation?.appearType) ? animation!.appearType! : 'fade';
+  const appearTypeForLayer = (animation: import('../core/project').SegmentLayerAnimation | undefined) => {
+    if (layer.type === 'shape' && animation?.appearType === 'draw-shape') return 'draw-border';
+    return appearOptions.some((option) => option.value === animation?.appearType)
+      ? animation!.appearType!
+      : 'fade';
+  };
   const [myStyles, setMyStyles] = useState<PinStyleEntry[]>(() => getPinStyles());
   const [savingStyle, setSavingStyle] = useState(false);
   const isCustom = (layer.pinStyle ?? 'dot') === 'custom';
@@ -7836,8 +7848,9 @@ function Inspector({
                       />
                     </label>
                   </div>
-                  {isImage && transitionContext.anim.appearType === 'movement' && (
-                    <ImageMovementPathControls
+                  {(isImage || layer.type === 'shape') &&
+                    transitionContext.anim.appearType === 'movement' && (
+                    <MovementPathControls
                       eventKey={`transition:${transitionContext.segmentId}:${layer.id}`}
                       layer={layer}
                       animation={transitionContext.anim}
@@ -8053,8 +8066,8 @@ function Inspector({
                       />
                     </label>
                   </div>
-                  {isImage && viewContext.anim.appearType === 'movement' && (
-                    <ImageMovementPathControls
+                  {(isImage || layer.type === 'shape') && viewContext.anim.appearType === 'movement' && (
+                    <MovementPathControls
                       eventKey={`view:${viewContext.segmentId}:${layer.id}`}
                       layer={layer}
                       animation={viewContext.anim}

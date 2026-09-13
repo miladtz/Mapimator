@@ -260,7 +260,7 @@ export interface SegmentLayerAnimation {
    *  that is continuously present never replays appear. */
   appearEnabled?: boolean;
   /** Appear animation type. Movement is Image-only and uses this event's existing timing. */
-  appearType?: PinAppearType | 'draw-shape' | 'draw-route' | 'movement';
+  appearType?: PinAppearType | 'draw-shape' | 'draw-border' | 'draw-route' | 'movement';
   /** Delay in seconds before the appear animation starts. */
   appearDelay?: number;
   /** Duration in seconds of the appear animation. */
@@ -296,6 +296,8 @@ export interface SegmentLayerAnimation {
   animatedMediaRepeatCount?: number;
   /** Arrow-only timeline orientation. Other Shapes always remain map-flat. */
   shapeOrientation?: TextOrientation;
+  /** Shape-only, event-owned geographic path for rigid whole-Shape movement. */
+  shapeMovementPath?: [number, number][];
   regionEffect?: 'fade' | 'draw-border' | 'pulse';
   regionDrawSpeed?: number;
   regionDrawOrder?: 'before-fill' | 'after-fill';

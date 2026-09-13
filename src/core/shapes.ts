@@ -18,7 +18,7 @@ const STANDARD_APPEAR_OPTIONS: readonly ShapeAppearOption[] = [
   { value: 'drop', label: 'Drop' },
 ];
 
-const DRAW_SHAPE_OPTION: ShapeAppearOption = { value: 'draw-shape', label: 'Draw Shape' };
+const DRAW_BORDER_OPTION: ShapeAppearOption = { value: 'draw-border', label: 'Draw Border' };
 const IMAGE_MOVEMENT_OPTION: ShapeAppearOption = { value: 'movement', label: 'Movement' };
 
 /** Final option list consumed by the real View/Transition Inspector selectors. */
@@ -26,7 +26,7 @@ export const getAppearOptionsForLayer = (
   layer: Pick<Layer, 'type' | 'shapeKind'>,
 ): readonly ShapeAppearOption[] =>
   layer.type === 'shape' && supportsDrawShape(layer.shapeKind)
-    ? [...STANDARD_APPEAR_OPTIONS, DRAW_SHAPE_OPTION]
+    ? [...STANDARD_APPEAR_OPTIONS, IMAGE_MOVEMENT_OPTION, DRAW_BORDER_OPTION]
     : layer.type === 'image'
       ? [...STANDARD_APPEAR_OPTIONS, IMAGE_MOVEMENT_OPTION]
     : STANDARD_APPEAR_OPTIONS;
