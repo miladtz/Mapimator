@@ -170,6 +170,7 @@ const optionalBooleans = [
   'animatedMediaAspectLocked',
   'animatedMediaRepeatCountEnabled',
   'imageAspectLocked',
+  'showRoutePoints',
 ] as const;
 
 const validateRegionCoordinates = (value: unknown, path: string): void => {

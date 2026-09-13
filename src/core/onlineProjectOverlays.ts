@@ -63,6 +63,7 @@ export const ONLINE_PROJECT_ROUTE_RAILWAY_RAILS_LAYER_ID = 'mapmotion-project-ro
 export const ONLINE_PROJECT_ROUTE_ARROW_LAYER_ID = 'mapmotion-project-route-arrows';
 export const ONLINE_PROJECT_ROUTE_VEHICLE_LAYER_ID = 'mapmotion-project-route-vehicles';
 export const ONLINE_PROJECT_ROUTE_WAYPOINT_LAYER_ID = 'mapmotion-project-route-waypoints';
+export const ONLINE_PROJECT_ROUTE_POINT_LAYER_ID = 'mapmotion-project-route-points';
 const OVERLAY_METADATA = { 'mapmotion:overlay': true } as const;
 const BASE_ICON_SIZE = 48;
 const geographicRegionLayers = new WeakMap<MapLibreMap, GeographicRegionFillLayer>();
@@ -573,15 +574,38 @@ export const onlineRouteFeatureCollection = (
   }> = [];
   for (const layer of layers) {
     if (layer.type !== 'route' || !layer.visible) continue;
-    if (layer.id === selectedId)
-      for (const waypoint of layer.routePoints ?? [])
+    const state = new Map((layer.routeRenderState ?? []).map((entry) => [entry.segmentId, entry]));
+    if (layer.showRoutePoints ?? true)
+      for (const waypoint of layer.routePoints ?? []) {
+        const opacity = (layer.routeSegments ?? []).reduce((maximum, segment) => {
+          if (segment.startPointId !== waypoint.id && segment.endPointId !== waypoint.id) return maximum;
+          const render = state.get(segment.id);
+          const exists = render?.exists ?? true;
+          const visibleProgress = Math.max(
+            0,
+            (render?.drawProgress ?? 1) * (1 - (render?.wipeProgress ?? 0)),
+          );
+          const pointReached =
+            segment.startPointId === waypoint.id ? visibleProgress > 0 : visibleProgress >= 1;
+          return Math.max(
+            maximum,
+            exists && pointReached ? layer.opacity * (render?.opacityMultiplier ?? 1) : 0,
+          );
+        }, 0);
+        if (opacity <= 0) continue;
         features.push({
           type: 'Feature',
           id: waypoint.id,
           geometry: { type: 'Point', coordinates: [waypoint.longitude, waypoint.latitude] },
-          properties: { role: 'waypoint', layerId: layer.id, waypointId: waypoint.id },
+          properties: {
+            role: 'route-point',
+            layerId: layer.id,
+            waypointId: waypoint.id,
+            selected: layer.id === selectedId,
+            opacity,
+          },
         });
-    const state = new Map((layer.routeRenderState ?? []).map((entry) => [entry.segmentId, entry]));
+      }
     for (const segment of layer.routeSegments ?? []) {
       const appearance = resolveRouteAppearance(layer, segment);
       const render = state.get(segment.id) ?? {
@@ -804,18 +828,32 @@ const ensureRouteOverlays = (
   };
   addSymbol(ONLINE_PROJECT_ROUTE_ARROW_LAYER_ID, 'arrow');
   addSymbol(ONLINE_PROJECT_ROUTE_VEHICLE_LAYER_ID, 'vehicle');
+  if (!map.getLayer(ONLINE_PROJECT_ROUTE_POINT_LAYER_ID))
+    map.addLayer({
+      id: ONLINE_PROJECT_ROUTE_POINT_LAYER_ID,
+      type: 'circle',
+      source: ONLINE_PROJECT_ROUTE_SOURCE_ID,
+      filter: ['==', ['get', 'role'], 'route-point'],
+      paint: {
+        'circle-radius': 6,
+        'circle-color': '#ffffff',
+        'circle-opacity': ['get', 'opacity'],
+        'circle-stroke-color': '#34bfa3',
+        'circle-stroke-width': 2,
+        'circle-stroke-opacity': ['get', 'opacity'],
+      },
+    });
   if (!map.getLayer(ONLINE_PROJECT_ROUTE_WAYPOINT_LAYER_ID))
     map.addLayer({
       id: ONLINE_PROJECT_ROUTE_WAYPOINT_LAYER_ID,
       type: 'circle',
       source: ONLINE_PROJECT_ROUTE_SOURCE_ID,
       metadata: { 'mapmotion:editor-only': true },
-      filter: ['==', ['get', 'role'], 'waypoint'],
+      filter: ['all', ['==', ['get', 'role'], 'route-point'], ['==', ['get', 'selected'], true]],
       paint: {
-        'circle-radius': 6,
-        'circle-color': '#ffffff',
-        'circle-stroke-color': '#34bfa3',
-        'circle-stroke-width': 2,
+        'circle-radius': 10,
+        'circle-color': '#000000',
+        'circle-opacity': 0,
       },
     });
   return data.features.length;

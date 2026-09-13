@@ -345,6 +345,7 @@ export const createRouteLayer = (waypoints: readonly RoutePoint[]): Layer => {
     routePoints: canonical,
     routeSegments: segments,
     routeDefaults: { ...ROUTE_DEFAULTS },
+    showRoutePoints: false,
   };
 };
 

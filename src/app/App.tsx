@@ -5110,6 +5110,17 @@ function RouteSettings({
   return (
     <>
       <div className="pin-section route-section">
+        <span className="pin-section-title">Route</span>
+        <label className="toggle">
+          <span>Show Route Points</span>
+          <input
+            type="checkbox"
+            checked={layer.showRoutePoints ?? true}
+            onChange={(event) => onChange({ showRoutePoints: event.target.checked })}
+          />
+        </label>
+      </div>
+      <div className="pin-section route-section">
         <span className="pin-section-title">Route Sections</span>
         <div className="route-segment-list">
           {(layer.routeSegments ?? []).map((segment, index) => {

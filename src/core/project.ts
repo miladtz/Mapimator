@@ -567,6 +567,8 @@ export interface Layer {
   routePoints?: RoutePoint[];
   routeSegments?: RouteSegment[];
   routeDefaults?: RouteDefaults;
+  /** Project-level canonical Route Point presentation. Legacy Routes omit it and remain visible. */
+  showRoutePoints?: boolean;
   /** Saved Route Planner recipe retained for future Edit Route. */
   routeDefinition?: RouteDefinition;
   /** Evaluator-owned deterministic state. Never authored or persisted. */
