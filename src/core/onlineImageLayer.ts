@@ -111,6 +111,7 @@ export const onlineImageRenderParameters = (
 export interface OnlineImageLayerDiagnostics {
   decodes: number;
   textureUploads: number;
+  mipmapGenerations: number;
   updateCalls: number;
   drawCalls: number;
   dynamicVertexUploads: number;
@@ -132,6 +133,7 @@ export class OnlineImageLayer implements CustomLayerInterface {
   readonly diagnostics: OnlineImageLayerDiagnostics = {
     decodes: 0,
     textureUploads: 0,
+    mipmapGenerations: 0,
     updateCalls: 0,
     drawCalls: 0,
     dynamicVertexUploads: 0,
@@ -196,8 +198,8 @@ export class OnlineImageLayer implements CustomLayerInterface {
       ? '#version 300 es\nin vec2 a_pos;in vec2 a_offset;in vec2 a_uv;uniform mat4 u_matrix;uniform vec2 u_viewport;uniform float u_face;out vec2 v_uv;void main(){vec4 p=u_matrix*vec4(a_pos,0.,1.);if(u_face>.5)p.xy+=vec2(2.*a_offset.x/u_viewport.x,-2.*a_offset.y/u_viewport.y)*p.w;gl_Position=p;v_uv=a_uv;}'
       : 'attribute vec2 a_pos;attribute vec2 a_offset;attribute vec2 a_uv;uniform mat4 u_matrix;uniform vec2 u_viewport;uniform float u_face;varying vec2 v_uv;void main(){vec4 p=u_matrix*vec4(a_pos,0.,1.);if(u_face>.5)p.xy+=vec2(2.*a_offset.x/u_viewport.x,-2.*a_offset.y/u_viewport.y)*p.w;gl_Position=p;v_uv=a_uv;}';
     const fragmentSource = webgl2
-      ? '#version 300 es\nprecision mediump float;uniform sampler2D u_image;uniform float u_opacity;uniform float u_wipe_edge;in vec2 v_uv;out vec4 outColor;void main(){if(v_uv.x>u_wipe_edge)discard;vec4 c=texture(u_image,v_uv);outColor=vec4(c.rgb*c.a*u_opacity,c.a*u_opacity);}'
-      : 'precision mediump float;uniform sampler2D u_image;uniform float u_opacity;uniform float u_wipe_edge;varying vec2 v_uv;void main(){if(v_uv.x>u_wipe_edge)discard;vec4 c=texture2D(u_image,v_uv);gl_FragColor=vec4(c.rgb*c.a*u_opacity,c.a*u_opacity);}';
+      ? '#version 300 es\nprecision mediump float;uniform sampler2D u_image;uniform float u_opacity;uniform float u_wipe_edge;in vec2 v_uv;out vec4 outColor;void main(){if(v_uv.x>u_wipe_edge)discard;vec4 c=texture(u_image,v_uv);outColor=c*u_opacity;}'
+      : 'precision mediump float;uniform sampler2D u_image;uniform float u_opacity;uniform float u_wipe_edge;varying vec2 v_uv;void main(){if(v_uv.x>u_wipe_edge)discard;vec4 c=texture2D(u_image,v_uv);gl_FragColor=c*u_opacity;}';
     const program = gl.createProgram()!;
     this.vertexShader = compileShader(gl, gl.VERTEX_SHADER, vertexSource);
     this.fragmentShader = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
@@ -244,9 +246,20 @@ export class OnlineImageLayer implements CustomLayerInterface {
         texture = gl.createTexture()!;
         this.textures.set(entry.url, texture);
         gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
+        // Store premultiplied texels before building the mip chain. This keeps
+        // transparent PNG edges color-correct when lower levels are averaged.
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 1);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, prepared.image);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
+        const supportsMipmaps =
+          gl2 !== undefined ||
+          ((prepared.width & (prepared.width - 1)) === 0 &&
+            (prepared.height & (prepared.height - 1)) === 0);
+        if (supportsMipmaps) {
+          gl.generateMipmap(gl.TEXTURE_2D);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+          this.diagnostics.mipmapGenerations += 1;
+        } else gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);

@@ -561,6 +561,29 @@ const routeVehicleImage = (kind: string, color: string, accent: string) => {
   return context.getImageData(0, 0, 96, 96);
 };
 
+const prepareRouteCustomVehicleImage = (
+  image: CanvasImageSource,
+  sourceWidth: number,
+  sourceHeight: number,
+) => {
+  // MapLibre symbol images share an atlas without mipmaps. Normalize uploaded
+  // vehicles once to the same controlled resolution as built-ins so tiny
+  // on-map sizes do not sample directly from an arbitrarily large source.
+  const size = 96;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Unable to prepare the custom Route vehicle image.');
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = 'high';
+  const scale = Math.min(size / Math.max(1, sourceWidth), size / Math.max(1, sourceHeight));
+  const width = Math.max(1, sourceWidth * scale);
+  const height = Math.max(1, sourceHeight * scale);
+  context.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
+  return context.getImageData(0, 0, size, size);
+};
+
 export const onlineRouteFeatureCollection = (
   layers: readonly Layer[],
   selectedId: string | null = null,
@@ -1565,7 +1588,9 @@ export const loadOnlineProjectOverlayAssets = async (
           if (map.hasImage(id)) continue;
           const width = 'width' in response.data ? response.data.width : 96;
           const height = 'height' in response.data ? response.data.height : 96;
-          map.addImage(id, response.data, { pixelRatio: Math.max(width, height) / 48 });
+          map.addImage(id, prepareRouteCustomVehicleImage(response.data, width, height), {
+            pixelRatio: 2,
+          });
           loaded += 1;
         } catch (error) {
           console.warn(`[MapMotion Route] Unable to load custom vehicle asset ${assetId}.`, error);
