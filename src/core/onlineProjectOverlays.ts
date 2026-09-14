@@ -570,6 +570,30 @@ const prepareRouteCustomVehicleImage = (
   // vehicles once to the same controlled resolution as built-ins so tiny
   // on-map sizes do not sample directly from an arbitrarily large source.
   const size = 96;
+  let source = image;
+  let sourceCanvas: HTMLCanvasElement | undefined;
+  let width = Math.max(1, sourceWidth);
+  let height = Math.max(1, sourceHeight);
+  while (Math.max(width, height) > size * 2) {
+    const nextWidth = Math.max(1, Math.round(width / 2));
+    const nextHeight = Math.max(1, Math.round(height / 2));
+    const stage = document.createElement('canvas');
+    stage.width = nextWidth;
+    stage.height = nextHeight;
+    const stageContext = stage.getContext('2d');
+    if (!stageContext) throw new Error('Unable to prefilter the custom Route vehicle image.');
+    stageContext.imageSmoothingEnabled = true;
+    stageContext.imageSmoothingQuality = 'high';
+    stageContext.drawImage(source, 0, 0, nextWidth, nextHeight);
+    if (sourceCanvas) {
+      sourceCanvas.width = 1;
+      sourceCanvas.height = 1;
+    }
+    source = stage;
+    sourceCanvas = stage;
+    width = nextWidth;
+    height = nextHeight;
+  }
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
@@ -577,10 +601,20 @@ const prepareRouteCustomVehicleImage = (
   if (!context) throw new Error('Unable to prepare the custom Route vehicle image.');
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = 'high';
-  const scale = Math.min(size / Math.max(1, sourceWidth), size / Math.max(1, sourceHeight));
-  const width = Math.max(1, sourceWidth * scale);
-  const height = Math.max(1, sourceHeight * scale);
-  context.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
+  const finalScale = size / Math.max(width, height);
+  const finalWidth = Math.max(1, width * finalScale);
+  const finalHeight = Math.max(1, height * finalScale);
+  context.drawImage(
+    source,
+    (size - finalWidth) / 2,
+    (size - finalHeight) / 2,
+    finalWidth,
+    finalHeight,
+  );
+  if (sourceCanvas) {
+    sourceCanvas.width = 1;
+    sourceCanvas.height = 1;
+  }
   return context.getImageData(0, 0, size, size);
 };
 
@@ -1588,9 +1622,12 @@ export const loadOnlineProjectOverlayAssets = async (
           if (map.hasImage(id)) continue;
           const width = 'width' in response.data ? response.data.width : 96;
           const height = 'height' in response.data ? response.data.height : 96;
-          map.addImage(id, prepareRouteCustomVehicleImage(response.data, width, height), {
-            pixelRatio: 2,
-          });
+          const needsPrefilter = Math.max(width, height) > 96;
+          map.addImage(
+            id,
+            needsPrefilter ? prepareRouteCustomVehicleImage(response.data, width, height) : response.data,
+            { pixelRatio: needsPrefilter ? 2 : Math.max(width, height) / 48 },
+          );
           loaded += 1;
         } catch (error) {
           console.warn(`[MapMotion Route] Unable to load custom vehicle asset ${assetId}.`, error);

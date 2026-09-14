@@ -51,6 +51,44 @@ const compileShader = (gl: WebGLRenderingContext | WebGL2RenderingContext, type:
   return shader;
 };
 
+const uploadPrefilteredMipChain = (
+  gl: WebGLRenderingContext | WebGL2RenderingContext,
+  image: HTMLImageElement,
+  width: number,
+  height: number,
+) => {
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+  let source: CanvasImageSource = image;
+  let sourceCanvas: HTMLCanvasElement | undefined;
+  let levelWidth = width;
+  let levelHeight = height;
+  let level = 1;
+  while (levelWidth > 1 || levelHeight > 1) {
+    levelWidth = Math.max(1, Math.floor(levelWidth / 2));
+    levelHeight = Math.max(1, Math.floor(levelHeight / 2));
+    const canvas = document.createElement('canvas');
+    canvas.width = levelWidth;
+    canvas.height = levelHeight;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Unable to prepare the project Image mip chain.');
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'high';
+    context.drawImage(source, 0, 0, levelWidth, levelHeight);
+    gl.texImage2D(gl.TEXTURE_2D, level, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+    if (sourceCanvas) {
+      sourceCanvas.width = 1;
+      sourceCanvas.height = 1;
+    }
+    source = canvas;
+    sourceCanvas = canvas;
+    level += 1;
+  }
+  if (sourceCanvas) {
+    sourceCanvas.width = 1;
+    sourceCanvas.height = 1;
+  }
+};
+
 /** Pure renderer-boundary state. Large pixel resources never participate here. */
 export const onlineImageRenderParameters = (
   layer: Layer,
@@ -249,17 +287,19 @@ export class OnlineImageLayer implements CustomLayerInterface {
         // Store premultiplied texels before building the mip chain. This keeps
         // transparent PNG edges color-correct when lower levels are averaged.
         gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 1);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, prepared.image);
-        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
         const supportsMipmaps =
           gl2 !== undefined ||
           ((prepared.width & (prepared.width - 1)) === 0 &&
             (prepared.height & (prepared.height - 1)) === 0);
         if (supportsMipmaps) {
-          gl.generateMipmap(gl.TEXTURE_2D);
+          uploadPrefilteredMipChain(gl, prepared.image, prepared.width, prepared.height);
           gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
           this.diagnostics.mipmapGenerations += 1;
-        } else gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        } else {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, prepared.image);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        }
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
