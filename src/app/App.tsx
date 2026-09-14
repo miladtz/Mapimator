@@ -86,6 +86,7 @@ import { t } from '../core/i18n';
 import { compileTimeline, evaluateProjectAtTime } from '../core/viewCompiler';
 import { reorderProjectView, resolveSelectionAfterViewReorder } from '../core/viewReorder';
 import {
+  createGlobalAdmin1RegionLayer,
   createGeographicRegionLayer,
   createRegionLayer,
   customRegionGeometry,
@@ -101,6 +102,11 @@ import {
   trimRecentSearches,
   type SearchResult,
 } from '../core/locationSearch';
+import {
+  GLOBAL_ADMIN1_DATASET,
+  loadGlobalAdmin1Boundary,
+  resolveGlobalAdmin1BoundaryRef,
+} from '../core/globalAdmin1Boundaries';
 import { PhotonGeoSearchProvider } from '../core/geoSearch';
 import { lngLatToMapMotionWorld } from '../core/openFreeMapAdapter';
 import {
@@ -453,11 +459,26 @@ export function App() {
       return;
     }
     setRegionSearchLoading(true);
+    let cancelled = false;
     const timer = window.setTimeout(() => {
       void regionSearchControllerRef.current
         .search(regionSearch)
-        .then((response) => {
-          setRegionSearchResults(response.results);
+        .then(async (response) => {
+          const results = await Promise.all(
+            response.results.map(async (result) => {
+              if (resolveGeoEntityRegion(result)) return result;
+              const boundary = await resolveGlobalAdmin1BoundaryRef(result).catch(() => undefined);
+              return boundary
+                ? {
+                    ...result,
+                    geographicFeatureId: boundary.id,
+                    capabilities: { ...result.capabilities, addRegion: true },
+                  }
+                : result;
+            }),
+          );
+          if (cancelled) return;
+          setRegionSearchResults(results);
           setRegionSearchOnlineUnavailable(response.onlineUnavailable);
           setRegionSearchLoading(false);
         })
@@ -466,6 +487,7 @@ export function App() {
         });
     }, 250);
     return () => {
+      cancelled = true;
       window.clearTimeout(timer);
       regionSearchControllerRef.current.cancel();
     };
@@ -1807,20 +1829,28 @@ export function App() {
     rememberLocation(result);
     setNotice(`${result.name} Pin added`);
   };
-  const addRegionFromSearch = (result: SearchResult) => {
+  const addRegionFromSearch = async (result: SearchResult) => {
     const region = resolveGeoEntityRegion(result);
-    if (!region) {
+    const globalReference = region
+      ? undefined
+      : await resolveGlobalAdmin1BoundaryRef(result).catch(() => undefined);
+    const globalRegion = globalReference
+      ? await loadGlobalAdmin1Boundary(globalReference).catch(() => undefined)
+      : undefined;
+    if (!region && !globalRegion) {
       setNotice(`Boundary geometry is unavailable for ${result.name}. No Region was created.`);
       return false;
     }
-    const key = `${region.kind}:${region.id}`;
+    const key = region ? `${region.kind}:${region.id}` : `admin1:${globalRegion!.id}`;
     const existing = findAdministrativeRegion(projectRef.current.layers, key);
     if (existing) {
       selectLayer(existing.id);
       focusLayerFromRow(existing);
       setNotice(`${existing.name} Region already exists`);
     } else {
-      const layer = createGeographicRegionLayer(region);
+      const layer = region
+        ? createGeographicRegionLayer(region)
+        : createGlobalAdmin1RegionLayer(globalRegion!);
       updateProject((current) => addProjectLayer(current, layer));
       selectLayer(layer.id);
       setNotice(`${layer.name} Region added`);
@@ -3072,13 +3102,13 @@ export function App() {
                   {!regionSearchLoading &&
                     regionSearch.trim() &&
                     regionSearchResults.map((result) => {
-                      const boundary = resolveGeoEntityRegion(result);
+                      const boundaryAvailable = result.capabilities.addRegion;
                       return (
                         <button
                           key={result.id}
                           type="button"
-                          onClick={() => {
-                            if (!addRegionFromSearch(result)) return;
+                          onClick={async () => {
+                            if (!(await addRegionFromSearch(result))) return;
                             setRegionToolOpen(false);
                             setRegionSearch('');
                           }}
@@ -3087,7 +3117,7 @@ export function App() {
                           <small>
                             {result.category}
                             {result.secondaryText ? ` · ${result.secondaryText}` : ''}
-                            {!boundary ? ' · Boundary unavailable' : ''}
+                            {!boundaryAvailable ? ' · Boundary unavailable' : ''}
                           </small>
                         </button>
                       );
@@ -3099,6 +3129,7 @@ export function App() {
                         : 'No matching geographic entities found.'}
                     </small>
                   )}
+                  <small className="region-boundary-attribution">{GLOBAL_ADMIN1_DATASET.attribution}</small>
                 </div>
               </div>
             )}

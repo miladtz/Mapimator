@@ -1,0 +1,39 @@
+{
+  "datasetId": "mapmotion-gbopen-adm1-v6",
+  "source": "geoBoundaries gbOpen",
+  "sourceVersion": "v6.0.0",
+  "sourceCommit": "1289e40e366c7b320550be1ee0614a9472d572d4",
+  "sourceDate": "2023-09-14",
+  "sourceUrl": "https://github.com/wmgeolab/geoBoundaries/releases/tag/v6.0.0",
+  "license": "CC BY 4.0",
+  "attribution": "Administrative boundaries: geoBoundaries gbOpen (CC BY 4.0).",
+  "mapshaperVersion": "0.7.61",
+  "sourceChecksum": "d16f40c3be0e8f2b78c16ae3e9d900f8d2930537be9707593dad7659ec0642ef",
+  "sourceFiles": 198,
+  "sourceEntities": 3235,
+  "processedEntities": 3235,
+  "sourceVertices": 3715755,
+  "sourcePolygons": 65727,
+  "sourceHoles": 1036,
+  "sourceMultipolygons": 759,
+  "processedVertices": 1166023,
+  "rawBytes": 124309785,
+  "processedInputBytes": 24538644,
+  "runtimeBytes": 25323220,
+  "runtimeGzipBytes": 8178016,
+  "multipolygons": 630,
+  "polygons": 16829,
+  "holes": 174,
+  "datelineCases": [
+    "gbopen-v6-adm1-fji-53030831b61477600220974",
+    "gbopen-v6-adm1-fji-53030831b91072554514863",
+    "gbopen-v6-adm1-rus-28173009b11091203162490",
+    "gbopen-v6-adm1-usa-66186276b62688952876525"
+  ],
+  "largest": {
+    "id": "gbopen-v6-adm1-can-82249235b23927232378620",
+    "vertices": 94787,
+    "bytes": 1994449
+  },
+  "indexSha256": "a6d541416fc3d14e5892e1cf76cec3085e6c3e0b82c96373b774b42732d7bee1"
+}

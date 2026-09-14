@@ -547,6 +547,9 @@ export interface Layer {
   regionCountryCode2?: string;
   regionAdminCode?: string;
   regionWikidataId?: string;
+  regionBoundarySource?: string;
+  regionBoundarySourceId?: string;
+  regionBoundarySourceVersion?: string;
   regionGroupId?: string;
   regionGroupMembers?: string[];
   regionGeometry?: RegionGeometry;

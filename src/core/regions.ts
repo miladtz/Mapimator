@@ -287,6 +287,29 @@ export const createGeographicRegionLayer = (region: (typeof GEOGRAPHIC_REGIONS)[
   return layer;
 };
 
+export const createGlobalAdmin1RegionLayer = (region: {
+  id: string;
+  sourceId: string;
+  source: string;
+  sourceVersion: string;
+  countryCode: string;
+  iso3166_2?: string;
+  name: string;
+  geometry: RegionGeometry;
+}): Layer =>
+  createRegionLayer(region.name, region.geometry, {
+    regionSource: 'administrative',
+    regionKind: 'admin1',
+    regionFeatureId: region.id,
+    regionCountryCode: region.countryCode,
+    regionCountryCode2: resolveFlagCode(region.countryCode),
+    regionAdminCode: region.iso3166_2,
+    regionBoundarySource: region.source,
+    regionBoundarySourceId: region.sourceId,
+    regionBoundarySourceVersion: region.sourceVersion,
+    regionGeometryEditable: false,
+  });
+
 export const regionEffectTiming = (layer: Layer) => {
   const drawingDelay = Math.max(0, layer.regionDrawingDelay ?? 0);
   const drawingDuration = Math.max(0, layer.regionDrawingDuration ?? 1.5);
