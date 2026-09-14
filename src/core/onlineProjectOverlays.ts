@@ -16,10 +16,16 @@ import {
 } from './geographicRegionFillLayer';
 import { rasterizeTextLayer, textLayerImageId, waitForTextLayerFonts } from './textLayers';
 import { arrowHeadCoordinates, editableShapePoints, evaluatedShapeCoordinates } from './shapes';
-import { imageGeographicCorners, imageWorldCorners } from './imageLayers';
+import {
+  imageAspectRatioOf,
+  imageFlatReferenceWorldPixels,
+  imageMercatorCoordinates,
+  imageWorldCorners,
+} from './imageLayers';
 import { animatedMediaScreenOffsets } from './animatedMedia';
 import {
   ensureOnlineImageLayer,
+  onlineImageRenderParameters,
   ONLINE_PROJECT_IMAGE_RENDER_LAYER_ID,
   prepareOnlineImageLayer,
 } from './onlineImageLayer';
@@ -83,6 +89,40 @@ export const onlineOverlayRepresentativeForLayer = (layer: Layer): string | unde
   return undefined;
 };
 
+const mercatorToLngLat = (coordinate: { x: number; y: number }): [number, number] => [
+  coordinate.x * 360 - 180,
+  (Math.atan(Math.sinh(Math.PI * (1 - 2 * coordinate.y))) * 180) / Math.PI,
+];
+
+/** Exact screen quad consumed by Image selection, handles, and hit testing. */
+export const onlineImageScreenCorners = (layer: Layer, map: MapLibreMap) => {
+  const currentWorldPixels = 512 * 2 ** map.getZoom();
+  const canvas = map.getCanvas();
+  const viewportWorldPixels = Math.min(Math.max(1, canvas.clientWidth), Math.max(1, canvas.clientHeight));
+  const parameters = onlineImageRenderParameters(
+    layer,
+    imageAspectRatioOf(layer),
+    1,
+    currentWorldPixels,
+    viewportWorldPixels,
+  );
+  if (parameters.orientation === 'face-camera') {
+    const anchor = map.project(mapMotionWorldToLngLat(parameters.anchor[0], parameters.anchor[1]));
+    return parameters.offsets.map(([x, y]) => [anchor.x + x, anchor.y + y] as [number, number]);
+  }
+  const referenceWorldPixels = imageFlatReferenceWorldPixels(
+    layer,
+    currentWorldPixels,
+    viewportWorldPixels,
+  );
+  return imageMercatorCoordinates(parameters.anchor, parameters.offsets, referenceWorldPixels).map(
+    (coordinate) => {
+      const point = map.project(mercatorToLngLat(coordinate));
+      return [point.x, point.y] as [number, number];
+    },
+  );
+};
+
 export const onlineImageHandleFeatureCollection = (
   layers: readonly Layer[],
   selectedId: string | null,
@@ -98,57 +138,44 @@ export const onlineImageHandleFeatureCollection = (
         !layer.locked,
     )
     .flatMap((layer) => {
-      let corners: [number, number][];
-      let rotate: [number, number];
+      let screenCorners: [number, number][];
       if (layer.type === 'animated-media' && map) {
         const anchor = map.project(
           mapMotionWorldToLngLat(layer.x + (layer.width ?? 160) / 2, layer.y + (layer.height ?? 90) / 2),
         );
         const offsets = animatedMediaScreenOffsets(layer);
-        const screenCorners = offsets.map(([x, y]) => [anchor.x + x, anchor.y + y] as [number, number]);
-        const toWorld = ([x, y]: [number, number]) => {
-          const coordinate = map.unproject([x, y]);
-          const world = lngLatToMapMotionWorld(coordinate.lng, coordinate.lat);
-          return [world.x, world.y] as [number, number];
-        };
-        corners = screenCorners.map(toWorld);
-        const top: [number, number] = [
-          (screenCorners[0][0] + screenCorners[1][0]) / 2,
-          (screenCorners[0][1] + screenCorners[1][1]) / 2,
-        ];
-        const vx = top[0] - anchor.x;
-        const vy = top[1] - anchor.y;
-        const length = Math.hypot(vx, vy) || 1;
-        rotate = toWorld([top[0] + (vx / length) * 28, top[1] + (vy / length) * 28]);
-      } else {
-        const geographicCorners = imageGeographicCorners(layer);
-        corners = geographicCorners.map(([longitude, latitude]) => {
-          const world = lngLatToMapMotionWorld(longitude, latitude);
-          return [world.x, world.y];
-        });
-        const top = [(corners[0][0] + corners[1][0]) / 2, (corners[0][1] + corners[1][1]) / 2] as [
-          number,
-          number,
-        ];
-        const centerX = layer.x + (layer.width ?? 160) / 2;
-        const centerY = layer.y + (layer.height ?? 90) / 2;
-        const vx = top[0] - centerX;
-        const vy = top[1] - centerY;
-        const length = Math.hypot(vx, vy) || 1;
-        rotate = [top[0] + (vx / length) * 28, top[1] + (vy / length) * 28];
-      }
+        screenCorners = offsets.map(([x, y]) => [anchor.x + x, anchor.y + y] as [number, number]);
+      } else if (map) screenCorners = onlineImageScreenCorners(layer, map);
+      else return [];
+      const center = screenCorners.reduce(
+        (sum, [x, y]) => ({ x: sum.x + x / screenCorners.length, y: sum.y + y / screenCorners.length }),
+        { x: 0, y: 0 },
+      );
+      const top: [number, number] = [
+        (screenCorners[0][0] + screenCorners[1][0]) / 2,
+        (screenCorners[0][1] + screenCorners[1][1]) / 2,
+      ];
+      const vx = top[0] - center.x;
+      const vy = top[1] - center.y;
+      const length = Math.hypot(vx, vy) || 1;
+      const rotateScreen: [number, number] = [top[0] + (vx / length) * 28, top[1] + (vy / length) * 28];
+      const geographicCorners = screenCorners.map(([x, y]) => {
+        const coordinate = map!.unproject([x, y]);
+        return [coordinate.lng, coordinate.lat] as [number, number];
+      });
+      const rotateCoordinate = map!.unproject(rotateScreen);
       return [
         {
           type: 'Feature' as const,
           geometry: {
             type: 'Polygon' as const,
-            coordinates: [[...corners, corners[0]].map(([x, y]) => mapMotionWorldToLngLat(x, y))],
+            coordinates: [[...geographicCorners, geographicCorners[0]]],
           },
           properties: { layerId: layer.id, handle: 'bounds' as const },
         },
         {
           type: 'Feature' as const,
-          geometry: { type: 'Point' as const, coordinates: mapMotionWorldToLngLat(rotate[0], rotate[1]) },
+          geometry: { type: 'Point' as const, coordinates: [rotateCoordinate.lng, rotateCoordinate.lat] },
           properties: { layerId: layer.id, handle: 'rotate' as const },
         },
       ];

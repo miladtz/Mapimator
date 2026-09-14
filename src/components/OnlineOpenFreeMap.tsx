@@ -40,6 +40,7 @@ import {
   ONLINE_PROJECT_SHAPE_DOTTED_LAYER_ID,
   ONLINE_PROJECT_SHAPE_HANDLE_LAYER_ID,
   ONLINE_PROJECT_IMAGE_HANDLE_LAYER_ID,
+  onlineImageScreenCorners,
   ONLINE_PROJECT_ROUTE_DASHED_LAYER_ID,
   ONLINE_PROJECT_ROUTE_DOTTED_LAYER_ID,
   ONLINE_PROJECT_ROUTE_RAILWAY_RAILS_LAYER_ID,
@@ -49,7 +50,7 @@ import {
   ONLINE_PROJECT_ROUTE_WAYPOINT_LAYER_ID,
   updateOnlineProjectOverlays,
 } from '../core/onlineProjectOverlays';
-import { imageGeographicCorners, rotateImageToward } from '../core/imageLayers';
+import { rotateImageToward } from '../core/imageLayers';
 import { draggedShapePreviewCoordinates } from '../core/shapes';
 import { pointInAnimatedMediaScreenQuad, rotateAnimatedMediaToward } from '../core/animatedMedia';
 import { fitProjectViewport, type LogicalViewport } from '../core/projectRenderViewport';
@@ -922,14 +923,14 @@ export function OnlineOpenFreeMap({
           );
           return pointInAnimatedMediaScreenQuad(layer, center, event.point);
         }
-        const polygon = imageGeographicCorners(layer).map((point) => map!.project(point));
+        const polygon = onlineImageScreenCorners(layer, map!);
         let inside = false;
         for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
           const a = polygon[i];
           const b = polygon[j];
           if (
-            a.y > event.point.y !== b.y > event.point.y &&
-            event.point.x < ((b.x - a.x) * (event.point.y - a.y)) / (b.y - a.y) + a.x
+            a[1] > event.point.y !== b[1] > event.point.y &&
+            event.point.x < ((b[0] - a[0]) * (event.point.y - a[1])) / (b[1] - a[1]) + a[0]
           )
             inside = !inside;
         }

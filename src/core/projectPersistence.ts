@@ -75,6 +75,7 @@ const optionalStrings = [
   'geoEffectType',
   'assetId',
   'imageFitMode',
+  'imageOrientation',
   'animatedMediaPlayback',
   'pinStyle',
   'pinBorderColor',
@@ -112,6 +113,7 @@ const optionalNumbers = [
   'height',
   'imageRotation',
   'imageAspectRatio',
+  'imageScaleReferenceZoom',
   'animatedMediaRotation',
   'animatedMediaAspectRatio',
   'animatedMediaCycleDurationMs',
@@ -434,6 +436,15 @@ const validateLayer = (value: unknown, path: string): Layer => {
     throw new Error(`${path}.geoEffectType is unsupported.`);
   if (value.imageFitMode !== undefined && !oneOf(value.imageFitMode, ['contain', 'cover'] as const))
     throw new Error(`${path}.imageFitMode is unsupported.`);
+  if (
+    value.imageOrientation !== undefined &&
+    !oneOf(value.imageOrientation, ['face-camera', 'flat-on-map'] as const)
+  )
+    throw new Error(`${path}.imageOrientation is unsupported.`);
+  if (value.imageKeepSizeOnScreen !== undefined && !isBoolean(value.imageKeepSizeOnScreen))
+    throw new Error(`${path}.imageKeepSizeOnScreen must be a boolean.`);
+  if (value.imageScaleReferenceZoom !== undefined && (value.imageScaleReferenceZoom as number) <= 0)
+    throw new Error(`${path}.imageScaleReferenceZoom must be > 0.`);
   if (value.regionGeometry !== undefined) {
     if (
       !isRecord(value.regionGeometry) ||
@@ -1094,6 +1105,23 @@ export function validateAndMigrateProject(value: unknown): Project {
           }),
         ),
       }));
+  // Image presentation became timeline-wide. Resolve legacy per-segment
+  // orientation once in authored timeline order so load order, selection,
+  // and runtime interaction can never change the chosen presentation model.
+  for (const layer of registry) {
+    if (layer.type !== 'image') continue;
+    let legacyOrientation: Layer['imageOrientation'];
+    for (const view of backfilled) {
+      legacyOrientation ??= view.layerConfigs[layer.id]?.animation?.imageOrientation;
+      const transition = transitions.find((candidate) => candidate.fromViewId === view.id);
+      legacyOrientation ??= transition?.layerConfigs[layer.id]?.animation?.imageOrientation;
+      if (legacyOrientation !== undefined) break;
+    }
+    layer.imageOrientation ??= legacyOrientation ?? 'flat-on-map';
+    if (layer.imageKeepSizeOnScreen === undefined)
+      layer.imageKeepSizeOnScreen = layer.imageOrientation === 'face-camera';
+    layer.imageScaleReferenceZoom ??= Math.max(0.000001, backfilled[0]?.camera.zoom ?? 1);
+  }
   const transitionIds = new Set<string>();
   for (const transition of transitions) {
     if (!transitionIds.add(transition.id)) throw new Error(`Duplicate Transition ID: ${transition.id}.`);

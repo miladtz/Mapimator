@@ -4,7 +4,13 @@ import {
   type CustomRenderMethodInput,
   type Map as MapLibreMap,
 } from 'maplibre-gl';
-import { imageFitModeOf, imageMercatorCoordinates, imageRenderSurfaceState } from './imageLayers';
+import {
+  imageFaceCameraScale,
+  imageFitModeOf,
+  imageFlatReferenceWorldPixels,
+  imageMercatorCoordinates,
+  imageRenderSurfaceState,
+} from './imageLayers';
 import { mapMotionWorldToLngLat } from './openFreeMapAdapter';
 import type { Layer } from './project';
 
@@ -94,6 +100,8 @@ export const onlineImageRenderParameters = (
   layer: Layer,
   intrinsicWidth: number,
   intrinsicHeight: number,
+  currentWorldPixels?: number,
+  viewportWorldPixels?: number,
 ) => {
   const surface = imageRenderSurfaceState(layer);
   const rendered = surface.geometry;
@@ -124,12 +132,19 @@ export const onlineImageRenderParameters = (
   const radians = ((layer.imageRotation ?? 0) * Math.PI) / 180;
   const cosine = Math.cos(radians);
   const sine = Math.sin(radians);
+  const faceScale =
+    surface.orientation === 'face-camera'
+      ? imageFaceCameraScale(layer, currentWorldPixels, viewportWorldPixels)
+      : 1;
   const offsets = [
     [-width / 2, -height / 2],
     [width / 2, -height / 2],
     [width / 2, height / 2],
     [-width / 2, height / 2],
-  ].map(([x, y]) => [x * cosine - y * sine, x * sine + y * cosine] as const);
+  ].map(
+    ([x, y]) =>
+      [(x * cosine - y * sine) * faceScale, (x * sine + y * cosine) * faceScale] as const,
+  );
   return {
     anchor: [centerX, centerY] as const,
     offsets,
@@ -305,10 +320,27 @@ export class OnlineImageLayer implements CustomLayerInterface {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         this.diagnostics.textureUploads += 1;
       } else gl.bindTexture(gl.TEXTURE_2D, texture);
-      const parameters = onlineImageRenderParameters(entry.layer, prepared.width, prepared.height);
+      const currentWorldPixels = 512 * 2 ** (this.map?.getZoom() ?? 0);
+      const viewportWorldPixels = Math.min(
+        Math.max(1, canvas?.clientWidth ?? gl.drawingBufferWidth),
+        Math.max(1, canvas?.clientHeight ?? gl.drawingBufferHeight),
+      );
+      const parameters = onlineImageRenderParameters(
+        entry.layer,
+        prepared.width,
+        prepared.height,
+        currentWorldPixels,
+        viewportWorldPixels,
+      );
       const face = parameters.orientation === 'face-camera';
+      const referenceWorldPixels = imageFlatReferenceWorldPixels(
+        entry.layer,
+        currentWorldPixels,
+        viewportWorldPixels,
+      );
       const geometrySignature = [
         face,
+        referenceWorldPixels,
         parameters.anchor,
         parameters.offsets,
         parameters.worldCorners,
@@ -318,7 +350,9 @@ export class OnlineImageLayer implements CustomLayerInterface {
       if (geometryChanged) {
         const anchorLngLat = mapMotionWorldToLngLat(parameters.anchor[0], parameters.anchor[1]);
         const anchor = MercatorCoordinate.fromLngLat(anchorLngLat);
-        const mercatorCorners = face ? [] : imageMercatorCoordinates(parameters.anchor, parameters.offsets);
+        const mercatorCorners = face
+          ? []
+          : imageMercatorCoordinates(parameters.anchor, parameters.offsets, referenceWorldPixels);
         const vertices: number[] = [];
         for (const index of indices) {
           const coordinate = face ? anchor : mercatorCorners[index];

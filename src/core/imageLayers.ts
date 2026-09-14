@@ -7,6 +7,25 @@ export type ImageFitMode = 'contain' | 'cover';
 export const imageRotationOf = (layer: Layer) => layer.imageRotation ?? 0;
 export const imageFitModeOf = (layer: Layer): ImageFitMode => layer.imageFitMode ?? 'contain';
 export const imageAspectLocked = (layer: Layer) => layer.imageAspectLocked !== false;
+const positiveZoom = (value: number | undefined) => Math.max(0.000001, value ?? 1);
+export const imageNaturalZoomScale = (
+  layer: Layer,
+  currentWorldPixels = CAMERA_VIEWPORT.width,
+  viewportWorldPixels = CAMERA_VIEWPORT.width,
+) => Math.max(1, currentWorldPixels) / (Math.max(1, viewportWorldPixels) * positiveZoom(layer.imageScaleReferenceZoom));
+export const imageFaceCameraScale = (
+  layer: Layer,
+  currentWorldPixels = CAMERA_VIEWPORT.width,
+  viewportWorldPixels = CAMERA_VIEWPORT.width,
+) => layer.imageKeepSizeOnScreen ? 1 : imageNaturalZoomScale(layer, currentWorldPixels, viewportWorldPixels);
+export const imageFlatReferenceWorldPixels = (
+  layer: Layer,
+  currentWorldPixels: number,
+  viewportWorldPixels: number,
+) =>
+  layer.imageKeepSizeOnScreen
+    ? Math.max(1, currentWorldPixels)
+    : Math.max(1, viewportWorldPixels) * positiveZoom(layer.imageScaleReferenceZoom);
 export const IMAGE_MAP_ZOOM_MIN_SCALE = 0.5;
 export const IMAGE_MAP_ZOOM_MAX_SCALE = 3;
 export const imageMapZoomScale = (animation: SegmentLayerAnimation | undefined, cameraZoom: number) => {
@@ -92,6 +111,7 @@ export interface ImageMercatorCoordinate {
 export const imageMercatorCoordinates = (
   anchor: readonly [number, number],
   offsets: readonly (readonly [number, number])[],
+  referenceWorldPixels = CAMERA_VIEWPORT.width,
 ): ImageMercatorCoordinate[] => {
   const [longitude, latitude] = mapMotionWorldToLngLat(anchor[0], anchor[1]);
   const latitudeRadians = (latitude * Math.PI) / 180;
@@ -100,7 +120,7 @@ export const imageMercatorCoordinates = (
     y: (1 - Math.log(Math.tan(latitudeRadians) + 1 / Math.cos(latitudeRadians)) / Math.PI) / 2,
     z: 0,
   };
-  const logicalToMercator = 1 / CAMERA_VIEWPORT.width;
+  const logicalToMercator = 1 / Math.max(1, referenceWorldPixels);
   return offsets.map(([x, y]) => ({
     x: center.x + x * logicalToMercator,
     y: center.y + y * logicalToMercator,

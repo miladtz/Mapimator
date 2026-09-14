@@ -26,7 +26,7 @@ import {
 } from '../core/camera';
 import { resolveTextLayerStyle } from '../core/textLayers';
 import { arrowHeadCoordinates, evaluatedShapeCoordinates } from '../core/shapes';
-import { evaluatedImageLayer } from '../core/imageLayers';
+import { evaluatedImageLayer, imageFaceCameraScale } from '../core/imageLayers';
 import {
   PIN_DEFAULTS,
   pinLabelOffsetOf,
@@ -902,6 +902,7 @@ export function MapScene({
                   assetUrl={customIconUrl ?? imageUrl}
                   globe={mapMode === 'globe' ? globe : undefined}
                   flatCamera={flatPerspectiveCamera}
+                  cameraZoom={camera.zoom}
                   screenScale={
                     mapMode === 'globe' ? globe.symbolScale : flatPerspectiveCamera ? 1 : 1 / camera.zoom
                   }
@@ -1493,6 +1494,7 @@ function LayerGraphic({
   assetUrl,
   globe,
   flatCamera,
+  cameraZoom = 1,
   screenScale = 1,
   screenRotation = 0,
   editorMode = false,
@@ -1503,6 +1505,7 @@ function LayerGraphic({
   assetUrl?: string;
   globe?: GlobeProjection;
   flatCamera?: CameraState;
+  cameraZoom?: number;
   screenScale?: number;
   screenRotation?: number;
   editorMode?: boolean;
@@ -1646,9 +1649,20 @@ function LayerGraphic({
       const centerY = y + height / 2;
       const wipe = Math.max(0, Math.min(1, layer.imageWipeProgress ?? 1));
       const clipId = `image-clip-${layer.id}`;
+      const currentCameraZoom = cameraZoom;
+      const currentWorldPixels = CAMERA_VIEWPORT.width * currentCameraZoom;
+      const mapPlaneScale =
+        1 /
+        Math.max(
+          0.000001,
+          layer.imageKeepSizeOnScreen ? currentCameraZoom : (layer.imageScaleReferenceZoom ?? 1),
+        );
+      const mapPlaneTransform = flatCamera
+        ? `${mapPlaneLocalTransform(flatCamera, rendered.x, rendered.y)} translate(${centerX} ${centerY}) scale(${mapPlaneScale}) translate(${-centerX} ${-centerY})`
+        : '';
       const transform = faceCamera
-        ? `translate(${centerX} ${centerY}) rotate(${layer.imageRotation ?? 0}) scale(${screenScale}) translate(${-centerX} ${-centerY})`
-        : `${flatCamera ? mapPlaneLocalTransform(flatCamera, rendered.x, rendered.y) : ''} rotate(${layer.imageRotation ?? 0} ${centerX} ${centerY})`;
+        ? `translate(${centerX} ${centerY}) rotate(${layer.imageRotation ?? 0}) scale(${screenScale * imageFaceCameraScale(layer, currentWorldPixels, CAMERA_VIEWPORT.width)}) translate(${-centerX} ${-centerY})`
+        : `${mapPlaneTransform} rotate(${layer.imageRotation ?? 0} ${centerX} ${centerY})`;
       return (
         <g {...common} transform={transform}>
           <defs>

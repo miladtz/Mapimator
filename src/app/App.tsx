@@ -1022,6 +1022,7 @@ export function App() {
   const placeLayerAt = (type: LayerType, point: { x: number; y: number }) => {
     if ((type === 'image' || type === 'animated-media') && pendingMediaPlacement?.layer.type === type) {
       const layer = placeImportedMediaLayer(pendingMediaPlacement.layer, point);
+      if (type === 'image') layer.imageScaleReferenceZoom = camera.zoom;
       const asset = pendingMediaPlacement.asset;
       updateProject((current) =>
         addProjectLayer(
@@ -3370,7 +3371,7 @@ export function App() {
                         toName: destView?.name ?? '',
                         inTransition: segmentVisibleIds.has(selected.id),
                         continuouslyVisible: sourceMembers.has(selected.id),
-                        cameraZoom: sourceView.camera.zoom,
+                        cameraZoom: editingScene.camera.zoom,
                         anim: transitionAnimOf(transition, selected.id),
                         warnings: validateTransitionLayer({
                           sourceMemberIds: sourceMembers,
@@ -3402,7 +3403,7 @@ export function App() {
                         viewIndex: editingViewIndex,
                         viewName: activeView.name,
                         holdDuration: activeView.holdDuration,
-                        cameraZoom: activeView.camera.zoom,
+                        cameraZoom: camera.zoom,
                         inView: segmentVisibleIds.has(selected.id),
                         anim: viewAnimOf(activeView, selected.id),
                         warnings: validateViewLayer({
@@ -6753,6 +6754,56 @@ function MovementPathControls({
   );
 }
 
+function ImageTimelinePresentationControls({
+  layer,
+  legacyOrientation,
+  cameraZoom,
+  onChange,
+}: {
+  layer: Layer;
+  legacyOrientation?: import('../core/project').TextOrientation;
+  cameraZoom: number;
+  onChange: (patch: Partial<Layer>) => void;
+}) {
+  const orientation = layer.imageOrientation ?? legacyOrientation ?? 'flat-on-map';
+  const keepSizeOnScreen = layer.imageKeepSizeOnScreen ?? orientation === 'face-camera';
+  return (
+    <>
+      <span className="pin-section-sub">Presentation</span>
+      <label>
+        Orientation
+        <select
+          value={orientation}
+          onChange={(event) =>
+            onChange({
+              imageOrientation: event.target.value as import('../core/project').TextOrientation,
+              imageKeepSizeOnScreen: keepSizeOnScreen,
+              imageScaleReferenceZoom: layer.imageScaleReferenceZoom ?? cameraZoom,
+            })
+          }
+        >
+          <option value="face-camera">Face Camera</option>
+          <option value="flat-on-map">Flat on Map</option>
+        </select>
+      </label>
+      <label className="toggle">
+        <span>Keep Size on Screen</span>
+        <input
+          type="checkbox"
+          checked={keepSizeOnScreen}
+          onChange={(event) =>
+            onChange({
+              imageOrientation: orientation,
+              imageKeepSizeOnScreen: event.target.checked,
+              imageScaleReferenceZoom: cameraZoom,
+            })
+          }
+        />
+      </label>
+    </>
+  );
+}
+
 function Inspector({
   layer,
   onChange,
@@ -7844,35 +7895,12 @@ function Inspector({
                 />
               )}
               {isImage && (
-                <>
-                  <label>
-                    Orientation
-                    <select
-                      value={transitionContext.anim?.imageOrientation ?? 'flat-on-map'}
-                      onChange={(event) =>
-                        transitionContext.onPatchAnim({
-                          imageOrientation: event.target.value as import('../core/project').TextOrientation,
-                        })
-                      }
-                    >
-                      <option value="face-camera">Face Camera</option>
-                      <option value="flat-on-map">Flat on Map</option>
-                    </select>
-                  </label>
-                  <label className="toggle">
-                    <span>Scale with Map Zoom</span>
-                    <input
-                      type="checkbox"
-                      checked={Boolean(transitionContext.anim?.imageScaleWithMapZoom)}
-                      onChange={(event) =>
-                        transitionContext.onPatchAnim({
-                          imageScaleWithMapZoom: event.target.checked,
-                          imageReferenceZoom: transitionContext.cameraZoom,
-                        })
-                      }
-                    />
-                  </label>
-                </>
+                <ImageTimelinePresentationControls
+                  layer={layer}
+                  legacyOrientation={transitionContext.anim?.imageOrientation}
+                  cameraZoom={transitionContext.cameraZoom}
+                  onChange={onChange}
+                />
               )}
               {isText && (
                 <label className="toggle">
@@ -8064,35 +8092,12 @@ function Inspector({
                 />
               )}
               {isImage && (
-                <>
-                  <label>
-                    Orientation
-                    <select
-                      value={viewContext.anim?.imageOrientation ?? 'flat-on-map'}
-                      onChange={(event) =>
-                        viewContext.onPatchAnim({
-                          imageOrientation: event.target.value as import('../core/project').TextOrientation,
-                        })
-                      }
-                    >
-                      <option value="face-camera">Face Camera</option>
-                      <option value="flat-on-map">Flat on Map</option>
-                    </select>
-                  </label>
-                  <label className="toggle">
-                    <span>Scale with Map Zoom</span>
-                    <input
-                      type="checkbox"
-                      checked={Boolean(viewContext.anim?.imageScaleWithMapZoom)}
-                      onChange={(event) =>
-                        viewContext.onPatchAnim({
-                          imageScaleWithMapZoom: event.target.checked,
-                          imageReferenceZoom: viewContext.cameraZoom,
-                        })
-                      }
-                    />
-                  </label>
-                </>
+                <ImageTimelinePresentationControls
+                  layer={layer}
+                  legacyOrientation={viewContext.anim?.imageOrientation}
+                  cameraZoom={viewContext.cameraZoom}
+                  onChange={onChange}
+                />
               )}
               {isText && (
                 <label className="toggle">

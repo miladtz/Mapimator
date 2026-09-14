@@ -283,7 +283,7 @@ export interface SegmentLayerAnimation {
   /** Image-only timeline scale relative to the selected segment's reference Zoom. */
   imageScaleWithMapZoom?: boolean;
   imageReferenceZoom?: number;
-  /** Image-only timeline orientation; deliberately not globally propagated. */
+  /** @deprecated Legacy per-segment Image orientation. Canonical Image layers override it. */
   imageOrientation?: TextOrientation;
   /** Image-only, event-owned geographic center path in authored order. */
   imageMovementPath?: [number, number][];
@@ -481,12 +481,17 @@ export interface Layer {
   imageAspectLocked?: boolean;
   imageAspectRatio?: number;
   imageFitMode?: ImageFitMode;
+  /** Canonical Image orientation, shared by every View and Transition usage. */
+  imageOrientation?: TextOrientation;
+  /** Canonical Image scale mode, shared by every View and Transition usage. */
+  imageKeepSizeOnScreen?: boolean;
+  /** Canonical calibration Zoom for authored Image width/height. */
+  imageScaleReferenceZoom?: number;
   /** Evaluator-owned Image timeline state; never authored on the Project Layer. */
   imageRenderScale?: number;
   imageAnimationScale?: number;
   imageDropOffsetY?: number;
   imageWipeProgress?: number;
-  imageOrientation?: TextOrientation;
   imageScaleWithMapZoom?: boolean;
   /** Animated Media has an independent retained renderer; these fields are never used by Image. */
   animatedMediaRotation?: number;
@@ -932,6 +937,8 @@ export const createLayer = (type: LayerType, offset = 0): Layer => {
       imageAspectLocked: true,
       imageAspectRatio: 16 / 9,
       imageFitMode: 'contain',
+      imageOrientation: 'flat-on-map',
+      imageKeepSizeOnScreen: false,
     },
     'animated-media': {
       name: 'Animated Media',

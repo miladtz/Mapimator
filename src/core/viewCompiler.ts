@@ -337,12 +337,19 @@ const applyPhaseToLayer = (
       layer.x = center.x - (layer.width ?? 160) / 2;
       layer.y = center.y - (layer.height ?? 90) / 2;
     }
+    // Movement and every other Image Appear event retain the frozen segment
+    // scale evaluation. Canonical orientation/Keep Size is applied later by
+    // the renderer and must not replace event-owned presentation state.
     layer.imageRenderScale = imageMapZoomScale(animation, cameraZoom);
     layer.imageAnimationScale = phase.popScale ?? 1;
     layer.imageDropOffsetY = phase.dropY ?? 0;
     layer.imageWipeProgress = movement ? 1 : imageWipeVisibility(animation, phase.segmentLocalTime);
-    layer.imageOrientation = animation?.imageOrientation ?? 'flat-on-map';
-    layer.imageScaleWithMapZoom = Boolean(animation?.imageScaleWithMapZoom);
+    // Canonical Image orientation applies to every segment. Legacy projects
+    // without it retain their historical per-segment value until the user
+    // makes one global orientation edit.
+    layer.imageOrientation = layer.imageOrientation ?? animation?.imageOrientation ?? 'flat-on-map';
+    layer.imageKeepSizeOnScreen =
+      layer.imageKeepSizeOnScreen ?? layer.imageOrientation === 'face-camera';
     if (movement && animation?.wipeEnabled) {
       layer.opacity = authoredOpacity * phase.opacityMul;
       layer.visible = phase.visible;
